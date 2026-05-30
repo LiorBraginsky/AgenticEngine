@@ -1,0 +1,21 @@
+# macOS
+.DS_Store
+
+# IDE / editor (personal)
+.idea/
+*.swp
+
+# Obsidian vault config (personal knowledge layer — uncomment to version it)
+.obsidian/
+
+# Node / Bun — engine code lands from the walking skeleton onward
+node_modules/
+dist/
+build/
+out/
+*.log
+
+# Secrets / env
+.env
+.env.*
+!.env.example

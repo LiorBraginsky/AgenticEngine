@@ -1,6 +1,10 @@
 # Walking Skeleton v0 — Chunk 01: Frozen Wire-Protocol Contract + Minimal Daemon — Implementation Plan
 
-> **Orchestration status:** Phase 1 (planning) — finalized after grilling gate (`grill-with-docs`, 2026-05-30). 5 freeze decisions pinned by Lior (D1–D5). ADR pass routed to adr-curator (see `## ADR worthy`). **Pending: ADR draft + Lior approval before Phase 2.**
+> **Orchestration status:** Phase 2 (implementation) — IN PROGRESS. Plan approved by Lior 2026-05-30. **Task 1 ✅ DONE** (commit `432785a`). **Task 2 ✅ DONE** (18/18 tests green, verbatim contract; files staged, commit pending Lior — `git commit` declined by permission layer). Task 3 ⏳ in progress. Then engine-reviewer gate (baseline = `432785a^`).
+>
+> **Git note:** `git commit` is declined by the permission layer — commits are Lior's to make manually. Workers write + test + verify; they do NOT commit. Pending manual commit: Task 2 (`feat(protocol): frozen 6-variant envelope + color-picker tool/primitive contract`), plus uncommitted docs (plan.md, ADR-0003 amendment, known-gotchas #31).
+>
+> **Reality correction (2026-05-30):** environment reported "not a git repo" but the repo exists with `.git/` + `origin/main` (orchestration docs already committed; only `packages/` source is greenfield). All workers: local commits only — NO push/amend/force/--no-verify.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Every code step here also requires superpowers:test-driven-development (red→green: write the failing test, run it, *see it fail*, implement, *see it pass*) and superpowers:verification-before-completion (real `bun test` + `bun run lint` + `bun run typecheck` output shown BEFORE any "done" claim).
 
@@ -370,7 +374,9 @@ export function parseEnvelope(
 
 ## Tasks
 
-### Task 1: Bootstrap the monorepo + `bun test` runner
+### Task 1: Bootstrap the monorepo + `bun test` runner — ✅ DONE (commit `432785a`, 2026-05-30)
+
+> **Worker notes:** smoke-test RED step did not reproduce (Bun's `bun test` runs without package.json — green immediately; RED gate is structurally N/A for a trivial `bun:test` import, but DOES apply to Tasks 2/3 which import not-yet-created modules). All dep versions resolved within `^` ranges. `bun test` + `typecheck` + `lint` all green.
 
 **Files:**
 - Create: `package.json`, `tsconfig.base.json`, `tsconfig.json`, `eslint.config.js`, `bunfig.toml`, `.gitignore`
@@ -493,7 +499,7 @@ git commit -m "chore: bootstrap Bun+TS ESM monorepo with bun test runner"
 
 ---
 
-### Task 2: `packages/protocol` — the FROZEN contract (Zod)
+### Task 2: `packages/protocol` — the FROZEN contract (Zod) — ✅ DONE (2026-05-30; 18/18 tests green; commit pending Lior)
 
 **Files:**
 - Create: `packages/protocol/package.json`, `packages/protocol/tsconfig.json`, `packages/protocol/src/primitives.ts`, `packages/protocol/src/tools.ts`, `packages/protocol/src/envelope.ts`, `packages/protocol/src/index.ts`
@@ -697,7 +703,9 @@ git commit -m "feat(protocol): frozen 6-variant envelope + color-picker tool/pri
 
 ---
 
-### Task 3: `packages/daemon` — minimal WS server + Origin-allowlist + session round-trip
+### Task 3: `packages/daemon` — minimal WS server + Origin-allowlist + session round-trip — ✅ DONE (2026-05-30; whole-repo 30/30 tests green; commit pending Lior)
+
+> **Worker notes:** manual client (Step 14) confirmed live round-trip (minted session_id + echoed client_session_id + reason:"completed", both validated). One deviation: `daemon.test.ts` `any[]` fixture needed `// eslint-disable-next-line @typescript-eslint/no-explicit-any` to satisfy the configured lint rule (test-fixture only). The integration test (Step 11) was written after `index.ts` (Step 10) per the plan's own ordering, so its RED was structurally N/A — unit tests (origin, session) had proper RED→GREEN.
 
 **Files:**
 - Create: `packages/daemon/package.json`, `packages/daemon/tsconfig.json`, `packages/daemon/src/origin.ts`, `packages/daemon/src/session.ts`, `packages/daemon/src/index.ts`, `packages/daemon/scripts/test-client.ts`
@@ -1106,4 +1114,16 @@ Curated by adr-curator (2026-05-30):
 
 ---
 
-## Status: Done (planning) — ADR pass complete; **pending Lior approval before Phase 2**
+## Review (engine-reviewer, 2026-05-30) — ✅ CLEAN
+
+Verdict **CLEAN** against baseline `432785a^`. Zero Critical, zero Major. Verified: 30/30 tests green, `typecheck` + `lint:strict` exit 0, single runner is `bun test` (no Jest/Vitest); verbatim frozen-contract fidelity (D1–D5 + FROZEN banner); `parseEnvelope`/`classifyTool` proven non-throwing against adversarial input (gotcha #9 holds); loopback-only daemon with origin-gate before upgrade, leak-free; reject tests empirically confirmed regression-catching (gate-removal → test fails). ADR-0003 amendment + gotcha #31 present; daemon/frontend boundary respected.
+
+**Optional follow-ups:**
+- **[minor] ✅ RESOLVED (2026-05-30)** `tsconfig.json` — added `"packages/*/scripts/**/*.ts"` to `include`; `test-client.ts` is now in the tsc program (verified via `--listFilesOnly`) and typechecks clean. Lior predicted this would surface a TS2353 on the Bun `new WebSocket(url, {headers})` form — it did NOT, because `lib:["ESNext"]` (no `dom`) selects `@types/bun`'s native `WebSocket(url, Bun.WebSocketOptions)` overload, and `WebSocketOptions` includes `headers?: HeadersInit`. No cast/suppression needed; the `{headers}` client pattern is type-safe project-wide. `bun test` 30/30 + `typecheck` + `lint:strict` all green (independently re-verified by orchestrator).
+- **[nit]** `daemon/src/index.ts:8` — `send()` types `ws` structurally vs Bun's `ServerWebSocket` (deliberate minimalism; optional).
+- **[nit]** `daemon.test.ts` reject tests use a 1.5s timeout fallback (safe failure direction; no change needed).
+
+---
+
+## Status: Chunk 01 — implementation COMPLETE & review-CLEAN (2026-05-30).
+**Outstanding (Lior's manual actions):** (1) git commits — Task 2 + Task 3 + uncommitted docs (commits declined by permission layer); (2) optional minor fix above; (3) move chunk file to `chunks-todo/archive/walking-skeleton-v0/` + set `Status: done` after committing.

@@ -1,0 +1,11 @@
+{
+  "name": "@agentic/daemon",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run src/index.ts",
+    "test-client": "bun run scripts/test-client.ts"
+  },
+  "dependencies": { "@agentic/protocol": "workspace:*", "zod": "^3.23.0" }
+}

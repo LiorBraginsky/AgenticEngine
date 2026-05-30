@@ -1,0 +1,53 @@
+/* Transparent body — the Tauri window transparency shows through. */
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  overflow: hidden;
+  height: 100%;
+  width: 100%;
+}
+
+/* Centered panel — Spotlight-style single-line input. */
+#panel {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  height: 100%;
+  padding: 0 24px;
+  box-sizing: border-box;
+}
+
+#query-input {
+  width: 100%;
+  height: 60px;
+  padding: 0 20px;
+  font-size: 22px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  border: none;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #1a1a1a;
+  outline: none;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.32);
+  box-sizing: border-box;
+}
+
+#query-input::placeholder {
+  color: #999;
+}
+
+/* One-line status area below the input — NOT a widget, just text. */
+#status {
+  margin-top: 8px;
+  padding: 0 4px;
+  font-size: 12px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: rgba(255, 255, 255, 0.85);
+  min-height: 18px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

@@ -115,8 +115,28 @@ Always-on microphone listening for a trigger phrase.
 **Why not sidebar:** Permanently consumes screen real estate.
 **Top-right corner with stack** is the compromise that respects user attention.
 
+## Amendment 2026-05-30
+
+**This is NOT a supersede.** Decision point 1 (the tap hotkey) already says "`⌘+Space` *or user-configurable*" — `⌘+Space` was only an *example*, and the binding is explicitly framed as user-configurable. The original Decision text stands unchanged. What this amendment does is pin the concrete **v0 default** the example left open; it does not narrow the user-configurable promise.
+
+Pinned by Lior during Walking Skeleton v0 — Chunk 02b-i planning (2026-05-30). See [[../plans/walking-skeleton-v0-02b-i-tauri-shell/plan]] (`## ADR worthy` #1, Step 3.4).
+
+- **The v0 default tap-hotkey accelerator is `CommandOrControl+Shift+Space`** (Tauri accelerator-string notation; `CommandOrControl` resolves to ⌘ on macOS and Ctrl on Windows/Linux). This is the concrete default that Decision p.1's `⌘+Space` example deliberately left unpinned.
+
+- **Why this binding:**
+  - **Avoids the macOS Spotlight collision** (⌘Space) — the original `⌘+Space` example would have fought Spotlight on a stock macOS install.
+  - **Avoids the input-source-switch collision** (⌃Space) — the macOS default for cycling keyboard input sources.
+  - **Cross-platform-portable** — the single `CommandOrControl+Shift+Space` accelerator string works on macOS, Windows, and Linux without per-OS branching, consistent with this ADR's "cross-platform path open" consequence.
+  - **Mnemonic** — a Spotlight-adjacent chord (⇧ added to the familiar ⌘Space) that stays in the same muscle-memory family without the conflict.
+
+- **Scope boundary — this pins the DEFAULT only.** The hotkey remains user-rebindable exactly as Decision p.1 already states. The rebinding UI and the persistence of a custom binding (settings storage) are **explicitly OUT of scope for Chunk 02b-i** and deferred to a later chunk. Chunk 02b-i ships the hardcoded default; nothing here commits to *when* the rebinding surface lands.
+
+- **Known residual:** some applications bind ⌘⇧Space in certain contexts (e.g. emoji / symbol pickers). This is **acceptable for a v0 default precisely because the binding is rebindable** — a user hitting the conflict can rebind once the rebinding surface exists. Recorded here so it is not later rediscovered as a surprise rather than a known, accepted trade-off.
+
 ## Related
 
 - [[0007-voice-mvp-strategy]] — what hold-to-talk actually does for input
 - [[../concept]] — UX surface is part of differentiation pillar 1
 - [[../architecture]] — frontends in system context
+- [[../plans/walking-skeleton-v0-02b-i-tauri-shell/plan]] — Walking Skeleton v0 Chunk 02b-i; source of the 2026-05-30 amendment that pins the default tap-hotkey
+- [[../../chunks-todo/walking-skeleton-v0/02b-i-tauri-shell-and-hotkey]] — the chunk whose planning pinned the default tap-hotkey

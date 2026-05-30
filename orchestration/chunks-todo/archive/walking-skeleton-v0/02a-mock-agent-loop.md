@@ -1,6 +1,7 @@
 # Chunk 02a: Mock agent loop (CLI-verified)
 
-**Status:** todo
+**Status:** done
+**Completed:** 2026-05-30 — implementation review-CLEAN (0 critical/major). 39/39 tests green, typecheck + lint:strict clean (independently re-verified by Jimmy). Decision: Option A (final text computed + asserted + logged, NOT a wire message — contract has no text envelope; FU-1 tracked to revise v0 DoD in chunk 03). Contract untouched. Pure reducer `advanceMockAgent` + daemon session-state Map.
 **Created:** 2026-05-30
 **Phase:** Walking Skeleton v0 (pre-Phase-1/2 vertical slice)
 **Estimated size:** ~1 day

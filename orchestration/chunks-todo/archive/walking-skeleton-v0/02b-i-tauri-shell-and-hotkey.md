@@ -1,6 +1,7 @@
 # Chunk 02b-i: Tauri overlay shell + global hotkey + WS transport
 
-**Status:** todo
+**Status:** done
+**Completed:** 2026-05-31 — implementation review-CLEAN (2 rounds; round-1 caught CRITICAL 02a baseline-drift → cancel-to-complete fix, MAJOR socket leak; round-2 clean, both NITs folded). 45/45 tests, typecheck×2 + lint:strict green, contract+daemon diff empty (spike reverted). **Native macOS re-run by Lior: dev + prod BOTH ✓** — hotkey ⌘⇧Space → transparent overlay → text → `session <uuid> — cancelled` (full loop start→ack→tool_call→auto-cancel→end, no widget), Esc cancels, double-Enter guarded. Prod over `tauri://localhost` (Branch A). FromStr risk did not materialize (compiled clean).
 **Created:** 2026-05-30
 **Phase:** Walking Skeleton v0 (pre-Phase-1/2 vertical slice)
 **Estimated size:** ~1 day

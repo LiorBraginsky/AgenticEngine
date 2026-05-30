@@ -23,7 +23,7 @@ Each chunk file has a `Status:` field with one of:
 ```
 chunks-todo/
 ├─ README.md                              ← this file
-├─ <phase-or-feature-slug>/                ← e.g. phase-1-engine-skeleton/
+├─ <phase-or-feature-slug>/                ← e.g. walking-skeleton-v0/
 │  ├─ 01-<kebab-title>.md
 │  ├─ 02-<kebab-title>.md
 │  └─ ...

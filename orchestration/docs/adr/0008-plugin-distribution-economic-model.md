@@ -58,12 +58,13 @@ Concretely:
 
 ### Pricing field in manifest
 
-```json
-{
+```ts
+// Shape of the `agentic-engine` field in a plugin's package.json
+type AgenticEngineManifest = {
   "agentic-engine": {
-    "pricing": "free" | "freemium" | "paid",
-    "auth": "none" | "api-key" | "oauth",
-    "billing": "user-provided-api-key" | "platform-managed"
+    pricing: "free" | "freemium" | "paid"
+    auth: "none" | "api-key" | "oauth"
+    billing: "user-provided-api-key" | "platform-managed"
   }
 }
 ```

@@ -66,7 +66,7 @@ LLM emits something like:
 ```json
 {
   "speak": "Pick a color",
-  "ui": { "type": "color-picker", "palette": [...] }
+  "ui": { "type": "color-picker", "palette": ["#FF0000", "#00FF00", "#0000FF"] }
 }
 ```
 

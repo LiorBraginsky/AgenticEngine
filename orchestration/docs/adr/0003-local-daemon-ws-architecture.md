@@ -103,9 +103,32 @@ Frontend connects to either local or remote engine, transparent at the protocol 
 - Premature for an unvalidated concept.
 - The protocol is **designed** to be hybrid-ready (see "Decision" point 6) — we just don't build the cloud variant in MVP.
 
+## Amendment 2026-05-30
+
+**This is NOT a supersede.** Decision point 5 ("Frontends authenticate via a per-install secret token...") stands unchanged — the decision *that auth is needed* is unaltered. What this amendment fixes is the **timing** of when that token lands and the **interim mechanism** that holds the line until it does. This is exactly the kind of move the Status line already anticipates: "`accepted` (with planned evolution...)".
+
+Pinned by Lior at the Walking Skeleton v0 — Chunk 01 grilling gate (2026-05-30). See [[../plans/walking-skeleton-v0-01-protocol-daemon/plan]] (`## ADR worthy`).
+
+- **The per-install secret token (Decision p.5) is DEFERRED.** It is not built in v0. The decision still holds — we are moving *when*, not *whether*.
+
+- **The v0 interim CSWSH mitigation is an Origin-allowlist** on the WebSocket upgrade. The daemon rejects the upgrade unless the request's `Origin` header is one of:
+  - `tauri://localhost` — Tauri v2 production webview on macOS / Linux.
+  - `http://tauri.localhost` — Tauri v2 production webview on Windows / Android.
+  - `http://localhost:1420` — `tauri dev` (Vite default) during skeleton work.
+
+  Implemented in `packages/daemon/src/origin.ts`.
+
+- **The full per-install token gate is release-driven, NOT feature-driven.** It is required before any **non-dev / public release** — full stop. It is explicitly **NOT** gated on shipping the web admin tab: the threat is *any* browser tab combined with an always-on localhost daemon, and that threat exists regardless of whether we ever ship our own web frontend. Do not let "we haven't built the web UI yet" be read as "the token can wait."
+
+- **The token, when added, is connection-level** — a query-param or header presented at the WebSocket handshake — and lives **outside the message envelope**. It is therefore purely additive: it does **NOT** touch the frozen wire contract (the 6-variant envelope union shipped in Chunk 01).
+
+The residual exposure window this leaves open — that the `Origin` header is spoofable by non-browser clients, so the allowlist only stops casual cross-site *browser* tabs — is tracked as [[../known-gotchas]] #31 (`blocking-MVP`).
+
 ## Related
 
 - [[0001-interaction-pattern]] — sessions live in the daemon
 - [[0004-typescript-bun-mcp]] — runtime that powers the daemon
 - [[../architecture]] — system diagram showing daemon + frontends
 - [[../open-questions]] Q6 — daemon hot/cold startup
+- [[../plans/walking-skeleton-v0-01-protocol-daemon/plan]] — Walking Skeleton v0 Chunk 01; source of the 2026-05-30 amendment
+- [[../known-gotchas]] #31 — CSWSH exposure window left open by the interim Origin-allowlist

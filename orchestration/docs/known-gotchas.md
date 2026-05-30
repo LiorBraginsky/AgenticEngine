@@ -1,7 +1,7 @@
 ---
 title: Known Gotchas
 status: living-document
-last-major-update: 2026-05-28
+last-major-update: 2026-05-30
 tags: [engineering, gotchas, watch-list]
 ---
 
@@ -77,6 +77,7 @@ Format: each item has a **severity** (`blocking-MVP` / `nice-to-fix` / `post-MVP
 | 26 | **Permissions UX at install** — clear list of what plugin can do | `blocking-MVP` | Manifest-declared list rendered as plain-language install dialog |
 | 27 | **Revoking permissions later** — user wants to take back permission | `nice-to-fix` | Settings UI lets user revoke; plugin gets graceful permission-denied |
 | 28 | **Sandboxing strategy** — worker thread vs process vs V8 isolate (Q4) | `blocking-MVP` | Worker thread for MVP, process isolation post-MVP for paid plugins |
+| 31 | **CSWSH exposure window** — the `Origin` header is spoofable by non-browser clients, so the v0 Origin-allowlist only stops casual cross-site *browser* tabs; an always-on localhost daemon stays reachable by a crafted non-browser client | `blocking-MVP` | Close before any non-dev/public release via the connection-level **per-install token** ([[adr/0003-local-daemon-ws-architecture]] Amendment 2026-05-30); the token is additive and does NOT touch the frozen message envelope. Ties to ADR-0003 Decision p.5. |
 
 ## Bucket: Engine core / sessions
 
@@ -91,6 +92,9 @@ Format: each item has a **severity** (`blocking-MVP` / `nice-to-fix` / `post-MVP
 
 **Must solve before Phase 5 (plugin system):**
 - #1, #2, #4, #6, #9, #10, #19, #20, #26, #28 (most "blocking-MVP")
+
+**Must solve before any non-dev / public release (security gate):**
+- #31 (CSWSH exposure window — replace the interim Origin-allowlist with the per-install token)
 
 **Solve when you have plugin authors complaining:**
 - #16, #17, #18 (DX bucket)

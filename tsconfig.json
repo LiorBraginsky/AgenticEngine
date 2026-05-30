@@ -1,4 +1,4 @@
 {
   "extends": "./tsconfig.base.json",
-  "include": ["packages/*/src/**/*.ts", "packages/*/scripts/**/*.ts", "smoke.test.ts"]
+  "include": ["packages/*/src/**/*.ts", "packages/*/scripts/**/*.ts", "smoke.test.ts", "apps/overlay/src/ws/**/*.ts"]
 }

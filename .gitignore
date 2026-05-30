@@ -15,6 +15,12 @@ build/
 out/
 *.log
 
+# Tauri / Overlay app
+apps/overlay/src-tauri/target
+apps/overlay/dist
+apps/overlay/src-tauri/gen/schemas
+# (Cargo.lock IS committed — it's an app, not a library; reproducible builds)
+
 # Secrets / env
 .env
 .env.*

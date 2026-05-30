@@ -1,6 +1,7 @@
 # Chunk 01: Frozen wire-protocol contract + minimal daemon
 
-**Status:** todo
+**Status:** done
+**Completed:** 2026-05-30 — implementation review-CLEAN (0 critical, 0 major; minor-1 resolved). 30/30 tests green, typecheck + lint:strict clean. Commits: `432785a` (bootstrap), `21f95fa` (protocol), `487aad3` (daemon). Contract is now FROZEN — any change = stop-the-line for 02a + 02b-*.
 **Created:** 2026-05-30
 **Phase:** Walking Skeleton v0 (pre-Phase-1/2 vertical slice)
 **Estimated size:** ~1 day

@@ -14,7 +14,10 @@ function collect(messages: unknown[], resolve: () => void, expectedCount: number
   };
 }
 
-test("ALLOWED origin: full session round-trip (start → ack → end)", async () => {
+test("ALLOWED origin: full session round-trip (start → ack → tool_call)", async () => {
+  // chunk-02a supersede: session_start now opens a session (ack + tool_call),
+  // it no longer ends immediately. The old chunk-01 placeholder (ack + session_end)
+  // is intentionally replaced — this is not a regression.
   const ws = new WebSocket(`ws://127.0.0.1:${PORT}`, { headers: { Origin: TAURI_ORIGIN } });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const messages: any[] = [];
@@ -32,9 +35,10 @@ test("ALLOWED origin: full session round-trip (start → ack → end)", async ()
   expect(messages[0].type).toBe("session_ack");
   expect(messages[0].client_session_id).toBe("c-1");
   expect(typeof messages[0].session_id).toBe("string");
-  expect(messages[1].type).toBe("session_end");
-  expect(messages[1].reason).toBe("completed");
+  expect(messages[1].type).toBe("tool_call");
+  expect(messages[1].payload.tool).toBe("show_color_picker");
   expect(messages[1].session_id).toBe(messages[0].session_id);
+  // chunk-02a supersede: session_start now opens a session (ack + tool_call), it no longer ends immediately
 });
 
 test("REJECTED origin: arbitrary cross-site origin cannot connect", async () => {

@@ -7,14 +7,19 @@
  * session_ack / session_end / tool_call / tool_cancel all exist; confirmed in
  * packages/protocol/src/envelope.ts).
  *
- * v0 cancel-to-complete flow (Step 6.1):
- *   session_start → session_ack → tool_call → (auto) tool_cancel → session_end{cancelled}
- * The seam sends tool_cancel when it receives a tool_call whose session_id
- * matches the confirmed session. Resolves on session_end of ANY reason.
+ * 02b-ii onToolCall flow:
+ *   session_start → session_ack → tool_call → onToolCall(ctx) → sendResult|sendCancel → session_end
+ * On receiving a tool_call whose session_id matches the confirmed session,
+ * the seam invokes the injected onToolCall callback with a ToolCallContext
+ * carrying the picker primitive and bound sendResult/sendCancel closures.
+ * The renderer (not the seam) decides whether to call sendResult or sendCancel.
+ * Unknown tools or unconfirmed sessions are silently ignored (gotcha #9).
+ * Resolves on session_end of ANY reason.
  */
 
 import { parseEnvelope } from "@agentic/protocol";
-import type { Envelope } from "@agentic/protocol";
+import type { Envelope, ColorPickerPrimitive, ColorSwatch } from "@agentic/protocol";
+import { decideRender, buildToolResult, buildToolCancel } from "./tool-call-handler.js";
 import type { WebSocketFactory } from "./types.js";
 
 const WS_URL = "ws://127.0.0.1:7777";
@@ -28,11 +33,26 @@ const ECHO_TIMEOUT_MS = 2000;
  * This is NOT a local redefinition — it reads through the frozen contract.
  */
 type SessionStart = Extract<Envelope, { type: "session_start" }>;
-type ToolCancel = Extract<Envelope, { type: "tool_cancel" }>;
 
 export interface EchoResult {
   sessionId: string;
   reason: string;
+}
+
+/**
+ * Context passed to the onToolCall callback. The renderer uses sendResult or
+ * sendCancel to drive the wire round-trip; the seam owns the socket write.
+ */
+export interface ToolCallContext {
+  picker: ColorPickerPrimitive;
+  sessionId: string;
+  callId: string;
+  sendResult: (picked: ColorSwatch) => void;
+  sendCancel: () => void;
+}
+
+export interface RunEchoOptions {
+  onToolCall?: (ctx: ToolCallContext) => void;
 }
 
 /**
@@ -58,9 +78,11 @@ export function buildSessionStart(text: string): {
  * Opens a WebSocket via the injected factory, sends a session_start, and
  * resolves with the daemon-minted { sessionId, reason } on session_end.
  *
- * v0 cancel-to-complete flow: on receiving a tool_call whose session_id
- * matches the confirmed session, the seam auto-sends tool_cancel (because
- * widget rendering is chunk 02b-ii). The daemon replies session_end{cancelled}.
+ * 02b-ii onToolCall flow: on receiving a tool_call whose session_id matches
+ * the confirmed session, the seam invokes options.onToolCall(ctx) where ctx
+ * carries the picker primitive and bound sendResult/sendCancel closures.
+ * The renderer drives the result or cancel; the seam writes to the socket.
+ * Unknown tools or unconfirmed sessions are silently ignored (no throw).
  * runEcho resolves on session_end of ANY reason.
  *
  * Correlation: strictly via the echoed client_session_id in session_ack.
@@ -76,6 +98,7 @@ export function buildSessionStart(text: string): {
 export function runEcho(
   text: string,
   factory: WebSocketFactory,
+  options: RunEchoOptions = {},
 ): Promise<EchoResult> {
   return new Promise<EchoResult>((resolve, reject) => {
     const { msg, clientSessionId } = buildSessionStart(text);
@@ -140,22 +163,23 @@ export function runEcho(
       }
 
       if (envelope.type === "tool_call") {
-        // 6.1 cancel-to-complete: when a tool_call arrives for our confirmed session,
-        // auto-send tool_cancel. The daemon replies session_end{cancelled}.
-        // We do NOT render the widget (that is chunk 02b-ii).
-        if (confirmedSessionId !== undefined && envelope.session_id === confirmedSessionId) {
-          const cancel: ToolCancel = {
-            type: "tool_cancel",
-            session_id: envelope.session_id,
-            call_id: envelope.call_id,
-          };
-          ws.send(JSON.stringify(cancel));
+        const decision = decideRender(envelope, confirmedSessionId);
+        if (decision.kind === "render") {
+          const { session_id, call_id, picker } = decision;
+          options.onToolCall?.({
+            picker,
+            sessionId: session_id,
+            callId: call_id,
+            sendResult: (picked) => { if (!settled) ws.send(JSON.stringify(buildToolResult(session_id, call_id, picked))); },
+            sendCancel: () => { if (!settled) ws.send(JSON.stringify(buildToolCancel(session_id, call_id))); },
+          });
         }
+        // unknown tool / unconfirmed session ⇒ ignore (graceful, no throw)
         return;
       }
 
       if (envelope.type === "session_end") {
-        // Resolve on session_end of any reason (v0: expect "cancelled" via cancel-to-complete).
+        // Resolve on session_end of any reason.
         if (confirmedSessionId !== undefined && envelope.session_id === confirmedSessionId) {
           finish({ sessionId: envelope.session_id, reason: envelope.reason });
         }

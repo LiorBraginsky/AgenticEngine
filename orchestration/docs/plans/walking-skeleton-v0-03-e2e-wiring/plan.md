@@ -356,6 +356,10 @@ This chunk records and reconciles already-accepted decisions; it makes no new ar
 
 ---
 
-## Status: planned — awaiting Lior approval before Phase 2
+## Status: REVIEW-COMPLETE — PR open, awaiting Lior merge (2026-06-02)
 
-Architect returned `## Status: Done` (no blocking questions). One optional decision left to Lior/reviewer: the cosmetic `runEcho` → `runSession` rename (Task 2 Step 5) — does not gate the chunk.
+Walking Skeleton v0 closed. Behavioral DoD VERIFIED on macOS (happy/cancel/reopen — see `### Task V` above). All 5 chunk Done-criteria met; frozen surfaces (`packages/protocol`, `packages/daemon`) byte-untouched throughout (stop-the-line never triggered); no new runtime dependency.
+
+- **engine-reviewer verdict:** APPROVE WITH NITS. All hard invariants pass. One **major** (multi-monitor `computeWidgetX` ignored `workArea.position`) + one **minor** (off-screen `1500` fallback) fixed in `c6a40e1`; single-monitor behavior unchanged. Remaining items were verified-safe (Escape idempotency, no listener leak, XSS-safe render, predev safety) or cosmetic nits (`ECHO_TIMEOUT_MS` naming — deferred to a future touch).
+- **Branch:** `chunk/03-e2e-wiring` (5 commits). **PR:** https://github.com/LiorBraginsky/AgenticEngine/pull/1 → `main`. **Lior reviews & merges.**
+- **Deferred (non-blocking follow-ups):** optional symmetric "cancelled" widget card; `ECHO_TIMEOUT_MS` → `HANDSHAKE_TIMEOUT_MS` rename; `architecture.md` pointer to the ADR-0006 amendment; multi-monitor "monitor the user is on" (currentMonitor on a hidden window resolves to primary) if real multi-monitor support is later claimed.

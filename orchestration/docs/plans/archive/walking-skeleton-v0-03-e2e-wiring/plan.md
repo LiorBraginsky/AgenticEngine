@@ -1,5 +1,7 @@
 # Walking Skeleton v0 — Chunk 03: End-to-End Wiring + Definition-of-Done Demo — Implementation Plan
 
+> **✅ SHIPPED — Walking Skeleton v0 (closed 2026-06-02, PR #1). Archived historical record; kept for provenance/audit trail.** Any "IN PROGRESS" status or "git commit declined by permission layer" notes below reflect mid-execution state and are **SUPERSEDED** — v0 is complete and autonomous git is now enabled (project CLAUDE.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. The only *code* this chunk may touch is a low-risk rename (Step in Task 2); the substance is **verification + documentation reconciliation**. Verification on **real macOS** is the gate (manual checklist, Task 3) — automated tests alone do not close this chunk.
 
 **Goal:** Close Walking Skeleton v0 by proving the real text-in → widget-out path works end-to-end on macOS over the frozen WS protocol (happy path *and* cancel path), landing follow-up **FU-1** (drop the agent fun-fact from the v0 wire-DoD across roadmap + chunk doc), and resolving known-gotcha **#2** (cancellation) for the skeleton.

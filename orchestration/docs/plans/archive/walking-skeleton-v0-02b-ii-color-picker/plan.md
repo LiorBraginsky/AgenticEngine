@@ -1,5 +1,7 @@
 # Color-Picker Primitive Renderer + Selection/Cancel Round-Trip Implementation Plan
 
+> **✅ SHIPPED — Walking Skeleton v0 (closed 2026-06-02, PR #1). Archived historical record; kept for provenance/audit trail.** Any "IN PROGRESS" status or "git commit declined by permission layer" notes below reflect mid-execution state and are **SUPERSEDED** — v0 is complete and autonomous git is now enabled (project CLAUDE.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace 02b-i's auto-cancel transport-proof with a real `color-picker` widget the user clicks: render the inbound `tool_call(show_color_picker)` as a label + clickable swatches in a dedicated top-right Tauri **widget window** (ADR-0006 top-right zone), emit `tool_result{picked}` on click (reaching the daemon's `completed` path for the first time) or `tool_cancel` on dismiss.

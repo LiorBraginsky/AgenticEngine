@@ -1,11 +1,15 @@
 {
   "identifier": "default",
   "description": "default",
-  "windows": ["main"],
+  "windows": ["main", "widget"],
   "permissions": [
     "core:default",
     "global-shortcut:allow-register",
     "global-shortcut:allow-unregister",
-    "global-shortcut:allow-is-registered"
+    "global-shortcut:allow-is-registered",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-position",
+    "core:window:allow-set-always-on-top"
   ]
 }

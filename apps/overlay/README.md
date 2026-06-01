@@ -73,10 +73,10 @@ Note: if you switch terminals or rename the app, you may need to re-grant.
 **`CommandOrControl+Shift+Space`** (⌘⇧Space on macOS, Ctrl+Shift+Space on Windows/Linux)
 
 - Press once → the frameless transparent panel appears and is focused.
-- Type your query, press **Enter** → sends an ECHO round-trip to the daemon.
-  - The panel immediately shows `…` (pending indicator) and locks against a second submit.
-  - On success the status line shows `session <uuid> — cancelled` (see v0 flow below).
-    The result stays visible for ~1.2 s so it's readable, then the panel hides.
+- Type anything, press **Enter** → input panel hides; **the color-picker widget appears in the
+  top-right corner** (dark card, question + three swatches: Crimson / Forest / Azure).
+  - Click a swatch → status briefly shows `session <uuid> — completed`; widget hides.
+  - Click the **×** button → status shows `session <uuid> — cancelled`; widget hides.
   - On a transport failure (timeout / connection error) the error is shown in the status
     line and the panel stays open — press Escape to dismiss, or fix the daemon and retry.
 - Press **Escape** → hides the panel without submitting.
@@ -86,27 +86,49 @@ User-rebindable UI is out of scope for this chunk.
 
 ---
 
-## v0 Round-trip flow (cancel-to-complete)
+## Two-window architecture (chunk 02b-ii, ADR-0006 Option B)
+
+The overlay uses **two separate Tauri windows**:
+
+| Window | Label | Role |
+|---|---|---|
+| Center input panel | `main` | Frameless input + status. Owns the live WebSocket session. |
+| Top-right picker | `widget` | Content-sized, transparent, always-on-top. Renders the color-picker primitive. Holds NO WebSocket. |
+
+**Click-through outside the widget is natural**: the `widget` window is content-sized, so outside
+its bounds there is no window — clicks pass through to whatever app is underneath. No
+`setIgnoreCursorEvents` is used.
+
+**Cross-window data path = Tauri events** (intra-app only; not part of the frozen wire protocol):
+
+| Event | Direction | Payload |
+|---|---|---|
+| `show-picker` | `main` → `widget` | `{ picker: ColorPickerPrimitive }` |
+| `picker-result` | `widget` → `main` | `ColorSwatch` |
+| `picker-cancel` | `widget` → `main` | (none) |
+
+---
+
+## v0 Round-trip flow (pick-to-complete)
 
 The daemon (chunk 02a) answers `session_start` with `[session_ack, tool_call{show_color_picker}]`
 and parks the session in `awaiting_pick` — it does NOT emit `session_end` until it receives
 either a `tool_result` (→ `completed`) or a `tool_cancel` (→ `session_end{reason:"cancelled"}`).
 
-The overlay (chunk 02b-i) does NOT render the color-picker widget — that is chunk 02b-ii.
-Instead, on receiving the `tool_call`, the seam **automatically sends `tool_cancel`** back
-to the daemon. The daemon replies `session_end{reason:"cancelled"}` and the round-trip ends.
+The overlay (chunk 02b-ii) renders the picker in the dedicated `widget` window. The user clicks
+a swatch to emit `tool_result{picked}` (first time the daemon's `completed` path is exercised),
+or clicks **×** to emit `tool_cancel`.
 
 Full message sequence:
 ```
-overlay → daemon : session_start{trigger:"user", text, client_session_id}
-daemon → overlay : session_ack{session_id, client_session_id}   ← overlay learns session_id
-daemon → overlay : tool_call{session_id, call_id, payload:{tool:"show_color_picker",...}}
-overlay → daemon : tool_cancel{session_id, call_id}             ← auto-cancel (no widget)
-daemon → overlay : session_end{session_id, reason:"cancelled"}
+overlay(main) → daemon          : session_start{trigger:"user", text, client_session_id}
+daemon → overlay(main)          : session_ack{session_id, client_session_id}
+daemon → overlay(main)          : tool_call{session_id, call_id, payload:{tool:"show_color_picker", args:{picker}}}
+overlay(main) ⇄ overlay(widget) : Tauri event "show-picker" → render → "picker-result"|"picker-cancel"
+overlay(main) → daemon          : tool_result{session_id, call_id, payload:{result:{picked}}}  (on swatch click)
+                                  OR tool_cancel{session_id, call_id}                          (on ×)
+daemon → overlay(main)          : session_end{reason:"completed"}  (result)  |  "cancelled" (cancel)
 ```
-
-This proves the transport end-to-end — the full WS round-trip is exercised without choosing
-a color. Widget rendering is chunk 02b-ii.
 
 ---
 
@@ -126,15 +148,25 @@ The allowlist lives in `packages/daemon/src/origin.ts`.
 ## Manual smoke checklist (Lior — native gate, not automatable)
 
 1. `bun run dev` in `packages/daemon` → logs `listening on ws://127.0.0.1:7777`.
-2. `bun run tauri dev` in `apps/overlay` → app starts; NO visible window (starts hidden).
+2. `bun run tauri dev` in `apps/overlay` → app starts; NO visible window (`main` and `widget`
+   both start `visible:false`).
 3. Grant macOS Accessibility permission (see above). Re-press the hotkey.
-4. Hotkey → frameless transparent centered panel appears, input focused.
-5. Type `hello`, press Enter →
-   - Status immediately shows `…` (pending).
-   - Status updates to `session <uuid> — cancelled` after ~0.5–1 s.
-   - Panel hides ~1.2 s after the result appears.
-   - A second Enter while pending must NOT open a second session (guarded).
-   - On a transport failure (daemon not running): status shows `error: …`; panel stays open.
-6. Press hotkey again, press Escape → panel hides without submitting.
-7. Prod gate: `bun run tauri build`, launch the `.app`, repeat steps 4–5 against the running
-   daemon — confirms the prod `tauri://localhost` Origin round-trip.
+4. Hotkey → centered input panel appears, input focused, placeholder reads
+   `(skeleton: type anything → shows picker)`.
+5. Type anything, press Enter → input panel hides; **the color-picker widget appears in the
+   top-right corner** (dark card, question `"Which color do you want?"`, swatches: Crimson /
+   Forest / Azure). Status in the (now-hidden) panel shows `…`.
+6. Click a swatch (e.g. Azure) → status briefly shows `session <uuid> — completed`; the widget
+   window hides. (First time the daemon's `completed` path is exercised.)
+7. Re-trigger (hotkey → type → Enter), click the **×** → status shows
+   `session <uuid> — cancelled`; the widget window hides.
+8. **Click-through (Option B's hard requirement):** re-trigger to show the widget, then click
+   on the **desktop or another app OUTSIDE the small widget card** (e.g. a Finder window behind
+   it). The click must pass through and land on that app — the widget window must NOT intercept
+   it. Then click a swatch inside the card to settle.
+9. A second Enter while pending must NOT open a second session (guarded).
+   On a transport failure (daemon not running): status shows `error: …`; panel stays open;
+   press Escape to dismiss.
+10. Prod gate: `bun run tauri build`, launch the `.app`, repeat steps 4–8 against the running
+    daemon — confirms the prod `tauri://localhost` Origin round-trip and that the second window +
+    capabilities ship correctly in the bundle.

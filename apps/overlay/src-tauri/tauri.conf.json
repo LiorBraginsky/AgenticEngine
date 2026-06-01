@@ -22,6 +22,21 @@
         "resizable": false,
         "center": true,
         "visible": false
+      },
+      {
+        "label": "widget",
+        "url": "widget.html",
+        "width": 360,
+        "height": 200,
+        "x": 1500,
+        "y": 24,
+        "transparent": true,
+        "decorations": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "focus": false,
+        "visible": false
       }
     ]
   },

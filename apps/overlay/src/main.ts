@@ -11,9 +11,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { LogicalPosition } from "@tauri-apps/api/dpi";
+import { currentMonitor } from "@tauri-apps/api/window";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import type { WebSocketFactory } from "./ws/types.js";
-import { runEcho } from "./ws/session-client.js";
+import { runSession } from "./ws/session-client.js";
 import type { ToolCallContext } from "./ws/session-client.js";
 import type { ColorSwatch } from "@agentic/protocol";
 
@@ -63,10 +64,41 @@ const EV_CANCEL = "picker-cancel";
 let activeCtx: ToolCallContext | undefined;
 let pickerSettled = false;
 
+// Widget window dimensions — must match tauri.conf.json width:360.
+const WIDGET_WIDTH_LOGICAL = 360;
+const WIDGET_Y_LOGICAL = 24;
+const WIDGET_MARGIN_RIGHT = 12; // gap from the right edge of the work area
+// Fallback x used only when monitor detection fails (rare degraded path).
+// Top-left inset is always on-screen; preferable to an off-screen position.
+const WIDGET_X_FALLBACK = 24;
+
+/**
+ * C2 — runtime right-anchor: compute x so the widget is never off-screen.
+ * Uses currentMonitor() to read the work area (excludes macOS menu-bar and
+ * Dock) and the scale factor to convert physical→logical pixels.
+ * Includes the work-area origin so the anchor is correct on secondary
+ * monitors whose virtual x-origin is non-zero.
+ * Falls back to WIDGET_X_FALLBACK if the monitor call fails (safety net).
+ */
+async function computeWidgetX(): Promise<number> {
+  try {
+    const monitor = await currentMonitor();
+    if (monitor === null) return WIDGET_X_FALLBACK;
+    const sf = monitor.scaleFactor;
+    const workLeft = monitor.workArea.position.x / sf;
+    const workWidth = monitor.workArea.size.width / sf;
+    return Math.round(workLeft + workWidth - WIDGET_WIDTH_LOGICAL - WIDGET_MARGIN_RIGHT);
+  } catch {
+    // Defensive: keep the window visible at a best-effort position.
+    return WIDGET_X_FALLBACK;
+  }
+}
+
 async function showWidgetWindow(): Promise<void> {
   const w = await WebviewWindow.getByLabel(WIDGET_LABEL);
   if (w === null) return;
-  await w.setPosition(new LogicalPosition(1500, 24)); // tuning detail; matches tauri.conf x/y
+  const x = await computeWidgetX();
+  await w.setPosition(new LogicalPosition(x, WIDGET_Y_LOGICAL));
   await w.setAlwaysOnTop(true);
   await w.show();
 }
@@ -92,7 +124,9 @@ void listen<ColorSwatch>(EV_RESULT, (event) => {
   if (activeCtx === undefined || pickerSettled) return;
   pickerSettled = true;
   activeCtx.sendResult(event.payload);
-  hideWidgetWindow().catch(() => {/* ignore */});
+  // C1: do NOT hide the widget here — the confirmation card (rendered in
+  // widget.ts onPick before this event arrives) must remain visible during
+  // the linger window. hideWidgetWindow() is called in the linger timer below.
 });
 void listen(EV_CANCEL, () => {
   if (activeCtx === undefined || pickerSettled) return;
@@ -121,7 +155,7 @@ input.addEventListener("keydown", (e: KeyboardEvent) => {
     inFlight = true;
     setStatus("…");
 
-    runEcho(text, factory, { onToolCall })
+    runSession(text, factory, { onToolCall })
       .then(({ sessionId, reason }) => {
         // 6.5b SUCCESS: render result, keep visible briefly (~1200ms) so it's
         // readable, THEN hide and reset.

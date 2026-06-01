@@ -52,12 +52,12 @@ tags: [roadmap, milestones]
 
 - [ ] Daemon: Bun + WebSocket on `localhost:7777` (minimal)
 - [ ] Wire protocol v0 (Zod): `session_start`, `tool_call`, `tool_result`, `session_end`
-- [ ] Mock agent loop: hard-coded "find a color" → `show_color_picker` → "you picked X, fun fact: …"
+- [ ] Mock agent loop: hard-coded "find a color" → `show_color_picker` → user picks → `session_end{completed}`. (The agent "fun fact" is computed and **logged daemon-side only** — Option A, ADR-0002-preserving; it is NOT a wire message in v0. A spoken/`show_text` reply is a Phase-2 increment, added as a TOOL, never as a 7th envelope variant. See chunk-02a plan, Jimmy's ruling 2026-05-30.)
 - [ ] Minimal Tauri overlay shell + global hotkey (tap-to-open input panel)
 - [ ] One UI primitive: `color-picker`, rendered in the Tauri webview
 - [ ] Wire end-to-end: hotkey → input → mock agent → picker → selection → visible result
 
-**Definition of done:** Lior presses a global hotkey, types "pick a color", a real color-picker widget appears in a native macOS overlay, clicks a color, and the widget shows the result — all driven by the (mocked) agent loop over the real WS protocol.
+**Definition of done:** Lior presses a global hotkey, types "pick a color", a real color-picker widget appears in a native macOS overlay, clicks a color, and the **widget confirms the chosen color** (the `picked` swatch the overlay already holds) — all driven by the (mocked) agent loop over the real WS protocol. The visible v0 result is the picker confirming the selection; the agent fun-fact is logged daemon-side only (Option A), not rendered as wire text.
 
 **Web admin tab** (settings / plugin management, per [[0003-local-daemon-ws-architecture]]) comes as a *separate later chunk* — a parallel frontend, not a replacement.
 

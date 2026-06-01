@@ -1,6 +1,6 @@
 import { test, expect, jest } from "bun:test";
 import { parseEnvelope } from "@agentic/protocol";
-import { buildSessionStart, runEcho } from "./session-client.js";
+import { buildSessionStart, runSession } from "./session-client.js";
 import type { ToolCallContext } from "./session-client.js";
 import type { WebSocketLike } from "./types.js";
 
@@ -38,11 +38,11 @@ test("buildSessionStart produces a valid frozen-contract session_start (trigger:
 // Happy-path: onToolCall callback (Task 2 — replaces old auto-cancel flow)
 // session_start → session_ack → tool_call → onToolCall(ctx) → sendResult|sendCancel → session_end
 // ---------------------------------------------------------------------------
-test("runEcho: tool_call fires onToolCall with ctx (picker, sessionId, callId, sendResult, sendCancel) — NOT auto-cancel", async () => {
+test("runSession: tool_call fires onToolCall with ctx (picker, sessionId, callId, sendResult, sendCancel) — NOT auto-cancel", async () => {
   const fake = makeFake();
   let capturedCtx: ToolCallContext | undefined;
 
-  const p = runEcho("hi", () => fake.ws, {
+  const p = runSession("hi", () => fake.ws, {
     onToolCall: (ctx) => { capturedCtx = ctx; },
   });
 
@@ -86,11 +86,11 @@ test("runEcho: tool_call fires onToolCall with ctx (picker, sessionId, callId, s
   await expect(p).resolves.toEqual({ sessionId: "srv-1", reason: "completed" });
 });
 
-test("runEcho: ctx.sendResult sends a parse-valid tool_result with picked nested under payload.result; session_end{completed} resolves", async () => {
+test("runSession: ctx.sendResult sends a parse-valid tool_result with picked nested under payload.result; session_end{completed} resolves", async () => {
   const fake = makeFake();
   let capturedCtx: ToolCallContext | undefined;
 
-  const p = runEcho("hi", () => fake.ws, {
+  const p = runSession("hi", () => fake.ws, {
     onToolCall: (ctx) => { capturedCtx = ctx; },
   });
 
@@ -136,11 +136,11 @@ test("runEcho: ctx.sendResult sends a parse-valid tool_result with picked nested
   await expect(p).resolves.toEqual({ sessionId: "srv-1", reason: "completed" });
 });
 
-test("runEcho: ctx.sendCancel sends a parse-valid tool_cancel with matching call_id; session_end{cancelled} resolves", async () => {
+test("runSession: ctx.sendCancel sends a parse-valid tool_cancel with matching call_id; session_end{cancelled} resolves", async () => {
   const fake = makeFake();
   let capturedCtx: ToolCallContext | undefined;
 
-  const p = runEcho("hi", () => fake.ws, {
+  const p = runSession("hi", () => fake.ws, {
     onToolCall: (ctx) => { capturedCtx = ctx; },
   });
 
@@ -184,10 +184,10 @@ test("runEcho: ctx.sendCancel sends a parse-valid tool_cancel with matching call
   await expect(p).resolves.toEqual({ sessionId: "srv-1", reason: "cancelled" });
 });
 
-// runEcho resolves on session_end regardless of reason value
-test("runEcho resolves with the daemon-minted sessionId + reason for any reason value", async () => {
+// runSession resolves on session_end regardless of reason value
+test("runSession resolves with the daemon-minted sessionId + reason for any reason value", async () => {
   const fake = makeFake();
-  const p = runEcho("hi", () => fake.ws, {
+  const p = runSession("hi", () => fake.ws, {
     onToolCall: (ctx) => {
       // Simulate a result being sent (then session_end drives the resolve)
       ctx.sendResult({ label: "Red", hex: "#FF0000" });
@@ -210,9 +210,9 @@ test("runEcho resolves with the daemon-minted sessionId + reason for any reason 
 });
 
 // 6.2 — socket is closed on settle
-test("runEcho closes the socket after resolving (no leak)", async () => {
+test("runSession closes the socket after resolving (no leak)", async () => {
   const fake = makeFake();
-  const p = runEcho("hi", () => fake.ws, {
+  const p = runSession("hi", () => fake.ws, {
     onToolCall: (ctx) => { ctx.sendCancel(); },
   });
   fake.fire("open", {});
@@ -235,9 +235,9 @@ test("runEcho closes the socket after resolving (no leak)", async () => {
 // ---------------------------------------------------------------------------
 // Kept from original test suite
 // ---------------------------------------------------------------------------
-test("runEcho ignores an ack whose client_session_id does NOT correlate (no false resolve)", async () => {
+test("runSession ignores an ack whose client_session_id does NOT correlate (no false resolve)", async () => {
   const fake = makeFake();
-  const p = runEcho("hi", () => fake.ws);
+  const p = runSession("hi", () => fake.ws);
   fake.fire("open", {});
   fake.fire("message", { data: JSON.stringify({ type: "session_ack", session_id: "x", client_session_id: "WRONG" }) });
   // No session_end for our cid → must reject on timeout, never resolve on the wrong ack.
@@ -246,7 +246,7 @@ test("runEcho ignores an ack whose client_session_id does NOT correlate (no fals
 
 test("handleInbound never throws on unknown/invalid frames (gotcha #9 discipline)", async () => {
   const fake = makeFake();
-  const p = runEcho("hi", () => fake.ws, {
+  const p = runSession("hi", () => fake.ws, {
     onToolCall: (ctx) => { ctx.sendResult({ label: "Red", hex: "#FF0000" }); },
   });
   fake.fire("open", {});
@@ -267,11 +267,11 @@ test("handleInbound never throws on unknown/invalid frames (gotcha #9 discipline
 });
 
 // Unknown tool in tool_call must NOT fire onToolCall and must NOT throw (gotcha #9 forward-compat).
-test("runEcho: unknown tool in tool_call does NOT fire onToolCall and does not throw", async () => {
+test("runSession: unknown tool in tool_call does NOT fire onToolCall and does not throw", async () => {
   const fake = makeFake();
   let callbackFired = false;
 
-  const p = runEcho("hi", () => fake.ws, {
+  const p = runSession("hi", () => fake.ws, {
     onToolCall: () => { callbackFired = true; },
   });
 
@@ -310,19 +310,19 @@ test("runEcho: unknown tool in tool_call does NOT fire onToolCall and does not t
 // Timer regression tests (fake clock)
 // Regression: the 2000ms transport-handshake timer MUST NOT dismiss the picker
 // after hand-off to the user (onToolCall fired). Before the fix this timer was
-// never disarmed, so it would fire ~2s after runEcho was called — even while
-// the human is deciding — causing runEcho to reject and main.ts to call
+// never disarmed, so it would fire ~2s after runSession was called — even while
+// the human is deciding — causing runSession to reject and main.ts to call
 // hideWidgetWindow().
 // ---------------------------------------------------------------------------
 
-test("runEcho: handshake timer does NOT fire after tool_call is received (picker stays alive past 2000ms)", async () => {
+test("runSession: handshake timer does NOT fire after tool_call is received (picker stays alive past 2000ms)", async () => {
   jest.useFakeTimers();
   try {
     const fake = makeFake();
     let toolCallFired = false;
     let capturedCtx: ToolCallContext | undefined;
 
-    const p = runEcho("hi", () => fake.ws, {
+    const p = runSession("hi", () => fake.ws, {
       onToolCall: (ctx) => {
         toolCallFired = true;
         capturedCtx = ctx;
@@ -354,7 +354,7 @@ test("runEcho: handshake timer does NOT fire after tool_call is received (picker
     jest.advanceTimersByTime(5000);
 
     // The promise must still be pending (not rejected). To verify it hasn't
-    // rejected yet we race it against a fast-resolving sentinel — if runEcho
+    // rejected yet we race it against a fast-resolving sentinel — if runSession
     // settled it would have called reject, and the race below would expose it.
     let settled = false;
     p.then(() => { settled = true; }, () => { settled = true; });
@@ -378,12 +378,12 @@ test("runEcho: handshake timer does NOT fire after tool_call is received (picker
   }
 });
 
-test("runEcho: handshake timeout still fires when daemon never responds (transport-hang guard preserved)", async () => {
+test("runSession: handshake timeout still fires when daemon never responds (transport-hang guard preserved)", async () => {
   jest.useFakeTimers();
   try {
     const fake = makeFake();
 
-    const p = runEcho("hi", () => fake.ws);
+    const p = runSession("hi", () => fake.ws);
 
     // open fires — session_start is sent — but daemon sends nothing (no session_ack, no tool_call)
     fake.fire("open", {});

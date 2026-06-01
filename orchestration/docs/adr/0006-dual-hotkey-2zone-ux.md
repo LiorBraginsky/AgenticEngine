@@ -151,13 +151,31 @@ Pinned by Lior during Walking Skeleton v0 — Chunk 02b-ii planning (2026-05-31)
 
 - **What this realizes.** The `widget` window renders the closed-set color-picker primitive from [[0005-ui-contract-closed-set]], and the pick/cancel round-trip resolves the underlying UI tool call per [[0002-ui-as-tool-calls]] (resolve = the user's pick, cancel = dismiss). This is the color-picker round-trip in chunk 02b-ii.
 
+## Amendment 2026-06-01
+
+**This is NOT a supersede.** This refines *how the top-right `widget` zone (Decision p.2) behaves on resolve*, and reaffirms cancel-reachability at the UX layer. It is **additive** to the two-zone model and does not touch the ephemeral-widget principle — the confirmation state introduced here is itself ephemeral (it auto-dismisses). The original Decision text and the 2026-05-31 amendment stand unchanged.
+
+Surfaced by Lior's live macOS demo during Walking Skeleton v0 — Chunk 03 (2026-06-01); the integrated run revealed the overlay never *visibly* confirmed the pick (the completion status was being written to the already-hidden `main` window, so nothing was seen before the widget vanished) and that the cancel `×` was rendering off-screen (the `widget` window was hardcoded at `x:1500`). Decided by Lior the same day (chunk-03 plan, `## Reality check — REVISED` → "Decisions (Lior, 2026-06-01)", Q1=A and Q2=A). See [[../plans/walking-skeleton-v0-03-e2e-wiring/plan]] and [[../../chunks-todo/walking-skeleton-v0/03-end-to-end-wiring-and-demo]] (DoD line 25 requires the overlay to *visibly confirm the chosen color*).
+
+- **Confirm-then-dismiss on resolve.** When the user picks a value, the `widget` window does **not** vanish immediately. It re-renders to a brief confirmation state showing the chosen value — the swatch the frontend already holds, e.g. `✓ Crimson  #DC143C` — lingers ~1200ms, then hides. This is what satisfies the chunk-03 DoD that the overlay "visibly confirms the chosen color"; the prior behavior hid the widget on result and wrote completion text to the hidden `main` window, so the user saw nothing.
+
+- **Why the confirmation belongs in the `widget` zone, not the `main` zone.** Per the 2026-05-31 amendment the two zones are two windows; `main` (the input panel) is already hidden by the time a result lands. The resolved selection is content the user wants to *see*, and the top-right widget zone is the surface that is still on-screen at resolve time. Putting the confirmation anywhere in `main` is invisible by construction.
+
+- **The confirmation state is ephemeral — this preserves, not breaks, the ephemeral-widget principle.** The confirmation is a terminal, auto-dismissing render of the same widget; it adds a short visible "settled" frame to the existing show→pick→hide lifecycle rather than introducing any persistent surface.
+
+- **Cancel reachability (reaffirms [[0002-ui-as-tool-calls]] resolve/cancel) — Lior Q2=A, same date.** The widget's cancel control must be a **labeled, on-screen `× Cancel`** affordance — the `widget` window is **runtime right-anchored** (positioned from the display bounds at show time, not the hardcoded `x:1500` the demo exposed) so it is never clipped off the right edge — and is complemented by **Escape-to-cancel**. This is a UX-layer reaffirmation of the cancel half of the resolve/cancel contract in [[0002-ui-as-tool-calls]]; it adds no new wire semantics (`tool_cancel` is unchanged).
+
+- **Scope boundary — overlay-only, frozen surfaces untouched.** Nothing here changes `packages/protocol` (the 6-variant envelope) or the daemon. Both behaviors are realized entirely in the overlay (`apps/overlay`), using the `picked` swatch and the `tool_cancel` path that already exist.
+
 ## Related
 
-- [[0002-ui-as-tool-calls]] — the UI-as-tool-call model whose resolve/cancel the widget round-trip fulfills (see Amendment 2026-05-31)
+- [[0002-ui-as-tool-calls]] — the UI-as-tool-call model whose resolve/cancel the widget round-trip fulfills (see Amendments 2026-05-31 and 2026-06-01; the latter reaffirms the cancel half at the UX layer)
 - [[0005-ui-contract-closed-set]] — the closed-set color-picker primitive rendered in the `widget` window (see Amendment 2026-05-31)
 - [[0007-voice-mvp-strategy]] — what hold-to-talk actually does for input
 - [[../concept]] — UX surface is part of differentiation pillar 1
 - [[../architecture]] — frontends in system context
 - [[../plans/walking-skeleton-v0-02b-i-tauri-shell/plan]] — Walking Skeleton v0 Chunk 02b-i; source of the 2026-05-30 amendment that pins the default tap-hotkey
 - [[../plans/walking-skeleton-v0-02b-ii-color-picker/plan]] — Walking Skeleton v0 Chunk 02b-ii; source of the 2026-05-31 amendment that pins the two-window zone realization
+- [[../plans/walking-skeleton-v0-03-e2e-wiring/plan]] — Walking Skeleton v0 Chunk 03; source of the 2026-06-01 amendment (confirm-then-dismiss on resolve + cancel reachability)
 - [[../../chunks-todo/walking-skeleton-v0/02b-i-tauri-shell-and-hotkey]] — the chunk whose planning pinned the default tap-hotkey
+- [[../../chunks-todo/walking-skeleton-v0/03-end-to-end-wiring-and-demo]] — the chunk whose macOS demo (DoD line 25) surfaced the 2026-06-01 amendment

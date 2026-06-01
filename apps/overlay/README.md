@@ -2,7 +2,9 @@
 
 Tauri v2 frameless transparent overlay app — the primary interactive surface
 for AgenticEngine. Global tap-hotkey reveals a centered Spotlight-style input
-panel; typing and pressing Enter sends an ECHO round-trip to the daemon.
+panel; typing and pressing Enter starts a session — the daemon answers with a color-picker, which renders in a top-right widget window, and your pick completes the session.
+
+> **Dev tip:** the overlay dev server **auto-frees port 1420 on start** (a `predev` step runs `lsof -ti:1420 | xargs kill -9` before Vite binds). This means an unclean ⌘Q — which orphans Vite on 1420 — no longer wedges the next `tauri dev`. If a wedge ever occurs in spite of this, manual recovery is `lsof -ti:1420 | xargs kill`.
 
 ---
 

@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
+    "predev": "lsof -ti:1420 | xargs kill -9 2>/dev/null; true",
     "dev": "vite",
     "build": "vite build",
     "tauri": "tauri"

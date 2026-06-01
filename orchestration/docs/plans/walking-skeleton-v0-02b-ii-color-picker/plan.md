@@ -700,9 +700,17 @@ A dated amendment to **ADR-0006** suffices — this is the correct realization o
 
 ---
 
-## Status: REVIEW-COMPLETE (2026-06-01)
+## Status: SHIPPED ✅ (2026-06-01)
+
+Manual macOS checklist PASSED by Lior (picker renders top-right; click→`completed` with daemon "you picked …" log; ×→`cancelled`; click-through outside widget works; picker now PERSISTS until user acts after the timeout fix). Chunk file archived to `orchestration/chunks-todo/archive/walking-skeleton-v0/`. Next: chunk 03 (end-to-end wiring + DoD demo; also lands follow-up FU-1 — drop the fun-fact from the v0 wire-DoD).
+
+---
+
+### Pre-ship state (record)
 
 All 3 tasks implemented + verified. engine-reviewer against baseline `c18b7d1`: **0 Critical / 0 Major**, 3 optional minor nits (non-blocking). All 5 chunk Done criteria met; all gates green (bun test 53 pass, root + apps/overlay typecheck 0, lint:strict 0; protocol+daemon diff empty; lib.rs unchanged). Runtime coupling to mock-agent's `completed`/`cancelled` paths verified byte-aligned.
+
+**Post-review fix (manual macOS test, 2026-06-01):** Lior's live test found the picker auto-vanished after ~2s. Root cause: 02b-i's `ECHO_TIMEOUT_MS` (2000ms) timer in `session-client.ts` was armed at `runEcho` start and never disarmed — after `tool_call`/`onToolCall` handed off to the human, it expired → rejected → `main.ts .catch` hid the widget. Fix: `clearTimeout(timer)` in the `decision.kind === "render"` branch (handshake timeout preserved; post-handoff is user-driven, no auto-timeout — v0 accepts the parked-session leak if the user never acts). +2 fake-timer regression tests (`bun test` now 55 pass). Seam-only; protocol/daemon untouched. (Manual-test items (2) pick→completed and (3) click-through confirmed WORKING by Lior. Item (4) input-panel blur-dismiss → deferred follow-up, separate chunk.)
 
 **Remaining (NOT code):**
 1. **Commits** — Task 1 committed (`6a5b7e8`); Tasks 2 & 3 STAGED, uncommitted (harness blocks `git commit` for the agent — Lior commits).

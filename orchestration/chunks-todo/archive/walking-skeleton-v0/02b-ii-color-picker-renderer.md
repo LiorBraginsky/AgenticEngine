@@ -1,6 +1,6 @@
 # Chunk 02b-ii: color-picker primitive renderer + selection/cancel round-trip
 
-**Status:** todo
+**Status:** done
 **Created:** 2026-05-30
 **Phase:** Walking Skeleton v0 (pre-Phase-1/2 vertical slice)
 **Estimated size:** ~1 day
@@ -22,11 +22,13 @@
 
 ## Done criteria
 
-- [ ] The `color-picker` renderer renders from a `tool_call(show_color_picker)` shaped by the frozen contract (mock-driven; no daemon agent needed).
-- [ ] Widget appears in the **top-right ephemeral zone** (ADR-0006).
-- [ ] User click → emits a valid `tool_result {picked}` (validates against the contract).
-- [ ] Close-without-pick → emits a valid `tool_cancel {session_id}` (gotcha #2 path).
-- [ ] Unknown tool in a `tool_call` → graceful fallback, no throw (forward-compat from the contract).
+- [x] The `color-picker` renderer renders from a `tool_call(show_color_picker)` shaped by the frozen contract (mock-driven; no daemon agent needed).
+- [x] Widget appears in the **top-right ephemeral zone** (ADR-0006) — realized as a dedicated content-sized `widget` Tauri window (Option B; ADR-0006 `## Amendment 2026-05-31`).
+- [x] User click → emits a valid `tool_result {picked}` (validates against the contract) → daemon `session_end{completed}` (first time this path is reached).
+- [x] Close-without-pick → emits a valid `tool_cancel {session_id, call_id}` (now USER-driven via × button; replaced 02b-i auto-cancel).
+- [x] Unknown tool in a `tool_call` → graceful fallback, no throw (forward-compat — two layers: `parseEnvelope` invalid-drop + `decideRender` ignore).
+
+**SHIPPED 2026-06-01.** engine-reviewer CLEAN (0 critical/0 major). Manual macOS checklist PASSED by Lior (picker renders top-right, click→completed, ×→cancelled, click-through outside widget ✓). Post-review fix: stale 02b-i `ECHO_TIMEOUT_MS` was auto-dismissing the picker after ~2s during the human-pick phase → `clearTimeout` on `tool_call` handoff + 2 fake-timer regression tests (bun test 55 pass). Commits: `6a5b7e8` (Task 1), `83c1ff4` (Task 2), `bdf734b` (Task 3), `1ab34f4` (docs), + timeout-fix commit. Plan: `orchestration/docs/plans/walking-skeleton-v0-02b-ii-color-picker/plan.md`.
 
 ## Orchestrator brief (ready to copy)
 

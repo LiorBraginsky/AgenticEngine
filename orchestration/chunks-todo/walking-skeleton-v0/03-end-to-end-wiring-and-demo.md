@@ -22,7 +22,7 @@
 
 ## Done criteria
 
-- [ ] Full happy path works on **real macOS**: hotkey → type "pick a color" → picker widget appears in the overlay → click a color → result text ("you picked X, fun fact: …") appears. (= roadmap line 60.)
+- [ ] Full happy path works on **real macOS**: hotkey → type "pick a color" → picker widget appears in the overlay → click a color → the overlay visibly **confirms the chosen color** (the `picked` swatch the frontend already holds) and the session terminates over the wire with `session_end{completed}`. **Reconciled per FU-1 / 02a:** the frozen 6-variant envelope has NO free-text variant, so the agent "fun fact" is computed + **logged daemon-side only (Option A), NOT sent as a wire message** — the visible v0 result is the picker/overlay confirming the selection, not wire text. (≈ roadmap line 60; the roadmap DoD wording itself is still pending its own FU-1 edit, out of scope here.)
 - [ ] Cancel path works: open picker → close without picking → session ends gracefully (no orphaned/leaked session, no crash).
 - [ ] All traffic flows over the **real WS protocol** against the frozen contract — no shortcuts bypassing the protocol.
 - [ ] No ad-hoc contract change was made; if a gap surfaced, it was handled as a stop-the-line update to chunk 01's module.
@@ -43,7 +43,7 @@ Behaviour (real WS protocol, no shortcuts):
 - Cancel path: open picker -> close without picking -> tool_cancel -> session ends gracefully.
 
 Done when:
-- On real macOS: press hotkey, type "pick a color", a real color-picker widget appears in a native overlay, click a color, the overlay shows "you picked X, fun fact: ..." -- all driven by the mock agent loop over the real WS protocol. (= roadmap Definition of done, line 60.)
+- On real macOS: press hotkey, type "pick a color", a real color-picker widget appears in a native overlay, click a color, the overlay visibly confirms the chosen color (the frontend's `picked` label) and the session completes (session_end{completed}) -- all driven by the mock agent loop over the real WS protocol. Reconciled per FU-1 / 02a: the agent fun-fact is computed + logged daemon-side (Option A), NOT a wire message (the frozen 6-variant envelope has no free-text variant). (= roadmap Definition of done, line 60, reconciled.)
 - Cancel path verified: closing the picker without picking ends the session gracefully (no orphaned/leaked session, no crash).
 - All traffic flows over the real protocol against the frozen contract; nothing bypasses it.
 - No ad-hoc contract change was made (any contract gap -> stop-the-line on chunk 01).

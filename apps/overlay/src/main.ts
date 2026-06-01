@@ -68,22 +68,29 @@ let pickerSettled = false;
 const WIDGET_WIDTH_LOGICAL = 360;
 const WIDGET_Y_LOGICAL = 24;
 const WIDGET_MARGIN_RIGHT = 12; // gap from the right edge of the work area
+// Fallback x used only when monitor detection fails (rare degraded path).
+// Top-left inset is always on-screen; preferable to an off-screen position.
+const WIDGET_X_FALLBACK = 24;
 
 /**
  * C2 — runtime right-anchor: compute x so the widget is never off-screen.
  * Uses currentMonitor() to read the work area (excludes macOS menu-bar and
  * Dock) and the scale factor to convert physical→logical pixels.
- * Falls back to the old hardcoded 1500 if the monitor call fails (safety net).
+ * Includes the work-area origin so the anchor is correct on secondary
+ * monitors whose virtual x-origin is non-zero.
+ * Falls back to WIDGET_X_FALLBACK if the monitor call fails (safety net).
  */
 async function computeWidgetX(): Promise<number> {
   try {
     const monitor = await currentMonitor();
-    if (monitor === null) return 1500;
-    const logicalWorkWidth = monitor.workArea.size.width / monitor.scaleFactor;
-    return Math.round(logicalWorkWidth - WIDGET_WIDTH_LOGICAL - WIDGET_MARGIN_RIGHT);
+    if (monitor === null) return WIDGET_X_FALLBACK;
+    const sf = monitor.scaleFactor;
+    const workLeft = monitor.workArea.position.x / sf;
+    const workWidth = monitor.workArea.size.width / sf;
+    return Math.round(workLeft + workWidth - WIDGET_WIDTH_LOGICAL - WIDGET_MARGIN_RIGHT);
   } catch {
     // Defensive: keep the window visible at a best-effort position.
-    return 1500;
+    return WIDGET_X_FALLBACK;
   }
 }
 

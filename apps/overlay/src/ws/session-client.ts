@@ -34,7 +34,7 @@ const ECHO_TIMEOUT_MS = 2000;
  */
 type SessionStart = Extract<Envelope, { type: "session_start" }>;
 
-export interface EchoResult {
+export interface SessionResult {
   sessionId: string;
   reason: string;
 }
@@ -51,7 +51,7 @@ export interface ToolCallContext {
   sendCancel: () => void;
 }
 
-export interface RunEchoOptions {
+export interface RunSessionOptions {
   onToolCall?: (ctx: ToolCallContext) => void;
 }
 
@@ -78,12 +78,12 @@ export function buildSessionStart(text: string): {
  * Opens a WebSocket via the injected factory, sends a session_start, and
  * resolves with the daemon-minted { sessionId, reason } on session_end.
  *
- * 02b-ii onToolCall flow: on receiving a tool_call whose session_id matches
- * the confirmed session, the seam invokes options.onToolCall(ctx) where ctx
- * carries the picker primitive and bound sendResult/sendCancel closures.
+ * onToolCall flow: on receiving a tool_call whose session_id matches the
+ * confirmed session, the seam invokes options.onToolCall(ctx) where ctx carries
+ * the picker primitive and bound sendResult/sendCancel closures.
  * The renderer drives the result or cancel; the seam writes to the socket.
  * Unknown tools or unconfirmed sessions are silently ignored (no throw).
- * runEcho resolves on session_end of ANY reason.
+ * runSession resolves on session_end of ANY reason.
  *
  * Correlation: strictly via the echoed client_session_id in session_ack.
  * A session_ack with a non-matching client_session_id is silently ignored.
@@ -95,12 +95,12 @@ export function buildSessionStart(text: string): {
  * socket leaks on the success path. Post-settle close/fail are no-ops against
  * the already-settled promise (existing design).
  */
-export function runEcho(
+export function runSession(
   text: string,
   factory: WebSocketFactory,
-  options: RunEchoOptions = {},
-): Promise<EchoResult> {
-  return new Promise<EchoResult>((resolve, reject) => {
+  options: RunSessionOptions = {},
+): Promise<SessionResult> {
+  return new Promise<SessionResult>((resolve, reject) => {
     const { msg, clientSessionId } = buildSessionStart(text);
     const ws = factory(WS_URL);
 
@@ -111,11 +111,11 @@ export function runEcho(
 
     const timer = setTimeout(() => {
       ws.close();
-      reject(new Error(`runEcho timed out after ${ECHO_TIMEOUT_MS}ms`));
+      reject(new Error(`runSession timed out after ${ECHO_TIMEOUT_MS}ms`));
     }, ECHO_TIMEOUT_MS);
 
     // 6.2: close the socket before resolving to prevent the socket leak (MAJOR fix).
-    function finish(result: EchoResult) {
+    function finish(result: SessionResult) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);

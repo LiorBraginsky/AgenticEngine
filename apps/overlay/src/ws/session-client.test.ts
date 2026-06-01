@@ -1,4 +1,4 @@
-import { test, expect } from "bun:test";
+import { test, expect, jest } from "bun:test";
 import { parseEnvelope } from "@agentic/protocol";
 import { buildSessionStart, runEcho } from "./session-client.js";
 import type { ToolCallContext } from "./session-client.js";
@@ -304,4 +304,99 @@ test("runEcho: unknown tool in tool_call does NOT fire onToolCall and does not t
   });
 
   await expect(p).resolves.toEqual({ sessionId: "srv-1", reason: "cancelled" });
+});
+
+// ---------------------------------------------------------------------------
+// Timer regression tests (fake clock)
+// Regression: the 2000ms transport-handshake timer MUST NOT dismiss the picker
+// after hand-off to the user (onToolCall fired). Before the fix this timer was
+// never disarmed, so it would fire ~2s after runEcho was called — even while
+// the human is deciding — causing runEcho to reject and main.ts to call
+// hideWidgetWindow().
+// ---------------------------------------------------------------------------
+
+test("runEcho: handshake timer does NOT fire after tool_call is received (picker stays alive past 2000ms)", async () => {
+  jest.useFakeTimers();
+  try {
+    const fake = makeFake();
+    let toolCallFired = false;
+    let capturedCtx: ToolCallContext | undefined;
+
+    const p = runEcho("hi", () => fake.ws, {
+      onToolCall: (ctx) => {
+        toolCallFired = true;
+        capturedCtx = ctx;
+      },
+    });
+
+    // Simulate transport handshake (sync — no real time elapses)
+    fake.fire("open", {});
+    const cid = (JSON.parse(fake.sent[0]!) as { client_session_id: string }).client_session_id;
+
+    fake.fire("message", {
+      data: JSON.stringify({ type: "session_ack", session_id: "srv-timer", client_session_id: cid }),
+    });
+    fake.fire("message", {
+      data: JSON.stringify({
+        type: "tool_call",
+        session_id: "srv-timer",
+        call_id: "call-timer",
+        payload: VALID_TOOL_CALL_PAYLOAD,
+      }),
+    });
+
+    // onToolCall must have fired — we are now "in human hand-off"
+    expect(toolCallFired).toBe(true);
+    expect(capturedCtx).toBeDefined();
+
+    // Advance clock well past the OLD timeout — the promise must NOT reject.
+    // Before the fix: this would fire the timer → reject → picker vanishes.
+    jest.advanceTimersByTime(5000);
+
+    // The promise must still be pending (not rejected). To verify it hasn't
+    // rejected yet we race it against a fast-resolving sentinel — if runEcho
+    // settled it would have called reject, and the race below would expose it.
+    let settled = false;
+    p.then(() => { settled = true; }, () => { settled = true; });
+    // Flush microtasks so any synchronous rejection propagates
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    // No spurious tool_cancel must have been sent (only original session_start)
+    expect(fake.sent).toHaveLength(1);
+
+    // Now the user acts — drive normal completion
+    capturedCtx!.sendResult({ label: "Forest", hex: "#228B22" });
+    fake.fire("message", {
+      data: JSON.stringify({ type: "session_end", session_id: "srv-timer", reason: "completed" }),
+    });
+
+    await expect(p).resolves.toEqual({ sessionId: "srv-timer", reason: "completed" });
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+test("runEcho: handshake timeout still fires when daemon never responds (transport-hang guard preserved)", async () => {
+  jest.useFakeTimers();
+  try {
+    const fake = makeFake();
+
+    const p = runEcho("hi", () => fake.ws);
+
+    // open fires — session_start is sent — but daemon sends nothing (no session_ack, no tool_call)
+    fake.fire("open", {});
+
+    // Advance past the handshake timeout — must reject (the guard is intact)
+    jest.advanceTimersByTime(3000);
+
+    // Flush so the rejection propagates
+    await Promise.resolve();
+    await Promise.resolve();
+
+    await expect(p).rejects.toThrow(/timed out/);
+  } finally {
+    jest.useRealTimers();
+  }
 });

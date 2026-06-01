@@ -165,6 +165,17 @@ export function runEcho(
       if (envelope.type === "tool_call") {
         const decision = decideRender(envelope, confirmedSessionId);
         if (decision.kind === "render") {
+          // Disarm the transport-handshake timeout: the handshake (connect →
+          // session_ack → tool_call) completed successfully. From here the
+          // session is user-driven with no auto-timeout — the picker persists
+          // until the user picks a swatch or clicks ×.
+          //
+          // Session-leak note (v0 acceptable): if the user never acts and
+          // exits the app, the daemon retains a parked awaiting_pick session.
+          // The only valid exits in v0 are user pick (→ tool_result) or ×
+          // (→ tool_cancel). A post-handoff idle timeout is intentionally
+          // omitted — do not add one without a product decision.
+          clearTimeout(timer);
           const { session_id, call_id, picker } = decision;
           options.onToolCall?.({
             picker,

@@ -133,10 +133,31 @@ Pinned by Lior during Walking Skeleton v0 — Chunk 02b-i planning (2026-05-30).
 
 - **Known residual:** some applications bind ⌘⇧Space in certain contexts (e.g. emoji / symbol pickers). This is **acceptable for a v0 default precisely because the binding is rebindable** — a user hitting the conflict can rebind once the rebinding surface exists. Recorded here so it is not later rediscovered as a surprise rather than a known, accepted trade-off.
 
+## Amendment 2026-05-31
+
+**This is NOT a supersede.** This pins *how* Decision p.2's two visual zones are realized in Walking Skeleton v0, leaving the original Decision text unchanged.
+
+Pinned by Lior during Walking Skeleton v0 — Chunk 02b-ii planning (2026-05-31). See [[../plans/walking-skeleton-v0-02b-ii-color-picker/plan]].
+
+- **Two zones = two separate Tauri windows.** The center input panel is the `main` window (chunk 02b-i). The top-right ephemeral widget zone is a dedicated `widget` window — content-sized, `transparent`, `decorations:false`, `alwaysOnTop:true`, and `visible:false` until a widget renders.
+
+- **Click-through is a consequence of content-sizing, not cursor toggling.** Because the `widget` window is sized to its content, there is no window *outside* the widget bounds — clicks there land on the app underneath. No `setIgnoreCursorEvents` toggling is used.
+
+- **Option A — single large window hosting the corner widget via CSS — rejected.** It would intercept clicks across its whole area and require fragile, platform-dependent regional cursor-event toggling.
+
+- **Option C — resize/reposition the `main` window per render — rejected.** It breaks once input and a widget must be visible simultaneously (the persistent-widget case Decision p.2 anticipates with its "slightly persistent" + stacking corner zone).
+
+- **Session ownership + relay.** The `main` window owns the live WebSocket session; it relays the picker primitive to the `widget` window and routes the user's pick/cancel back via intra-app Tauri events (`show-picker` / `picker-result` / `picker-cancel`). The frozen wire protocol (`packages/protocol`) and the daemon are untouched.
+
+- **What this realizes.** The `widget` window renders the closed-set color-picker primitive from [[0005-ui-contract-closed-set]], and the pick/cancel round-trip resolves the underlying UI tool call per [[0002-ui-as-tool-calls]] (resolve = the user's pick, cancel = dismiss). This is the color-picker round-trip in chunk 02b-ii.
+
 ## Related
 
+- [[0002-ui-as-tool-calls]] — the UI-as-tool-call model whose resolve/cancel the widget round-trip fulfills (see Amendment 2026-05-31)
+- [[0005-ui-contract-closed-set]] — the closed-set color-picker primitive rendered in the `widget` window (see Amendment 2026-05-31)
 - [[0007-voice-mvp-strategy]] — what hold-to-talk actually does for input
 - [[../concept]] — UX surface is part of differentiation pillar 1
 - [[../architecture]] — frontends in system context
 - [[../plans/walking-skeleton-v0-02b-i-tauri-shell/plan]] — Walking Skeleton v0 Chunk 02b-i; source of the 2026-05-30 amendment that pins the default tap-hotkey
+- [[../plans/walking-skeleton-v0-02b-ii-color-picker/plan]] — Walking Skeleton v0 Chunk 02b-ii; source of the 2026-05-31 amendment that pins the two-window zone realization
 - [[../../chunks-todo/walking-skeleton-v0/02b-i-tauri-shell-and-hotkey]] — the chunk whose planning pinned the default tap-hotkey

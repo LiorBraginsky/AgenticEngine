@@ -362,4 +362,8 @@ Walking Skeleton v0 closed. Behavioral DoD VERIFIED on macOS (happy/cancel/reope
 
 - **engine-reviewer verdict:** APPROVE WITH NITS. All hard invariants pass. One **major** (multi-monitor `computeWidgetX` ignored `workArea.position`) + one **minor** (off-screen `1500` fallback) fixed in `c6a40e1`; single-monitor behavior unchanged. Remaining items were verified-safe (Escape idempotency, no listener leak, XSS-safe render, predev safety) or cosmetic nits (`ECHO_TIMEOUT_MS` naming — deferred to a future touch).
 - **Branch:** `chunk/03-e2e-wiring` (5 commits). **PR:** https://github.com/LiorBraginsky/AgenticEngine/pull/1 → `main`. **Lior reviews & merges.**
-- **Deferred (non-blocking follow-ups):** optional symmetric "cancelled" widget card; `ECHO_TIMEOUT_MS` → `HANDSHAKE_TIMEOUT_MS` rename; `architecture.md` pointer to the ADR-0006 amendment; multi-monitor "monitor the user is on" (currentMonitor on a hidden window resolves to primary) if real multi-monitor support is later claimed.
+- **Deferred (non-blocking follow-ups):**
+  - **Overlay / window UX nuances surfaced in the chunk-03 macOS demo (2026-06-02) — documented in `known-gotchas.md` #32–#34, NOT chunk-03 regressions:**
+    - #32 multi-monitor — overlay opens on the primary monitor, not the monitor the user is on (`currentMonitor()` on a hidden window → primary). Multi-monitor follow-up.
+    - #33 + #34 (**coupled** — input-panel transient-state lifecycle): a stale hide/reset timer closes a freshly-reopened input (#33), and the input retains old text across opens (#34). Fix together in one coherent follow-up (not piecemeal); #33 becomes important once the transient status text is removed/reworked. Relates to the future "clear input after idle timeout" idea and to [[project_input_blur_dismiss_followup]].
+  - optional symmetric "cancelled" widget card; `ECHO_TIMEOUT_MS` → `HANDSHAKE_TIMEOUT_MS` rename; `architecture.md` pointer to the ADR-0006 amendment.

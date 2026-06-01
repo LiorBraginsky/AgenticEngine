@@ -59,3 +59,9 @@ ADRs in scope: 0001 (session lifecycle / orphaned-session handling), 0002 (UI to
 - **This chunk proves the product's unique claim** (text-in → widget-out, end-to-end on real macOS) — the exact thing a CLI-only test could not validate, which is why the walking-skeleton approach was chosen over building the backend in isolation (roadmap).
 - **gotcha #2 resolution is documented here**, once the full cancel path is demonstrated end-to-end.
 - **A missing protocol field discovered at the join is the designed stop-the-line signal** — it means the frozen contract genuinely needed it, handled atomically on chunk 01 rather than papered over in the wiring.
+
+## Deferred to post-v0 (NOT in scope of this chunk)
+
+> Surfaced during v0 but intentionally OUT of scope for chunk 03 — **do not implement here.** Each is a separate post-skeleton chunk. Recorded in the final v0 chunk so they stay visible at the milestone boundary.
+
+- **Input-panel click-outside / blur dismiss.** When the hotkey-opened input panel (center `main` window) is active and focused, clicking OUTSIDE it (window blur / focus loss) should hide the panel. Today it only hides on submit (Enter). Surfaced by Lior during the 02b-ii manual macOS test (2026-06-01). Implementation sketch: a focus-loss/blur listener on the `main` Tauri window → existing `hidePanel()` / `hide_panel` command; guard so it doesn't fire mid-session if that would interfere with an in-flight picker. Separate chunk after the skeleton.

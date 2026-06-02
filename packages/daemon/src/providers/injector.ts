@@ -1,4 +1,5 @@
 import { mockProvider } from "./mock-provider.js";
+import { anthropicApiProvider } from "./anthropic-api-provider.js";
 import type { AgentProvider } from "./provider.js";
 
 /**
@@ -18,7 +19,7 @@ export function buildInjector(
 ): AgentProvider {
   const registry = new Map<string, AgentProvider>([
     [mockProvider.id, mockProvider],
-    // chunk-03 registers anthropicApiProvider here
+    [anthropicApiProvider.id, anthropicApiProvider],
   ]);
 
   const requested = (env ?? Bun.env)["LLM_PROVIDER"] ?? "mock";

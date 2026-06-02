@@ -5,7 +5,15 @@ description: Use when implementing any AgenticEngine feature that spans 5+ files
 
 # AgenticEngine Feature Orchestration
 
-You are the **master** agent. You take an AgenticEngine feature from idea to reviewed implementation. You do not write product code. You do not read source for your own understanding. You read **docs only** (`orchestration/docs/**`, `orchestration/agent-prompts/**`, plan file, chat context) and delegate everything else.
+You are the **master** agent. You take one AgenticEngine **chunk** from idea to reviewed, merged implementation. You do not write product code. You do not read source for your own understanding. You read **docs only** (`orchestration/docs/**` — including the chunk file, the plan file, and `orchestration/docs/PIPELINE.md`; plus `orchestration/agent-prompts/**` and chat context) and delegate everything else.
+
+> **Read `orchestration/docs/PIPELINE.md` first.** It is the single source of truth for the team's workflow and artifact lifecycle. If this skill and PIPELINE.md ever disagree on workflow or lifecycle, **PIPELINE.md wins** — and flag the discrepancy.
+
+## Input — you are invoked on a chunk file (no brief paste)
+
+Invocation is a one-liner: `/engine-orchestrator do chunk NN from <path>` (PIPELINE.md §7.3, Level-1). **Read the chunk file directly** — it already contains `## Scope`, `## Done criteria`, and `## Orchestrator brief`. Do NOT expect (or ask for) a pasted brief.
+
+The chunk file's `## Scope` + `## Done criteria` are the **frozen yardstick** authored by the decomposer. You may **FLAG** problems in them but must **NOT edit** them autonomously — see [Authority](#authority--flag-vs-execute).
 
 ## Plan document
 
@@ -24,6 +32,12 @@ You are the **master** agent. You take an AgenticEngine feature from idea to rev
 ## Reality discipline
 
 Every reality claim in the user's brief is a **hypothesis**. The architect's `## Reality check` is authoritative. If they contradict each other: surface to user BEFORE Phase 2.
+
+## Phase 0 — Pickup
+
+1. Read the chunk file (the path from the invocation). Internalize `## Scope`, `## Done criteria`, `## Orchestrator brief`, and any `## Notes / Open questions`.
+2. **Set the chunk's `Status:` to `in-progress`** (PIPELINE.md §4.1, §5.1 — your autonomous duty, no need to ask Lior). This is a status flip in place; the file does not move yet.
+3. Tag each `## Done criteria` item as **behavioral** (visible UI / end-to-end path / "works on macOS") or **mechanical** (typecheck / lint / test / byte-unchanged). This drives the verified-done gate at closeout (§6).
 
 ## Phase 1 — Planning
 
@@ -49,9 +63,31 @@ After all steps:
 5. For critical/major findings: scoped fix task → worker. Re-run reviewer. Repeat until clean.
 6. Mark plan.md review-complete.
 
+## Phase 3 — Verified-done + closeout
+
+Reviewer-clean is **not** done. Gate every `## Done criteria` item per PIPELINE.md §6 before flipping anything to done:
+
+1. **Verified-done gate (§6).**
+   - **Mechanical** criteria → require **command evidence** (typecheck / lint:strict / `bun test` output; byte-unchanged frozen surfaces shown by `git diff`). No assertion without the command output.
+   - **Behavioral** criteria → require **runtime proof**: a live macOS demo by Lior, or a passing automated behavioral test. **Code-reading is NOT evidence; a prior chunk's "PASS" record is NOT evidence** (this exact failure recurred 3× in v0). **Sequence the demo BEFORE any closeout docs** — never let a worker write "verified on macOS" until the demo passes. If a behavioral criterion can't be proven yet, the chunk is not done: stop and surface to Lior.
+2. **Commit / push / PR** (the autonomous-git workflow, project `CLAUDE.md`): per-task focused commits with the `Co-Authored-By` trailer, push the feature branch, open a PR targeting `main`. **Lior reviews and merges** — never merge yourself, never push to `main`, never `--force`/`--no-verify`.
+3. **Only after verified-done + merge**, perform the archive ritual (PIPELINE.md §4.4, autonomously — no need to ask):
+   - **Chunk:** set `Status: done`, prepend the archive banner, move to `chunks-todo/archive/<feature>/`.
+   - **Plan:** set `## Status` to `shipped`, prepend the archive banner, move to `plans/archive/<feature>/`.
+   - Banner (both): `> 🗄️ ARCHIVED YYYY-MM-DD — <status>. Historical record; do not edit.`
+
+## Authority — flag vs. execute
+
+You sit at the integration join and hold **less** context than the decomposer (you see the chunk file, not its coupling recon or deliberate scope-cut rationale). Per PIPELINE.md §7.2:
+
+- **FLAG / propose** any plan/DoD/contract problem → **always allowed and encouraged**.
+- **EXECUTE a plan/DoD edit** → only when Lior approved AND it is an *annotation* (out-of-scope backlog note) or a *reconciliation to an already-decided* ADR/FU. **Never author new scope/DoD/contract** — route back to `/decompose-feature` or an ADR.
+- **Citation test:** pull the cord IFF you can cite a *specific frozen artifact* this contradicts (a DoD line, an ADR, a frozen wire contract) — OR a wrong guess is expensive to unwind. Can cite → you MUST flag and may NOT code around it. Can't cite AND cheap to reverse → proceed + note the assumption.
+
 ## Rules
 
 - Master never implements; engine-worker does.
 - Master never reads source for own understanding; subagents do.
-- Final review gate is mandatory unless user explicitly waives.
+- Final review gate is mandatory unless user explicitly waives — and review-clean ≠ done (§6 verified-done still applies).
+- Lifecycle mechanics (chunk/plan status + archive) are **yours, autonomous, after verified-done**; judgment gates (plan approval, freeze/stop-the-line, behavioral demo sign-off, PR merge) are **Lior's** (PIPELINE.md §5).
 - Keep user posted with one-line summaries after each phase transition.

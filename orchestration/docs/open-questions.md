@@ -18,13 +18,15 @@ Format per question:
 
 ## Q1: LLM provider strategy
 
-- **Status:** `open`
+- **Status:** `open` → **being decided by [[adr/0010-pluggable-llm-provider-abstraction]] (`proposed` 2026-06-02)**
 - **Blocks:** Phase 3 (real LLM integration)
 - **Current thinking:** Default to Anthropic Claude. Use a provider-abstraction layer (Vercel AI SDK or custom) to allow OpenAI / local Ollama later. Single provider in MVP keeps things simple; the abstraction is the futureproofing.
 - **Alternatives:**
   - **Multi-provider from day one:** flexible but premature; complicates streaming & tool-calling differences across providers.
   - **Local-first via Ollama:** quality gap for tool use is still significant in mid-2026; tool-calling reliability is the bottleneck for an agentic product.
 - **To decide before Phase 3.**
+
+> → This question is being decided **early** (via the `llm-text-slice` slice, chunk-02) by [[adr/0010-pluggable-llm-provider-abstraction]], currently `proposed`. **Do NOT strike yet** — ADR-0010 is not binding until Lior accepts it (PIPELINE.md §5.2). On acceptance, flip Status to `decided` → ADR-0010 and strike this question. The original text above is preserved verbatim until then.
 
 ---
 

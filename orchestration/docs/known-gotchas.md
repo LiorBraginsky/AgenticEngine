@@ -98,6 +98,14 @@ Format: each item has a **severity** (`blocking-MVP` / `nice-to-fix` / `post-MVP
 
 ---
 
+## Deferred cleanups (non-gotcha tech-debt — recorded so they don't rot)
+
+| Item | Where | Note |
+|------|-------|------|
+| **Dead `session.ts` / `session.test.ts`** | `packages/daemon/src/` | `handleSessionStart` in `session.ts` is **unreferenced by `index.ts`** — the mock reducer (`advanceMockAgent`, and from chunk-02 the `AgentProvider` port) handles `session_start`; only `session.test.ts` imports it. Surfaced during chunk-02 planning (2026-06-02). **Deliberately left untouched in the chunk-02/03 PR** (Lior) to avoid scope-creep + a noisy diff. **Action:** delete both files in a separate tiny cleanup chunk (verify no other importer first: `grep -rn handleSessionStart packages/`). |
+
+---
+
 ## Triage notes
 
 **Must solve before Phase 5 (plugin system):**

@@ -8,11 +8,13 @@ This folder is the **bridge between strategic planning** (`orchestration/docs/ro
 
 Each chunk file has a `Status:` field with one of:
 
+> **Lifecycle is governed by `orchestration/docs/PIPELINE.md` (§4.1, §5.1, §6).** This file is the chunk-folder detail; PIPELINE.md is the SSOT. The key shift: status transitions + archiving are the **`engine-orchestrator`'s autonomous duties** (gated on verified-done), **not** manual Lior steps.
+
 | Status | Meaning |
 |--------|---------|
 | `todo` | Created by `/decompose-feature` skill, not yet picked. |
-| `in-progress` | Lior copy-pasted orchestrator brief into a chat and started execution. |
-| `done` | Passed review-clean merge. **Move file to `archive/<phase>/`.** |
+| `in-progress` | An orchestrator chat has started this chunk. Set **by `engine-orchestrator`** on pickup (autonomous). |
+| `done` | **Verified-done** (PIPELINE.md §6: mechanical = command evidence; behavioral = Lior's live demo / passing test) + merged. **`engine-orchestrator`** then archives it (§4.4: status-flip + banner + move to `archive/<phase>/`). |
 | `blocked` | External dependency or missing decision prevents work. Keep in place, add note. |
 | `postponed` | Deliberately deferred (priority shift). Keep in place, add note explaining when to revisit. |
 
@@ -42,9 +44,9 @@ chunks-todo/
 ## Workflow
 
 1. **Decomposition:** `/decompose-feature <phase>` skill creates files here, status = `todo`.
-2. **Execution:** Lior picks oldest `todo` chunk, copies `## Orchestrator brief` section, pastes into new chat with `/engine-orchestrator`.
-3. **Status update:** Lior manually edits `Status:` field as work progresses (`todo` → `in-progress`).
-4. **Completion:** After reviewer-clean merge, Lior manually moves file to `archive/<phase>/` and sets `Status: done`.
+2. **Execution:** open a new chat and invoke `/engine-orchestrator do chunk NN from <path>`. The orchestrator reads the chunk file directly — **no brief paste** (PIPELINE.md §7.3, Level-1). It sets `Status: in-progress` on pickup.
+3. **Verified-done:** the orchestrator gates `## Done criteria` per PIPELINE.md §6 — behavioral criteria need Lior's live demo (sequenced before closeout docs); mechanical criteria need command output. Review-clean alone is not done.
+4. **Completion:** after verified-done + merge, the orchestrator autonomously sets `Status: done`, prepends the archive banner, and moves the file to `archive/<phase>/`. Lior's remaining role: the §5.2 judgment gates (demo sign-off, PR merge) and `blocked`/`postponed` calls.
 
 ## Why filesystem and not GitHub Issues / Linear / Jira
 

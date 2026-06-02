@@ -19,11 +19,13 @@ You are helping Lior decompose a strategic-level feature (or roadmap phase) into
 
 Read in this order:
 
-1. `orchestration/docs/roadmap.md` — find the target phase/feature
-2. `orchestration/docs/open-questions.md` — any open Qs that might block this phase
-3. `orchestration/docs/known-gotchas.md` — relevant engineering pitfalls
-4. `orchestration/docs/architecture.md` — refresh boundaries
-5. Any ADR specifically referenced in the roadmap section for this phase
+1. `orchestration/docs/PIPELINE.md` — the workflow you operate in; you produce the `chunks` stage. (If this skill and PIPELINE.md disagree on lifecycle, PIPELINE.md wins.)
+2. `orchestration/docs/roadmap.md` — find the target phase/feature
+3. **The spec, if one exists** — `orchestration/docs/specs/<...>.md` for this feature (PIPELINE.md §3 conditional stage). Each chunk's `## Orchestrator brief` should cite the spec section it implements.
+4. `orchestration/docs/open-questions.md` — any open Qs that might block this phase
+5. `orchestration/docs/known-gotchas.md` — relevant engineering pitfalls
+6. `orchestration/docs/architecture.md` — refresh boundaries
+7. Any ADR specifically referenced in the roadmap section for this phase
 
 ### Step 2 — Brainstorming Q&A
 
@@ -54,6 +56,8 @@ Invoke `grill-with-docs` skill (standalone, NOT `superpowers:grill-with-docs` �
 - ADRs 0001-0008 — does any chunk reopen a decided question without proper ADR escalation?
 - `orchestration/docs/known-gotchas.md` — does any chunk hit a known pitfall that needs preemptive thought?
 
+**Runtime-coupling check (PIPELINE.md §7.1).** Any "parallel / no coupling / no dependency" claim MUST be checked against **shared runtime/behavioral contracts**, not just disjoint files. Two chunks that both depend on the same daemon/reducer/shared mutable state are **coupled even with zero shared source** — say so in `Depends on:`. A frozen *wire* contract does NOT imply a frozen *behavioral* contract (which variants a handler emits, in which order/phase). (v0 scar: 02a legally changed what the daemon replies to `session_start` within the frozen envelope and silently turned 02b-i's handler into dead code.)
+
 Tighten the decomposition based on grilling feedback.
 
 ### Step 5 — Write artifacts
@@ -64,7 +68,7 @@ Output BOTH artifact files AND inline summary.
 
 **Inline summary in chat:** a markdown table with columns `# | Title | Status | Size | Path`. After the table, list this exact next-step instruction:
 
-> Next: open a new chat, run `/engine-orchestrator`, then paste the `## Orchestrator brief` section from `orchestration/chunks-todo/<phase>/01-<first-title>.md`.
+> Next: open a new chat and run `/engine-orchestrator do chunk 01 from orchestration/chunks-todo/<phase>/01-<first-title>.md`. The orchestrator reads the chunk file directly — **no brief paste** (PIPELINE.md §7.3, Level-1).
 
 ### Step 6 — Stop
 
@@ -86,16 +90,18 @@ Do NOT execute the chunks. You only decompose. Execution is `engine-orchestrator
 **In:**
 - ...
 
-**Out:**
-- ...
+**Out:** (each item states WHY — PIPELINE.md §7.2, so the orchestrator can tell a deliberate cut from stale drift)
+- ... — OUT because X / deferred to chunk-N because Y / frozen per ADR-Z
 
 ## Done criteria
+
+(tag each as **[behavioral]** — visible UI / end-to-end / "works on macOS" → needs a live demo or behavioral test to prove — or **[mechanical]** — typecheck / lint / test / byte-unchanged → proven by command output; PIPELINE.md §6)
 
 - [ ] Verifiable thing 1
 - [ ] Verifiable thing 2
 - [ ] ...
 
-## Orchestrator brief (ready to copy)
+## Orchestrator brief (read by the orchestrator from this file)
 
 ```
 implement <chunk goal> per orchestration/docs/roadmap.md Phase N.
@@ -116,15 +122,15 @@ ADRs in scope: ...
 
 ## Status field values
 
-`todo` / `in-progress` / `done` / `blocked` / `postponed`
+`todo` / `in-progress` / `done` / `blocked` / `postponed` (PIPELINE.md §4.1)
 
-- **todo** — created, not yet picked.
-- **in-progress** — Lior copied brief into orchestrator chat and started.
-- **done** — passed review-clean merge. Move file to `orchestration/chunks-todo/archive/<phase>/`.
+- **todo** — created by this skill, not yet picked.
+- **in-progress** — an orchestrator chat has started this chunk. Set **by `engine-orchestrator`** on pickup (autonomous, §5.1).
+- **done** — **verified-done** (§6: mechanical = command evidence; behavioral = Lior's live demo / passing test) + merged. Then **`engine-orchestrator`** archives it per the uniform convention (§4.4): status-flip + banner + move to `chunks-todo/archive/<phase>/`. NOT merely "review-clean merge."
 - **blocked** — external dependency or missing decision prevents work. Keep in place. Add note explaining what is needed to unblock.
 - **postponed** — Lior deferred deliberately due to priority shift. Keep in place. Add note explaining when to revisit.
 
-When orchestrator picks a chunk → Lior manually updates `Status:` to `in-progress`. After clean merge → manually move file to archive.
+You (decompose) only create chunks at `todo`. All later transitions (`in-progress`, `done` + archive) are the **`engine-orchestrator`'s autonomous duties after verified-done** — NOT manual Lior steps. Lior's role here is the §5.2 judgment gates (behavioral demo sign-off, PR merge) plus `blocked`/`postponed` calls.
 
 ## Hard rules
 
@@ -132,6 +138,6 @@ When orchestrator picks a chunk → Lior manually updates `Status:` to `in-progr
 - NEVER execute chunks yourself — only decompose.
 - ALWAYS use `superpowers:brainstorming` AND standalone `grill-with-docs` (no skipping).
 - ALWAYS produce BOTH artifact files AND inline summary.
-- ALWAYS include `## Orchestrator brief` section, ready to copy without modification.
+- ALWAYS include a `## Orchestrator brief` section as in-file enrichment (the orchestrator reads it from the file — it is NOT a paste payload; enrich the chunk file rather than expecting copy-paste).
 - If decomposition would produce >7 chunks for one phase — push back to Lior: "this phase is too big; consider splitting roadmap Phase X into Phase Xa/Xb."
 - NEVER modify files outside `orchestration/chunks-todo/` (except writing the chunks themselves).

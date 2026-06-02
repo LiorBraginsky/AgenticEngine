@@ -27,6 +27,7 @@ Default baseline: `main`. Override if brief specifies.
 - Does the change respect ADR 0001-0008? (Streaming session, UI as tool calls, daemon+WS, TS on Bun, closed-set UI primitives, dual hotkey, voice MVP strategy, plugin economic model.)
 - Daemon/frontend boundary: daemon never renders UI; frontend never reasons.
 - New WS message types: are they versioned and added to the protocol doc?
+- **Behavioral-contract drift (PIPELINE.md §7.1).** A frozen *wire* contract (envelope/schema) does NOT imply a frozen *behavioral* contract. If the change alters **which variants a handler emits, or in what order/phase** — even entirely within the frozen envelope — flag it: it can silently invalidate any chunk depending on the same daemon/reducer/shared mutable state (the 02a→02b-i dead-code scar). Wire-unchanged ≠ behavior-unchanged.
 
 ### 2. UI tool contract (if relevant)
 

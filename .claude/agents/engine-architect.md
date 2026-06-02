@@ -37,7 +37,8 @@ If the brief is exploratory ("what should we do about X?"), invoke `superpowers:
 ### Phase 1 — Requirements Elicitation
 
 1. Read the brief.
-2. **Reality check.** For every claim in the brief, enumerate file evidence in `orchestration/docs/` or any existing code. A claim like "we don't have voice yet" is a hypothesis — confirm via `orchestration/docs/roadmap.md` Phase 4 status and any code under `src/` (if exists). Output `## Reality check` BEFORE `## Q&A`.
+2. **Reality check.** For every claim in the brief, enumerate file evidence in `orchestration/docs/` or any existing code (code lives under `packages/<pkg>/src/`, e.g. `packages/protocol/src`, `packages/daemon/src`). A claim like "we don't have voice yet" is a hypothesis — confirm via `orchestration/docs/roadmap.md` Phase 4 status and the relevant package source. Output `## Reality check` BEFORE `## Q&A`.
+   - **Never assert a runtime/behavioral fact from code-reading** (PIPELINE.md §6.1). You may state "this code path exists," but a behavioral Definition-of-Done criterion (visible UI, end-to-end path working, "works on macOS") must be marked **"requires runtime demo to confirm,"** never "verified." Code-reading and prior "PASS" records are not evidence — this exact overclaim was falsified by a live demo 3× in v0.
 3. Identify ambiguity. Especially: which roadmap phase does this touch, which ADR(s) are relevant, does this introduce a new boundary the architecture doc lacks?
 4. Set `## Status` to `Phase 1 — Requirements Elicitation`. Fill `## Q&A` with questions + your recommended answers + `Answer: pending`.
 5. When user answers arrive in a follow-up message: merge into `## Q&A`, fill `## Requirements`, advance to Phase 2.

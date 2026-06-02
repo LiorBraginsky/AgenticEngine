@@ -16,9 +16,18 @@
  *       session_start | session_ack | tool_call | tool_result |
  *       tool_cancel  | session_end
  *     Unknown `type` ⇒ graceful "unknown" classification, NEVER a throw.
- *  2. TOOL REGISTRY — discriminated union on `tool`. KNOWN tools (1):
- *       show_color_picker
+ *  2. TOOL REGISTRY — discriminated union on `tool`. KNOWN tools (2):
+ *       show_color_picker  (interactive — emits tool_call, awaits tool_result)
+ *       show_text          (display-only — emits tool_call, no result, session_end)
  *     Unknown `tool` ⇒ graceful fallback, NEVER a throw.
+ *     Display-only vs interactive is encoded as the static TOOL_INTERACTION
+ *     table (keyed by tool name, total over KNOWN_TOOLS via `satisfies`).
+ *     The daemon branches at dispatch time: interactive → park awaiting_*;
+ *     display-only → no await → session_end. Future display-only tools (image)
+ *     add one TOOL_INTERACTION row; `satisfies` totality forces every tool to
+ *     declare its interaction class at compile time. ADR-0009 / ADR-A.
+ *     Display-only tools additionally have NO ToolResultPayload variant.
+ *     The envelope union is UNTOUCHED (still 6); show_text is a new TOOL (1→2).
  *
  * ── Forward-compat is the same DISCIPLINE, two different MECHANISMS ─────
  *  • `trigger` (session_start) is a CLOSED enum: ["user","cron","external"].
@@ -48,7 +57,9 @@
  *  • tool_progress — Phase 3, shape depends on stream semantics; gotcha #1
  *    stays open.
  *  • Multi-primitive composition — Phase 2. For v0 `question` stays INSIDE
- *    the color-picker primitive (NOT yet decomposed into a `text` primitive).
+ *    the color-picker primitive (NOT yet decomposed into a standalone `text`
+ *    primitive; TextPrimitive ships as a standalone display-only tool, not
+ *    as a decomposition of the color-picker).
  *  • Per-install auth token (ADR-0003 p.5) — release-driven, connection-level,
  *    outside this message contract; adds additively without touching the
  *    envelope union. v0 interim mitigation = Origin-allowlist (daemon).

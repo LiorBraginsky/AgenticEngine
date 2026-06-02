@@ -30,3 +30,22 @@ export const ColorPickerPrimitive = z.object({
   palette: z.array(ColorSwatch).min(1),
 });
 export type ColorPickerPrimitive = z.infer<typeof ColorPickerPrimitive>;
+
+/**
+ * SOURCE OF TRUTH for the `text` UI primitive (ADR-0005 closed-set; ADR-0009).
+ * The FIRST standalone primitive besides color-picker. Display-only: it is
+ * rendered and never produces a tool_result (the display-only-vs-interactive
+ * distinction is declared in tools.ts via TOOL_INTERACTION).
+ *
+ * Mirrors ColorPickerPrimitive: the primitive is the base; the tool
+ * (ShowTextArgs) COMPOSES it by single reference (tools.ts).
+ *
+ * NOTE: adding `text` does NOT settle the full primitive set or versioning
+ * (open-question Q2 stays open). `content` is an unconstrained string in this
+ * slice (no min/max, no markdown flag — additive later).
+ */
+export const TextPrimitive = z.object({
+  primitive: z.literal("text"),
+  content: z.string(),
+});
+export type TextPrimitive = z.infer<typeof TextPrimitive>;

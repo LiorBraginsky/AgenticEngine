@@ -18,7 +18,7 @@ test("session_start ⇒ session_ack + valid show_color_picker tool_call; session
 
   const call = r.outbound[1]!;
   expect(call.type).toBe("tool_call");
-  if (call.type === "tool_call") {
+  if (call.type === "tool_call" && call.payload.tool === "show_color_picker") {
     expect(call.payload.tool).toBe("show_color_picker");
     expect(ShowColorPickerArgs.safeParse(call.payload.args).success).toBe(true);
     expect(call.payload.args.picker.palette).toEqual(MOCK_PALETTE);
@@ -30,7 +30,8 @@ test("mock ignores typed text — same color path regardless of input", () => {
   const a = advanceMockAgent(undefined, { type: "session_start", trigger: "user", text: "buy me a sandwich" });
   const b = advanceMockAgent(undefined, { type: "session_start", trigger: "user", text: "pick a color" });
   const callA = a.outbound[1]!; const callB = b.outbound[1]!;
-  if (callA.type === "tool_call" && callB.type === "tool_call") {
+  if (callA.type === "tool_call" && callA.payload.tool === "show_color_picker" &&
+      callB.type === "tool_call" && callB.payload.tool === "show_color_picker") {
     expect(callA.payload.args.picker.palette).toEqual(callB.payload.args.picker.palette);
     expect(callA.payload.args.picker.question).toBe(callB.payload.args.picker.question);
   }

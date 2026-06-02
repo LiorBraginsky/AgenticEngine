@@ -61,3 +61,20 @@ test("Envelope union has exactly 6 known message types", () => {
   // discriminatedUnion options length is the structural witness of the count.
   expect(Envelope.options.length).toBe(6);
 });
+
+// ── Task 3: show_text envelope round-trip + RC-1 guard ────────────────────────
+
+test("tool_call envelope with show_text payload parses (display-only primitive)", () => {
+  const r = parseEnvelope({
+    type: "tool_call",
+    session_id: "s1",
+    call_id: "c2",
+    payload: { tool: "show_text", args: { text: { primitive: "text", content: "Sunset orange is #FF5E3A." } } },
+  });
+  expect(r.kind).toBe("ok");
+});
+
+test("Envelope union STILL has exactly 6 known message types (show_text is a TOOL, not an envelope variant)", () => {
+  // RC-1: show_text is additive to the TOOL union, never the envelope union.
+  expect(Envelope.options.length).toBe(6);
+});

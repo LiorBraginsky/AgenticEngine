@@ -61,3 +61,30 @@ export function classifyTool(
   }
   return { known: false };
 }
+
+/**
+ * DISPLAY-ONLY vs INTERACTIVE discriminator (ADR-0009). The daemon reads this to
+ * decide session phase at tool-call dispatch time — BEFORE it has any result:
+ *   "interactive"  → emit tool_call, PARK awaiting_* until tool_result/tool_cancel
+ *   "display-only" → emit tool_call, NO await, proceed straight to session_end
+ * Keyed by tool NAME (a consumer branches without a payload instance). Future
+ * display-only primitives (e.g. image) add exactly one row here — nothing else.
+ * `satisfies Record<KnownToolName, ...>` makes this TOTAL: adding a tool to
+ * KNOWN_TOOLS without classifying its interaction is a COMPILE error.
+ *
+ * Lineage: codifies ADR-0002 decision-point 3 ("returns a result" vs
+ * "fire-and-forget"). Consistent with ToolResultPayload: display-only tools
+ * have no result variant. This table — keyed by name, total — is the signal
+ * the daemon should read.
+ */
+export const TOOL_INTERACTION = {
+  show_color_picker: "interactive",
+  show_text: "display-only",
+} as const satisfies Record<KnownToolName, "interactive" | "display-only">;
+
+export type ToolInteraction = (typeof TOOL_INTERACTION)[KnownToolName];
+
+/** Graceful lookup by tool name; unknown tool => undefined, never throws. */
+export function toolInteraction(tool: string): ToolInteraction | undefined {
+  return (TOOL_INTERACTION as Record<string, ToolInteraction>)[tool];
+}

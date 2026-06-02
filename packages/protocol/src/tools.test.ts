@@ -7,6 +7,8 @@ import {
   ToolResultPayload,
   KNOWN_TOOLS,
   classifyTool,
+  TOOL_INTERACTION,
+  toolInteraction,
 } from "./tools.js";
 import { ColorPickerPrimitive, TextPrimitive } from "./primitives.js";
 
@@ -98,4 +100,27 @@ test("ToolResultPayload does NOT accept show_text (display-only: no result)", ()
 test("KNOWN_TOOLS includes show_text; classifyTool knows it", () => {
   expect(KNOWN_TOOLS).toContain("show_text");
   expect(classifyTool("show_text")).toEqual({ known: true, name: "show_text" });
+});
+
+// ── Task 3: TOOL_INTERACTION + toolInteraction ────────────────────────────────
+
+test("TOOL_INTERACTION marks show_text display-only and show_color_picker interactive", () => {
+  expect(TOOL_INTERACTION.show_text).toBe("display-only");
+  expect(TOOL_INTERACTION.show_color_picker).toBe("interactive");
+});
+
+test("TOOL_INTERACTION is total over KNOWN_TOOLS (every tool classified)", () => {
+  for (const t of KNOWN_TOOLS) {
+    expect(TOOL_INTERACTION[t]).toBeDefined();
+  }
+});
+
+test("toolInteraction: display-only consumer branch is readable by name alone", () => {
+  expect(toolInteraction("show_text")).toBe("display-only");
+  expect(toolInteraction("show_color_picker")).toBe("interactive");
+});
+
+test("toolInteraction: unknown tool => undefined, never throws", () => {
+  expect(toolInteraction("show_mystery")).toBeUndefined();
+  expect(() => toolInteraction("show_mystery")).not.toThrow();
 });

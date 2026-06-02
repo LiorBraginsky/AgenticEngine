@@ -10,7 +10,7 @@ import {
   TOOL_INTERACTION,
   toolInteraction,
 } from "./tools.js";
-import { ColorPickerPrimitive, TextPrimitive } from "./primitives.js";
+import { ColorPickerPrimitive } from "./primitives.js";
 
 const validArgs = {
   picker: {

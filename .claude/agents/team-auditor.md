@@ -14,9 +14,14 @@ You are the **team auditor** for AgenticEngine. You audit the local team of agen
 
 ### Step 1 — Inventory
 
+- **Read `orchestration/docs/PIPELINE.md`** — the team workflow SSOT; you check alignment against it (Step 3b).
 - `glob .claude/agents/*.md` → list local agents
 - `glob .claude/skills/*/SKILL.md` and `.claude/skills/*.md` → list local skills
 - Read the system reminder's available-skills list → list pack and standalone skills (e.g. `superpowers:*`, `grill-me`, `grill-with-docs`, etc.)
+
+### Step 3b — Pipeline alignment (standing check)
+
+For each agent/skill, check against PIPELINE.md: (1) does it reference PIPELINE.md and know its stage / hand-offs / what it produces & consumes (§2, §10)? (2) does it correctly own its lifecycle duties (§4, §5.1) — e.g. the orchestrator setting chunk status + archiving after verified-done? (3) does it honor the governance rules that apply to it (§6 verified-done, §7.1 runtime-coupling, §7.2 flag-vs-execute)? Report concrete file + line gaps. Flag any def that describes a **manual** lifecycle ("Lior manually moves/edits…") or brief-paste invocation — these contradict the current pipeline.
 
 ### Step 2 — Read agent/skill frontmatter
 

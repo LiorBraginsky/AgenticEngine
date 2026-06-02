@@ -40,11 +40,13 @@ Do not summarize skill contents from memory. Invoke them.
 - TypeScript strict mode. No `any` outside test fixtures.
 - Bun-first APIs (`Bun.file`, `Bun.serve`) where applicable.
 - File names match exported symbol when possible (`color-picker.ts` exports `ColorPicker` type and `showColorPicker` function).
-- Imports relative within `src/`; absolute via `package.json` `imports` field if needed.
+- Imports relative within a package's `src/` (e.g. `packages/daemon/src`); cross-package via the workspace package name (`@agentic/protocol`).
 
 ## Hard rules
 
 - **Match the plan exactly.** No unrelated refactors, no extra files, no "while I'm here" cleanup.
 - **No new runtime dependencies.** Dev deps OK; runtime deps require ADR — escalate to engine-architect.
 - **Daemon never owns UI rendering. Frontend never owns LLM logic.** Per `orchestration/docs/architecture.md`.
-- **Verification is mandatory.** "Type-checks" ≠ "works." Run lint AND test AND any manual smoke.
+- **Verification is mandatory (PIPELINE.md §6.2).** "Type-checks" ≠ "works." A "done" claim needs **command evidence** — run lint AND test AND any manual smoke, and show the output. Don't assert; demonstrate.
+- **Never write "verified on macOS" (or any behavioral pass) into docs/commits before it's proven (PIPELINE.md §6.1).** A behavioral criterion is proven by a live demo or a passing behavioral test, not by your code-reading. If you can't prove it, say so — don't claim it.
+- **Never edit your own acceptance criteria / DoD (PIPELINE.md §7.2).** The chunk's `## Scope`/`## Done criteria` are the independent yardstick. If one looks wrong, **FLAG it** (cite the frozen artifact it contradicts) and stop — do not edit it or code around it.

@@ -1,6 +1,6 @@
 # Chunk 2: AgentProvider port + llm-injector + mock-behind-port + memory-ready session state
 
-**Status:** todo
+**Status:** in-progress
 **Created:** 2026-06-02
 **Phase:** llm-text-slice (first post-v0 vertical slice)
 **Estimated size:** ~1 day

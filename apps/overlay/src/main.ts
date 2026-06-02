@@ -59,6 +59,7 @@ const WIDGET_LABEL = "widget";
 const EV_SHOW = "show-picker";
 const EV_RESULT = "picker-result";
 const EV_CANCEL = "picker-cancel";
+const EV_SHOW_TEXT = "show-text";     // main → widget : { content } (display-only)
 
 // Only one picker is live at a time in v0 (single in-flight session, 6.5a guard).
 let activeCtx: ToolCallContext | undefined;
@@ -119,6 +120,19 @@ function onToolCall(ctx: ToolCallContext): void {
   showWidgetWindow().catch(() => {/* ignore */});
 }
 
+/**
+ * Display-only handler for show_text replies (C3-2).
+ * Mirrors the onToolCall show path (hidePanel + emitTo + showWidgetWindow)
+ * minus result/cancel wiring (display-only: no tool_result ever sent).
+ * The existing ~1200ms linger in runSession().then() auto-dismisses the card.
+ * No new timer added (gotcha #33/#34 guard).
+ */
+function onShowText(content: string): void {
+  hidePanel().catch(() => {/* ignore */});
+  emitTo(WIDGET_LABEL, EV_SHOW_TEXT, { content }).catch(() => {/* ignore */});
+  showWidgetWindow().catch(() => {/* ignore */});
+}
+
 // Cross-window result/cancel — registered once.
 void listen<ColorSwatch>(EV_RESULT, (event) => {
   if (activeCtx === undefined || pickerSettled) return;
@@ -155,7 +169,7 @@ input.addEventListener("keydown", (e: KeyboardEvent) => {
     inFlight = true;
     setStatus("…");
 
-    runSession(text, factory, { onToolCall })
+    runSession(text, factory, { onToolCall, onShowText })
       .then(({ sessionId, reason }) => {
         // 6.5b SUCCESS: render result, keep visible briefly (~1200ms) so it's
         // readable, THEN hide and reset.

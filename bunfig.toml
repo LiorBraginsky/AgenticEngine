@@ -1,2 +1,4 @@
 [test]
 # bun's built-in test runner; no Jest/Vitest.
+# Preload sets up happy-dom globals (document, HTMLElement) for DOM renderer tests.
+preload = ["./test-setup/dom-preload.ts"]

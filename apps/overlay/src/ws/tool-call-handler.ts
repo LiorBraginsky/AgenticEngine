@@ -23,6 +23,28 @@ export function decideRender(call: ToolCall, confirmedSessionId: string | undefi
   return { kind: "render", session_id: call.session_id, call_id: call.call_id, picker: call.payload.args.picker };
 }
 
+export type TextRenderDecision =
+  | { kind: "render-text"; content: string }
+  | { kind: "ignore" };
+
+/**
+ * Display-only decider for show_text tool_calls. Parallel to decideRender.
+ * Returns render-text with the text content when the call is a show_text
+ * for the confirmed session; otherwise returns ignore.
+ * NEVER throws (gotcha #9 discipline).
+ */
+export function decideTextRender(call: ToolCall, confirmedSessionId: string | undefined): TextRenderDecision {
+  if (confirmedSessionId === undefined || call.session_id !== confirmedSessionId) {
+    return { kind: "ignore" };
+  }
+  if (call.payload.tool !== "show_text") {
+    return { kind: "ignore" };
+  }
+  // Narrow the payload to show_text before reading args (type-safe access).
+  const content = call.payload.args.text.content;
+  return { kind: "render-text", content };
+}
+
 export function buildToolResult(session_id: string, call_id: string, picked: ColorSwatch): ToolResult {
   const result = { picked };
   ShowColorPickerResult.parse(result);

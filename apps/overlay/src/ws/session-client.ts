@@ -19,7 +19,7 @@
 
 import { parseEnvelope } from "@agentic/protocol";
 import type { Envelope, ColorPickerPrimitive, ColorSwatch } from "@agentic/protocol";
-import { decideRender, buildToolResult, buildToolCancel } from "./tool-call-handler.js";
+import { decideRender, decideTextRender, buildToolResult, buildToolCancel } from "./tool-call-handler.js";
 import type { WebSocketFactory } from "./types.js";
 
 const WS_URL = "ws://127.0.0.1:7777";
@@ -53,6 +53,9 @@ export interface ToolCallContext {
 
 export interface RunSessionOptions {
   onToolCall?: (ctx: ToolCallContext) => void;
+  /** Called when a show_text tool_call arrives (display-only path).
+   *  The promise stays open until session_end resolves it. */
+  onShowText?: (content: string) => void;
 }
 
 /**
@@ -185,6 +188,18 @@ export function runSession(
             sendCancel: () => { if (!settled) ws.send(JSON.stringify(buildToolCancel(session_id, call_id))); },
           });
         }
+        // Display-only branch: show_text tool_call.
+        // Additive — color-picker branch above is byte-unchanged.
+        const textDecision = decideTextRender(envelope, confirmedSessionId);
+        if (textDecision.kind === "render-text") {
+          // Disarm the handshake timeout (mirroring the color-picker branch).
+          // The session completes when the daemon emits session_end{completed}
+          // right after this tool_call — do NOT settle the promise here.
+          clearTimeout(timer);
+          options.onShowText?.(textDecision.content);
+          return;
+        }
+
         // unknown tool / unconfirmed session ⇒ ignore (graceful, no throw)
         return;
       }

@@ -1,3 +1,5 @@
+> 🗄️ ARCHIVED 2026-06-02 — shipped. Historical record; do not edit.
+
 # llm-text-slice / Chunk 1 — `show_text` display-only protocol primitive — Implementation Plan
 
 > **For the engine-worker:** Execute task-by-task, TDD. Steps use checkbox (`- [ ]`) syntax. Per project CLAUDE.md: branch first (`chunk/01-show-text-protocol-primitive`), commit per task with the `Co-Authored-By: Claude Opus 4.8 (1M context)` trailer, push, open a PR targeting `main`. Never merge — Lior reviews.
@@ -12,7 +14,7 @@
 
 ## Status
 
-`Phase 3 — REVIEW-COMPLETE + VERIFIED-DONE. Reviewer verdict CLEAN on re-review (root typecheck + lint:strict + 74 tests all green; envelope byte-unchanged; scope = packages/protocol + 2 sanctioned consumer files). 5 commits on chunk/01-show-text-protocol-primitive. All 5 DoD criteria (all mechanical) have command-evidence. Pushing + opening PR; archive ritual pending Lior's merge.`
+`shipped` — chunk-01 merged via PR #8 (2026-06-02). Reviewer-clean (root typecheck + lint:strict + 74 tests green; envelope byte-unchanged); all 5 DoD criteria (all mechanical) verified with command-evidence.
 
 ---
 

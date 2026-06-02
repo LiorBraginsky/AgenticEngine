@@ -1,6 +1,8 @@
+> 🗄️ ARCHIVED 2026-06-02 — done. Historical record; do not edit.
+
 # Chunk 1: `show_text` display-only protocol primitive
 
-**Status:** in-progress
+**Status:** done
 **Created:** 2026-06-02
 **Phase:** llm-text-slice (first post-v0 vertical slice)
 **Estimated size:** ~0.5 day

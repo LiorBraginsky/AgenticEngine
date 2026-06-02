@@ -14,7 +14,7 @@
 
 ## Status
 
-`IN PROGRESS — chunk-02 implementation` (plan approved by Lior 2026-06-02; ADR-0010/0011 `proposed`; chunk-03 planned below; one PR for both; chunk-03 demo gate pending).
+`IN PROGRESS — chunk-03 implementation`. **chunk-02 CODE-COMPLETE** (commits `0353dfc`, `39ff496`, `41e1d46`; full daemon suite 29 pass, typecheck/lint clean, protocol diff empty — all mechanical DoD met). ADR-0010/0011 `proposed`. One PR for both chunks; chunk-03 live-demo gate (§6.1) still pending.
 
 ## ADRs
 

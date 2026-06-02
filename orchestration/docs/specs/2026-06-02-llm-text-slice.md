@@ -8,7 +8,7 @@ feeds: decompose-feature → chunks-todo/llm-text-slice/ → per-chunk engine-or
 
 # Spec: LLM Text-Reply Slice (first real LLM + provider abstraction)
 
-> **This is the foundation of the product, not a throwaway.** Scope is thin (single-turn, one provider, `.env` key) but the **seams are load-bearing** — the provider abstraction here is what the whole multi-provider product rests on. "Play / пощупать" = Lior wants to feel a real LLM answer him; architecturally this is the base.
+> **This is the foundation of the product, not a throwaway.** Scope is thin (single-turn, one provider, `.env` key) but the **seams are load-bearing** — the provider abstraction here is what the whole multi-provider product rests on. "Play" here means a hands-on feel — Lior wants to experience a real LLM answering him — not a disposable experiment; architecturally this is the base.
 
 ## 1. Goal & scope
 

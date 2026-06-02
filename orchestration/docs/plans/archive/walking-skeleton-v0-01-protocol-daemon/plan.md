@@ -1,5 +1,7 @@
 # Walking Skeleton v0 — Chunk 01: Frozen Wire-Protocol Contract + Minimal Daemon — Implementation Plan
 
+> **✅ SHIPPED — Walking Skeleton v0 (closed 2026-06-02, PR #1). Archived historical record; kept for provenance/audit trail.** Any "IN PROGRESS" status or "git commit declined by permission layer" notes below reflect mid-execution state and are **SUPERSEDED** — v0 is complete and autonomous git is now enabled (project CLAUDE.md).
+
 > **Orchestration status:** Phase 2 (implementation) — IN PROGRESS. Plan approved by Lior 2026-05-30. **Task 1 ✅ DONE** (commit `432785a`). **Task 2 ✅ DONE** (18/18 tests green, verbatim contract; files staged, commit pending Lior — `git commit` declined by permission layer). Task 3 ⏳ in progress. Then engine-reviewer gate (baseline = `432785a^`).
 >
 > **Git note:** `git commit` is declined by the permission layer — commits are Lior's to make manually. Workers write + test + verify; they do NOT commit. Pending manual commit: Task 2 (`feat(protocol): frozen 6-variant envelope + color-picker tool/primitive contract`), plus uncommitted docs (plan.md, ADR-0003 amendment, known-gotchas #31).

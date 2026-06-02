@@ -1,5 +1,7 @@
 # Walking Skeleton v0 — Chunk 02b-i: Tauri Overlay Shell + Global Hotkey + WS Transport (ECHO round-trip, NO widget) — Implementation Plan
 
+> **✅ SHIPPED — Walking Skeleton v0 (closed 2026-06-02, PR #1). Archived historical record; kept for provenance/audit trail.** Any "IN PROGRESS" status or "git commit declined by permission layer" notes below reflect mid-execution state and are **SUPERSEDED** — v0 is complete and autonomous git is now enabled (project CLAUDE.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Every code step also requires superpowers:test-driven-development (red→green: write the failing test, run it, *see it fail*, implement, *see it pass*) for the pure-TS seam, and superpowers:verification-before-completion (real `bun test` + `bun run lint:strict` + `bun run typecheck` output shown BEFORE any "done" claim). Native/window/hotkey/permission behaviour is verified by a MANUAL macOS checklist (see Verification), not automated.
 >
 > **Git note (project rule):** workers write + test + verify; they do NOT `git commit`. Commits are Lior's to make manually (the permission layer declines `git commit`). Local commits only — NO push/amend/force/--no-verify. The commit blocks below are the messages Lior will use.

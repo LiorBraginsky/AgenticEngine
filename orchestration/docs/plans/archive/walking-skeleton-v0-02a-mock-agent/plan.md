@@ -1,5 +1,7 @@
 # Walking Skeleton v0 — Chunk 02a: Mock Agent Loop (CLI-verified, NO UI) — Implementation Plan
 
+> **✅ SHIPPED — Walking Skeleton v0 (closed 2026-06-02, PR #1). Archived historical record; kept for provenance/audit trail.** Any "IN PROGRESS" status or "git commit declined by permission layer" notes below reflect mid-execution state and are **SUPERSEDED** — v0 is complete and autonomous git is now enabled (project CLAUDE.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax. Every code step also requires superpowers:test-driven-development (red→green: write the failing test, run it, *see it fail*, implement, *see it pass*) and superpowers:verification-before-completion (real `bun test` + `bun run typecheck` + `bun run lint:strict` output shown BEFORE any "done" claim).
 >
 > **Git note (carried from chunk-01):** `git commit` is Lior's to make manually (declined by the permission layer). Workers write + test + verify; they do NOT commit/push/amend/force/--no-verify. Commit messages are provided for Lior's convenience only.

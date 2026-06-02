@@ -14,7 +14,7 @@
 
 ## Status
 
-`IN PROGRESS — chunk-03 implementation`. **chunk-02 CODE-COMPLETE** (commits `0353dfc`, `39ff496`, `41e1d46`; full daemon suite 29 pass, typecheck/lint clean, protocol diff empty — all mechanical DoD met). ADR-0010/0011 `proposed`. One PR for both chunks; chunk-03 live-demo gate (§6.1) still pending.
+`AWAITING LIOR'S LIVE macOS DEMO` — both chunks **CODE-COMPLETE + reviewer-approved** on branch `chunk/02-agent-provider-port` (pushed to origin, no PR yet). Commits `0353dfc`→`00ae700`. Mechanical gates all green: full workspace `bun test` **99 pass**, typecheck + lint:strict clean, `git diff packages/protocol` empty. engine-reviewer: **no Critical/Major**, 11/11 invariants pass, 2 minor nits fixed (`00ae700`). ADR-0010/0011 `proposed`. **The ONLY open DoD is chunk-03's behavioral gate (§6.1): Lior's live macOS run.** PR + ADR acceptance + Q1 strike + archive all happen AFTER demo PASS.
 
 ## ADRs
 

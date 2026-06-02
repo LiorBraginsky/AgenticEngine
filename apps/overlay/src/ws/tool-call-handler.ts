@@ -17,6 +17,9 @@ export function decideRender(call: ToolCall, confirmedSessionId: string | undefi
   if (!cls.known || cls.name !== "show_color_picker") {
     return { kind: "ignore" };
   }
+  if (call.payload.tool !== "show_color_picker") {
+    return { kind: "ignore" };
+  }
   return { kind: "render", session_id: call.session_id, call_id: call.call_id, picker: call.payload.args.picker };
 }
 

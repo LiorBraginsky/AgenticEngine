@@ -1,6 +1,6 @@
 # Chunk 03: End-to-end wiring + Definition-of-done demo
 
-**Status:** todo
+**Status:** done
 **Created:** 2026-05-30
 **Phase:** Walking Skeleton v0 (pre-Phase-1/2 vertical slice)
 **Estimated size:** ~1 day

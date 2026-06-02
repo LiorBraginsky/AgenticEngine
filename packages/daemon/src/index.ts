@@ -58,7 +58,7 @@ export function startDaemon(port: number = DAEMON_PORT) {
         const result = await provider.advance(prior, inbound);
 
         if (!result.ok) {
-          console.error("[daemon] mock-agent typed error:", result.error); // no crash — session may stay open
+          console.error("[daemon] provider typed error:", result.error); // no crash — session may stay open
         } else if (result.finalText) {
           // Option A (Jimmy's ruling): log the final text; it is NOT sent as a wire message.
           console.log("[daemon] agent final text:", result.finalText);

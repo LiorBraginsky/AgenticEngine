@@ -75,13 +75,13 @@ export function formatShowTextEnvelopes(
  *   2. session_end  — reason "error"
  */
 export function formatErrorEnd(
-  client_session_id: string | undefined,
-  session_id: string,
+  ids: { client_session_id: string | undefined; session_id: string },
   // detail is accepted for symmetry with callers that log it; not embedded in
   // the wire envelope to avoid leaking internal error strings to the overlay.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   _detail: string,
 ): Envelope[] {
+  const { client_session_id, session_id } = ids;
   return [
     { type: "session_ack", session_id, client_session_id },
     { type: "session_end", session_id, reason: "error" },
@@ -214,7 +214,7 @@ export function createAnthropicApiProvider(
           ok: false,
           error,
           nextState: doneState,
-          outbound: formatErrorEnd(client_session_id, session_id, detail),
+          outbound: formatErrorEnd({ client_session_id, session_id }, detail),
         };
       }
 
@@ -268,7 +268,7 @@ export function createAnthropicApiProvider(
             ok: false,
             error,
             nextState: doneState,
-            outbound: formatErrorEnd(client_session_id, session_id, detail),
+            outbound: formatErrorEnd({ client_session_id, session_id }, detail),
           };
         }
 
@@ -297,7 +297,7 @@ export function createAnthropicApiProvider(
           ok: false,
           error,
           nextState: doneState,
-          outbound: formatErrorEnd(client_session_id, session_id, detail),
+          outbound: formatErrorEnd({ client_session_id, session_id }, detail),
         };
       }
     },

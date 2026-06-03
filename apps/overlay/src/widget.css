@@ -145,9 +145,12 @@ html, body {
   word-wrap: break-word;
   white-space: pre-wrap;
   letter-spacing: 0.01em;
-  /* 65vh - 80px: subtracts card + host chrome; matches MAX_HEIGHT_FRACTION (0.65)
-     in measure-height.ts (Task 4.3) — keep both in sync if fraction changes. */
-  max-height: calc(65vh - 80px);
+  /* NO CSS max-height here — a vh-based cap is circular with the resize logic:
+     when the window is initially small, vh = small window height → tiny cap →
+     clipped scrollHeight → window stays small (gotcha #44 regression).
+     The scroll cap is applied in px by resizeToContent() in widget.ts AFTER
+     measuring the full natural content height against screen.availHeight.
+     overflow-y:auto remains so the JS-driven px cap can engage scrolling. */
   overflow-y: auto;
 
   /* Thin dark scrollbar — WebKit only (macOS WKWebView) */

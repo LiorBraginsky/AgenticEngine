@@ -241,7 +241,7 @@ input.addEventListener("keydown", (e: KeyboardEvent) => {
           endStatus !== undefined &&
           (lastRenderKind === "loader" || lastRenderKind === undefined)
         ) {
-          lastRenderKind = endStatus.variant as typeof lastRenderKind;
+          lastRenderKind = endStatus.variant;
           emitTo(WIDGET_LABEL, EV_SHOW_STATUS, {
             variant: endStatus.variant satisfies StatusVariant,
             message: endStatus.message,

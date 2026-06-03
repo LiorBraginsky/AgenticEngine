@@ -16,8 +16,9 @@ export const WIDGET_MIN_HEIGHT = 64;
 
 /**
  * Maximum fraction of screen height the widget may occupy (65%).
- * Must be kept in sync with the CSS `max-height: calc(65vh - 80px)` on
- * `.text-reply-content` in widget.css (Task 4.2).
+ * Applied in resizeToContent() (widget.ts) as a px cap derived from
+ * window.screen.availHeight — NOT as a vh CSS rule (vh is window-relative
+ * and circular with the resize; see the regression note in widget.ts).
  */
 export const MAX_HEIGHT_FRACTION = 0.65;
 

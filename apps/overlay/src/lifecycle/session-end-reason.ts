@@ -4,13 +4,13 @@
  * Maps a wire `session_end.reason` to a status card descriptor so main.ts
  * can show the appropriate error/timeout card in the widget zone.
  *
- * SessionEndReason is an OPEN enum (packages/protocol/src/envelope.ts:18-21).
+ * SessionEndReason is an OPEN enum (see `SessionEndReason` in envelope.ts).
  * This function MUST NOT throw for unknown/future reason values — it returns
  * undefined, which the caller interprets as "no card to show".
  *
- * The daemon strips detail from error reasons by design (formatErrorEnd,
- * packages/daemon/src/providers/anthropic-api-provider.ts:77-89), so the
- * messages here are generic. Protocol-level detail would require a wire change.
+ * The daemon strips detail from error reasons by design (see `formatErrorEnd`
+ * in anthropic-api-provider.ts), so the messages here are generic.
+ * Protocol-level detail would require a wire change.
  *
  * DOM-free, no Tauri, no WebSocket.
  */

@@ -167,6 +167,23 @@ Surfaced by Lior's live macOS demo during Walking Skeleton v0 — Chunk 03 (2026
 
 - **Scope boundary — overlay-only, frozen surfaces untouched.** Nothing here changes `packages/protocol` (the 6-variant envelope) or the daemon. Both behaviors are realized entirely in the overlay (`apps/overlay`), using the `picked` swatch and the `tool_cancel` path that already exist.
 
+## Amendment 2026-06-03
+
+**This is NOT a supersede; it is a REFINEMENT.** It refines *how the top-right `widget` zone (Decision p.2) manages the lifecycle of what it renders*, introducing an explicit **content-vs-transient dismiss policy**. It does **not** touch the activation hotkeys (2026-05-30), the two-window realization (2026-05-31), or the ephemeral picker confirmation (2026-06-01) — the picker confirmation **stays ephemeral (~1200ms auto-dismiss)**, exactly as the 2026-06-01 amendment requires. This amendment restores Decision p.2's original "slightly persistent" intent for the one surface that is *content the user reads*: the LLM text answer.
+
+Surfaced by Lior post-llm-text-slice and decided 2026-06-03 (overlay-ux-pass; status-zone realization = Option A, confirmed by Lior). The `show_text` answer was being auto-hidden by the same ~1200ms timer that dismisses the picker confirmation (the `apps/overlay/src/main.ts` success branch), so multi-sentence replies vanished before they could be read. See [[../plans/overlay-ux-pass/plan]] (chunks 01/02/03).
+
+- **Dismiss policy — the rule of three.** The `widget` zone classifies everything it renders into exactly three dismiss behaviors, made explicit in the renderer:
+  - **`content`** (the LLM `show_text` answer) — **persists until the user dismisses it.** Dismissals are **Escape**, **a new request** (the next `session_start` / hotkey-submit replaces it), and an **on-card `× Close`** — display-only content is *closed*, not *cancelled*, using the same labeled-control style the 2026-06-01 amendment requires for the picker's `× Cancel`. **No timer ever auto-hides content.**
+  - **`status`** (thinking loader, error, timeout, cancelled) — **timed auto-dismiss.** The thinking loader is replaced when content/picker arrives; an error lingers ~2s then auto-dismisses; a handshake-timeout shows a friendly "taking too long" card (~2.5s, not a bare error — see the loader point below); cancelled shows a brief card (~1.2s). Status never auto-hides content that is still on screen.
+  - **`picker-confirm`** (the `✓ Name #HEX` confirmation) — **auto-dismisses ~1200ms**, unchanged from the 2026-06-01 amendment.
+
+- **Dedicated status surface = a render *mode* of the existing `widget` window, NOT a third window (Option A, Lior 2026-06-03).** The 2026-05-31 amendment settled on **two windows** and rejected both "single large window" (its Option A) and "resize `main` per render" (its Option C). This amendment keeps the two windows: the `widget` window renders one mode at a time (`loader` | `text` | `picker` | `status` | `confirmation`). Status moves **out from under the input** — where it was invisible, written to the already-hidden `main` window — into this zone. A third dedicated status window was considered and **rejected** to preserve the two-window model and avoid a new window's positioning/focus/click-through/capabilities cost; loader→content→status are sequential within a single session and never need to coexist (a new session dismisses the prior answer first), so one window with modes suffices.
+
+- **The thinking loader is frontend-only.** The overlay infers "in-flight" from "`session_start` sent, no `tool_call` yet" — observed via a new frontend `onSessionStart` callback on `runSession`. **No wire/progress signal, no protocol change.** When generation exceeds the handshake timeout (gotcha #42), the loader is replaced by a friendly **`timeout`** status ("the model is taking too long"), not a raw error — distinguishing a slow model from a genuine failure. Rendering the model's partial output while it thinks (streaming) is explicitly deferred; it needs a daemon/wire progress signal (gotchas #1/#43).
+
+- **Scope boundary — overlay-only, frozen surfaces untouched.** Nothing here changes `packages/protocol` (the 6-variant envelope) or the daemon. This per-session transient overlay status zone is **distinct from** the global daemon tray/menubar status indicator (Decision p.4, running/idle/error) — complementary surfaces, not the same; the tray remains deferred.
+
 ## Related
 
 - [[0002-ui-as-tool-calls]] — the UI-as-tool-call model whose resolve/cancel the widget round-trip fulfills (see Amendments 2026-05-31 and 2026-06-01; the latter reaffirms the cancel half at the UX layer)
@@ -177,5 +194,6 @@ Surfaced by Lior's live macOS demo during Walking Skeleton v0 — Chunk 03 (2026
 - [[../plans/walking-skeleton-v0-02b-i-tauri-shell/plan]] — Walking Skeleton v0 Chunk 02b-i; source of the 2026-05-30 amendment that pins the default tap-hotkey
 - [[../plans/walking-skeleton-v0-02b-ii-color-picker/plan]] — Walking Skeleton v0 Chunk 02b-ii; source of the 2026-05-31 amendment that pins the two-window zone realization
 - [[../plans/walking-skeleton-v0-03-e2e-wiring/plan]] — Walking Skeleton v0 Chunk 03; source of the 2026-06-01 amendment (confirm-then-dismiss on resolve + cancel reachability)
+- [[../plans/overlay-ux-pass/plan]] — overlay UX pass (chunks 01/02/03); source of the 2026-06-03 amendment (content-persist + dedicated status zone + dismiss-policy)
 - [[../../chunks-todo/walking-skeleton-v0/02b-i-tauri-shell-and-hotkey]] — the chunk whose planning pinned the default tap-hotkey
 - [[../../chunks-todo/walking-skeleton-v0/03-end-to-end-wiring-and-demo]] — the chunk whose macOS demo (DoD line 25) surfaced the 2026-06-01 amendment

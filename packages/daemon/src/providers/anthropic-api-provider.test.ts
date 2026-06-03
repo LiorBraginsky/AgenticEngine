@@ -283,6 +283,67 @@ describe("missing/empty apiKey", () => {
   });
 });
 
+// ── (v) regression: lazy getClient() receives the RESOLVED key, not "" ────
+//
+// This test exercises the path where opts.apiKey is undefined but
+// ANTHROPIC_API_KEY is present in the environment.  The pre-fix code called
+// new Anthropic({ apiKey: opts.apiKey ?? "" }) — i.e. always "" — which made
+// the SDK throw a plain Error("Could not resolve authentication method…")
+// that classifyAnthropicError masked as "provider unavailable".
+//
+// Post-fix: getClient(resolvedKey) passes the same key the guard resolved,
+// so the clientFactory spy receives the real, non-empty key.
+
+describe("lazy getClient() path: resolved key reaches client construction", () => {
+  test("clientFactory is called with the env key, not empty string", async () => {
+    const FAKE_KEY = "sk-ant-regression-test-key";
+
+    // Save and inject ANTHROPIC_API_KEY into the process env
+    const prior = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = FAKE_KEY;
+
+    let factoryCalledWith: string | undefined;
+
+    // Stub client that returns a successful response
+    const stubClient = {
+      messages: {
+        create: async () => ({
+          content: [{ type: "text" as const, text: "hi there" }],
+        }),
+      },
+    };
+
+    try {
+      const provider = createAnthropicApiProvider({
+        // deliberately NO apiKey — production singleton pattern
+        clientFactory: (apiKey: string) => {
+          factoryCalledWith = apiKey;
+          return stubClient as never;
+        },
+      });
+
+      const result = await provider.advance(undefined, SESSION_START_INBOUND);
+
+      // The factory must have been invoked with the real resolved key
+      expect(factoryCalledWith).toBe(FAKE_KEY);
+      expect(factoryCalledWith).not.toBe("");
+
+      // And the advance must succeed end-to-end
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.finalText).toBe("hi there");
+      }
+    } finally {
+      // Restore env regardless of test outcome
+      if (prior === undefined) {
+        delete process.env.ANTHROPIC_API_KEY;
+      } else {
+        process.env.ANTHROPIC_API_KEY = prior;
+      }
+    }
+  });
+});
+
 // ── unexpected inbound (tool_result / tool_cancel guard) ──────────────────
 
 test("tool_result on anthropic provider: ok:false, unexpected_message, no throw", async () => {

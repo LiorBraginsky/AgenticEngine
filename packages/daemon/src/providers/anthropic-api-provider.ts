@@ -120,6 +120,15 @@ export function classifyAnthropicError(err: unknown): string {
   if (err instanceof Anthropic.APIError) {
     return "provider unavailable";
   }
+  // Plain Error thrown by the SDK at construction time when apiKey is empty:
+  // "Could not resolve authentication method. Expected one of apiKey, authToken, ..."
+  // This is NOT an Anthropic.APIError so it falls here.
+  if (
+    err instanceof Error &&
+    err.message.includes("Could not resolve authentication")
+  ) {
+    return "invalid/missing API key";
+  }
   // Non-SDK errors (network timeouts, etc.)
   return "provider unavailable";
 }
@@ -129,15 +138,19 @@ export function classifyAnthropicError(err: unknown): string {
 /**
  * Dependency-injection options for tests and production.
  *
- *   apiKey  — if empty → do NOT call the SDK → provider_failure
- *             (guards against accidentally using a real key in tests)
- *   client  — injectable for unit tests; if omitted, built lazily from apiKey
+ *   apiKey         — if empty → do NOT call the SDK → provider_failure
+ *                   (guards against accidentally using a real key in tests)
+ *   client         — injectable for unit tests; if omitted, built lazily from apiKey
+ *   clientFactory  — injectable factory for tests that need to assert the resolved
+ *                   key reaches client construction; default: (key) => new Anthropic({ apiKey: key })
  */
 export interface AnthropicProviderOptions {
   /** ANTHROPIC_API_KEY string. Empty string = missing key. */
   apiKey?: string;
   /** Pre-built Anthropic client (injectable for tests). */
   client?: Anthropic;
+  /** Factory used to construct the lazy client. Overridable in tests. */
+  clientFactory?: (apiKey: string) => Anthropic;
 }
 
 /**
@@ -155,9 +168,17 @@ export function createAnthropicApiProvider(
   // Lazy client: built once on first use if not injected.
   let _client: Anthropic | null = opts.client ?? null;
 
-  function getClient(): Anthropic {
+  /**
+   * Constructs (or returns the cached) Anthropic client.
+   *
+   * resolvedKey MUST be the key already validated by the guard above —
+   * guaranteed non-empty so the SDK constructor never sees "".
+   */
+  function getClient(resolvedKey: string): Anthropic {
     if (!_client) {
-      _client = new Anthropic({ apiKey: opts.apiKey ?? "" });
+      const factory =
+        opts.clientFactory ?? ((apiKey: string) => new Anthropic({ apiKey }));
+      _client = factory(resolvedKey);
     }
     return _client;
   }
@@ -220,7 +241,7 @@ export function createAnthropicApiProvider(
 
       // ── Imperative shell: network call ──────────────────────────────────
       try {
-        const client = getClient();
+        const client = getClient(resolvedKey);
 
         // Prompt caching: add cache_control on the system block per the
         // skill's convention. NOTE: the tiny system prompt is below Sonnet's
@@ -290,6 +311,11 @@ export function createAnthropicApiProvider(
           finalText: replyText,
         };
       } catch (err: unknown) {
+        // Log the raw error server-side for observability without leaking to wire.
+        console.error(
+          "[anthropic-provider] raw error:",
+          err instanceof Error ? `${err.name}: ${err.message}` : err,
+        );
         // Any SDK error OR unexpected throw → graceful provider_failure
         const detail = classifyAnthropicError(err);
         const error: ProviderError = { kind: "provider_failure", detail };

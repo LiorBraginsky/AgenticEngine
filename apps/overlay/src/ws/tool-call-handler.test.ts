@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { decideRender } from "./tool-call-handler.js";
+import { decideRender, decideTextRender } from "./tool-call-handler.js";
 
 const colorPickerToolCall = {
   type: "tool_call" as const,
@@ -46,4 +46,40 @@ test("buildToolCancel emits a contract-valid tool_cancel carrying call_id", () =
   const msg = buildToolCancel("srv-1", "call-1");
   expect(parseEnvelope(msg).kind).toBe("ok");
   expect(msg.call_id).toBe("call-1");
+});
+
+// ---------------------------------------------------------------------------
+// decideTextRender tests (C3-2)
+// ---------------------------------------------------------------------------
+
+const showTextToolCall = {
+  type: "tool_call" as const,
+  session_id: "srv-1",
+  call_id: "call-txt-1",
+  payload: {
+    tool: "show_text" as const,
+    args: { text: { primitive: "text" as const, content: "Hello from Claude" } },
+  },
+};
+
+test("decideTextRender returns render-text with content when tool_call matches confirmed session", () => {
+  const d = decideTextRender(showTextToolCall, "srv-1");
+  expect(d.kind).toBe("render-text");
+  if (d.kind === "render-text") {
+    expect(d.content).toBe("Hello from Claude");
+  }
+});
+
+test("decideTextRender returns ignore for unconfirmed session", () => {
+  expect(decideTextRender(showTextToolCall, undefined).kind).toBe("ignore");
+});
+
+test("decideTextRender returns ignore for mismatched session_id", () => {
+  expect(decideTextRender(showTextToolCall, "other-session").kind).toBe("ignore");
+});
+
+// REGRESSION GUARD: decideRender (color-picker decider) must NOT claim a show_text call.
+test("decideRender (color-picker) ignores a show_text tool_call — regression guard", () => {
+  const d = decideRender(showTextToolCall as unknown as Parameters<typeof decideRender>[0], "srv-1");
+  expect(d.kind).toBe("ignore");
 });

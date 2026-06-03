@@ -19,11 +19,25 @@
 
 import { parseEnvelope } from "@agentic/protocol";
 import type { Envelope, ColorPickerPrimitive, ColorSwatch } from "@agentic/protocol";
-import { decideRender, buildToolResult, buildToolCancel } from "./tool-call-handler.js";
+import { decideRender, decideTextRender, buildToolResult, buildToolCancel } from "./tool-call-handler.js";
 import type { WebSocketFactory } from "./types.js";
 
 const WS_URL = "ws://127.0.0.1:7777";
-const ECHO_TIMEOUT_MS = 2000;
+
+/**
+ * Default handshake timeout for real single-turn LLM latency.
+ *
+ * Calibrated for real single-turn LLM latency — the AnthropicApiProvider
+ * bundles session_ack + tool_call + session_end all after the full Claude
+ * messages.create() call completes, so "time to first envelope" ≈ generation
+ * time.  30s aligns with the project's "30s tool timeout" sensible default
+ * (known-gotchas #4).
+ *
+ * v0's 2000ms was calibrated for the instant mock.  Proper fix (emit
+ * session_ack IMMEDIATELY on session_start, before the LLM call, then stream
+ * content) is deferred — see known-gotchas #42 / #43.
+ */
+const DEFAULT_HANDSHAKE_TIMEOUT_MS = 30_000;
 
 /**
  * The frozen session_start shape derived from the Envelope union.
@@ -53,6 +67,16 @@ export interface ToolCallContext {
 
 export interface RunSessionOptions {
   onToolCall?: (ctx: ToolCallContext) => void;
+  /** Called when a show_text tool_call arrives (display-only path).
+   *  The promise stays open until session_end resolves it. */
+  onShowText?: (content: string) => void;
+  /**
+   * How long (ms) to wait for the daemon to send the first tool_call after
+   * session_start is sent.  Defaults to DEFAULT_HANDSHAKE_TIMEOUT_MS (30s).
+   * Tests that exercise the rejection path should pass a small value (e.g. 50)
+   * so the suite stays fast.
+   */
+  handshakeTimeoutMs?: number;
 }
 
 /**
@@ -109,10 +133,11 @@ export function runSession(
     let confirmedSessionId: string | undefined;
     let settled = false;
 
+    const timeoutMs = options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
     const timer = setTimeout(() => {
       ws.close();
-      reject(new Error(`runSession timed out after ${ECHO_TIMEOUT_MS}ms`));
-    }, ECHO_TIMEOUT_MS);
+      reject(new Error(`runSession timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
 
     // 6.2: close the socket before resolving to prevent the socket leak (MAJOR fix).
     function finish(result: SessionResult) {
@@ -185,6 +210,18 @@ export function runSession(
             sendCancel: () => { if (!settled) ws.send(JSON.stringify(buildToolCancel(session_id, call_id))); },
           });
         }
+        // Display-only branch: show_text tool_call.
+        // Additive — color-picker branch above is byte-unchanged.
+        const textDecision = decideTextRender(envelope, confirmedSessionId);
+        if (textDecision.kind === "render-text") {
+          // Disarm the handshake timeout (mirroring the color-picker branch).
+          // The session completes when the daemon emits session_end{completed}
+          // right after this tool_call — do NOT settle the promise here.
+          clearTimeout(timer);
+          options.onShowText?.(textDecision.content);
+          return;
+        }
+
         // unknown tool / unconfirmed session ⇒ ignore (graceful, no throw)
         return;
       }

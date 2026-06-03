@@ -1,11 +1,12 @@
 import { parseEnvelope, type Envelope } from "@agentic/protocol";
 import { isOriginAllowed } from "./origin.js";
-import { advanceMockAgent, type MockSessionState, type MockAgentInput } from "./mock-agent.js";
+import { buildInjector } from "./providers/injector.js";
+import type { ProviderSessionState, ProviderInput } from "./providers/provider.js";
 
 export const DAEMON_HOST = "127.0.0.1"; // loopback only (ADR-0003 p.3)
 export const DAEMON_PORT = 7777;
 
-const sessions = new Map<string, MockSessionState>();
+const sessions = new Map<string, ProviderSessionState>();
 type SocketData = { sessionIds: Set<string> };
 
 function send(ws: { send(data: string): number }, msg: Envelope): void {
@@ -21,6 +22,8 @@ function send(ws: { send(data: string): number }, msg: Envelope): void {
 const REDUCER_INPUT_TYPES = new Set(["session_start", "tool_result", "tool_cancel"]);
 
 export function startDaemon(port: number = DAEMON_PORT) {
+  const provider = buildInjector();
+
   return Bun.serve<SocketData>({
     hostname: DAEMON_HOST,
     port,
@@ -33,7 +36,7 @@ export function startDaemon(port: number = DAEMON_PORT) {
       return new Response("Upgrade failed", { status: 400 });
     },
     websocket: {
-      message(ws, raw) {
+      async message(ws, raw) {
         let json: unknown;
         try {
           json = JSON.parse(typeof raw === "string" ? raw : raw.toString());
@@ -49,13 +52,13 @@ export function startDaemon(port: number = DAEMON_PORT) {
         const msg = parsed.message;
         if (!REDUCER_INPUT_TYPES.has(msg.type)) return; // session_ack/tool_call/session_end inbound = no-op
 
-        const inbound = msg as MockAgentInput;
+        const inbound = msg as ProviderInput;
         const sessionId = inbound.type === "session_start" ? undefined : inbound.session_id;
         const prior = sessionId ? sessions.get(sessionId) : undefined;
-        const result = advanceMockAgent(prior, inbound);
+        const result = await provider.advance(prior, inbound);
 
         if (!result.ok) {
-          console.error("[daemon] mock-agent typed error:", result.error); // no crash — session may stay open
+          console.error("[daemon] provider typed error:", result.error); // no crash — session may stay open
         } else if (result.finalText) {
           // Option A (Jimmy's ruling): log the final text; it is NOT sent as a wire message.
           console.log("[daemon] agent final text:", result.finalText);

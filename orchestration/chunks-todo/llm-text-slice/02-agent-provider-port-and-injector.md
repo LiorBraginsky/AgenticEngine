@@ -1,10 +1,14 @@
 # Chunk 2: AgentProvider port + llm-injector + mock-behind-port + memory-ready session state
 
-**Status:** todo
+**Status:** in-progress
 **Created:** 2026-06-02
 **Phase:** llm-text-slice (first post-v0 vertical slice)
 **Estimated size:** ~1 day
 **Depends on:** none (parallelizable with Chunk 1 — pure daemon refactor; the mock keeps emitting the existing color-picker flow, no new primitive needed. Recommended order 1→2→3.)
+
+> 📌 **RECONCILIATION (Lior, 2026-06-02 → ADR-0010 revised; orchestrator annotation per PIPELINE §7.2 — frozen text below left intact).** The `ProviderKind` discriminated union (`raw-api | agent-harness`) is **removed**: the port is **THIN** (`{ id, advance }`, no `kind` field), and the injector selects by `id` from a `Map` — it does **NOT** "dispatch over `ProviderKind`". Rationale: laying down a family discriminant with no implementation/test is speculative; agent-harness gets a separate future sub-seam when provider #2 lands (rule of three; research 3-0). This supersedes the Scope bullet "ProviderKind discriminated union" and the Done-criteria phrase "dispatches over `ProviderKind`" → read as "selects the active provider by config (registry keyed by `id`)". Decision of record: `orchestration/docs/adr/0010-pluggable-llm-provider-abstraction.md`.
+>
+> 📌 **EXECUTION (Lior, 2026-06-02).** This chunk ships in **one PR together with chunk-03** (per-chunk commits, same branch). It is **not** PR'd alone.
 
 ## Scope
 

@@ -237,7 +237,8 @@ test("runSession closes the socket after resolving (no leak)", async () => {
 // ---------------------------------------------------------------------------
 test("runSession ignores an ack whose client_session_id does NOT correlate (no false resolve)", async () => {
   const fake = makeFake();
-  const p = runSession("hi", () => fake.ws);
+  // Use a small injected timeout so this test stays fast (default is 30s for real-LLM latency).
+  const p = runSession("hi", () => fake.ws, { handshakeTimeoutMs: 50 });
   fake.fire("open", {});
   fake.fire("message", { data: JSON.stringify({ type: "session_ack", session_id: "x", client_session_id: "WRONG" }) });
   // No session_end for our cid → must reject on timeout, never resolve on the wrong ack.
@@ -383,12 +384,14 @@ test("runSession: handshake timeout still fires when daemon never responds (tran
   try {
     const fake = makeFake();
 
-    const p = runSession("hi", () => fake.ws);
+    // Use a small injected timeout so fake-timer advance stays small.
+    // Default is 30s for real-LLM latency — not suitable for fake-clock tests.
+    const p = runSession("hi", () => fake.ws, { handshakeTimeoutMs: 2000 });
 
     // open fires — session_start is sent — but daemon sends nothing (no session_ack, no tool_call)
     fake.fire("open", {});
 
-    // Advance past the handshake timeout — must reject (the guard is intact)
+    // Advance past the injected handshake timeout — must reject (the guard is intact)
     jest.advanceTimersByTime(3000);
 
     // Flush so the rejection propagates

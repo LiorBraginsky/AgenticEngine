@@ -1,6 +1,6 @@
 # Chunk 3: Dedicated status zone + thinking loader + timed error/cancelled
 
-**Status:** todo
+**Status:** in-progress
 **Created:** 2026-06-03
 **Phase:** overlay-ux-pass (frontend UX polish, post-llm-text-slice)
 **Depends on:** chunk 2 (HARD — gotcha #33 session-scoped timers must be fixed before reworking status text) and chunk 1 (the persist-vs-transient distinction). Sequential, shared overlay lifecycle (§7.1).

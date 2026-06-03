@@ -71,6 +71,13 @@ export interface RunSessionOptions {
    *  The promise stays open until session_end resolves it. */
   onShowText?: (content: string) => void;
   /**
+   * Fired right after session_start is sent — frontend-only in-flight signal
+   * for the thinking loader. NOT a wire event; NOT a protocol change.
+   * The loader should be shown from this callback and replaced when the first
+   * onToolCall or onShowText arrives.
+   */
+  onSessionStart?: () => void;
+  /**
    * How long (ms) to wait for the daemon to send the first tool_call after
    * session_start is sent.  Defaults to DEFAULT_HANDSHAKE_TIMEOUT_MS (30s).
    * Tests that exercise the rejection path should pass a small value (e.g. 50)
@@ -136,7 +143,11 @@ export function runSession(
     const timeoutMs = options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
     const timer = setTimeout(() => {
       ws.close();
-      reject(new Error(`runSession timed out after ${timeoutMs}ms`));
+      // Use a distinguishable error name so callers can classify timeout vs
+      // transport error without string-matching (main.ts timeout-card discriminator).
+      const err = new Error(`runSession timed out after ${timeoutMs}ms`);
+      err.name = "HandshakeTimeoutError";
+      reject(err);
     }, timeoutMs);
 
     // 6.2: close the socket before resolving to prevent the socket leak (MAJOR fix).
@@ -158,6 +169,10 @@ export function runSession(
 
     ws.addEventListener("open", () => {
       ws.send(JSON.stringify(msg));
+      // Fire the frontend-only in-flight signal immediately after sending session_start.
+      // This is NOT a wire event — it allows main.ts to show the thinking loader
+      // before any server response arrives.
+      options.onSessionStart?.();
     });
 
     ws.addEventListener("message", (ev) => {

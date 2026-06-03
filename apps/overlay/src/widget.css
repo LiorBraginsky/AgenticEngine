@@ -96,6 +96,55 @@ html, body {
   overflow-y: auto;
 }
 
+/* ── Chunk 3: Thinking loader + status cards ────────────────────────────── */
+
+/* Loader card — wraps the spinner, reuses .color-picker-widget chrome */
+.status-loader-card {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 56px;
+}
+
+/* Spinner element — CSS @keyframes spin (no JS animation needed) */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+.status-loader {
+  width: 24px;
+  height: 24px;
+  border: 3px solid rgba(245, 245, 247, 0.20);
+  border-top-color: rgba(245, 245, 247, 0.85);
+  border-radius: 50%;
+  animation: spin 0.75s linear infinite;
+}
+
+/* Status cards — timed error / timeout / cancelled */
+.status-card {
+  font-size: 13px;
+  line-height: 1.4;
+  padding: 14px 16px;
+  border-radius: 8px;
+  color: #f5f5f7;
+}
+
+.status-error {
+  background: rgba(255, 59, 48, 0.18);
+  border: 1px solid rgba(255, 59, 48, 0.35);
+}
+
+.status-timeout {
+  background: rgba(255, 149, 0, 0.18);
+  border: 1px solid rgba(255, 149, 0, 0.35);
+}
+
+.status-cancelled {
+  background: rgba(142, 142, 147, 0.18);
+  border: 1px solid rgba(142, 142, 147, 0.35);
+}
+
 /* C1 — confirmation card (shown after pick, before window hides) */
 .cp-confirmation {
   display: flex;

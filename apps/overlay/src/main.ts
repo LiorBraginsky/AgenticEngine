@@ -17,6 +17,7 @@ import type { WebSocketFactory } from "./ws/types.js";
 import { runSession } from "./ws/session-client.js";
 import type { ToolCallContext } from "./ws/session-client.js";
 import type { ColorSwatch } from "@agentic/protocol";
+import { HideScheduler } from "./lifecycle/hide-scheduler.js";
 
 // ---------------------------------------------------------------------------
 // Real WebSocket factory — adapts browser WebSocket to the seam's WebSocketLike.
@@ -171,6 +172,15 @@ void listen(EV_TEXT_DISMISS, () => {
 let inFlight = false;
 
 // ---------------------------------------------------------------------------
+// Session-scoped hide timer (gotcha #33).
+// A monotonic token stamps each submit; the picker-teardown callback checks it
+// and no-ops if a newer session has already started. HideScheduler also
+// cancels any pending handle on scheduleHide/cancelPending for belt-and-suspenders.
+// ---------------------------------------------------------------------------
+const hideScheduler = new HideScheduler();
+let sessionToken = 0; // monotonic; incremented per submit
+
+// ---------------------------------------------------------------------------
 // Submit handler — Enter key
 // ---------------------------------------------------------------------------
 input.addEventListener("keydown", (e: KeyboardEvent) => {
@@ -186,6 +196,11 @@ input.addEventListener("keydown", (e: KeyboardEvent) => {
       hideWidgetWindow().catch(() => {});
       lastRenderKind = undefined;
     }
+
+    // #33: cancel any pending prior-session hide timer and bump the session
+    // token so stale in-flight callbacks know they are superseded.
+    hideScheduler.cancelPending();
+    sessionToken += 1;
 
     // Immediately show pending indicator and lock against re-submit (6.5a).
     inFlight = true;
@@ -206,7 +221,12 @@ input.addEventListener("keydown", (e: KeyboardEvent) => {
           pickerSettled = false;
           // lastRenderKind stays "text" so dismiss handlers know a card is live.
         } else {
-          setTimeout(() => {
+          // #33: capture the token at schedule time; the callback is a no-op if a
+          // newer session started before the 1200ms elapsed (belt-and-suspenders
+          // alongside HideScheduler's own cancelPending).
+          const myToken = sessionToken;
+          hideScheduler.scheduleHide(1200, () => {
+            if (myToken !== sessionToken) return; // superseded — abort
             hidePanel().catch(() => {/* ignore hide errors */});
             hideWidgetWindow().catch(() => {/* ignore */});
             input.value = "";
@@ -214,7 +234,7 @@ input.addEventListener("keydown", (e: KeyboardEvent) => {
             activeCtx = undefined;
             pickerSettled = false;
             lastRenderKind = undefined;
-          }, 1200);
+          });
         }
       })
       .catch((err: unknown) => {
@@ -239,10 +259,34 @@ input.addEventListener("keydown", (e: KeyboardEvent) => {
 // On window focus (hotkey reveals the window): clear input + re-focus.
 // Uses the pure DOM focus event — no Tauri event system needed,
 // avoiding the need for core:event:* permissions.
+//
+// #34 clear-on-open — two-part coverage:
+//   (a) This focus handler clears input.value when not in-flight (primary path).
+//   (b) #33 fix (hideScheduler + sessionToken) eliminates the stale-timer re-show
+//       path that could have bypassed this guard — a cancelled timer never fires,
+//       so there is no re-show event that would skip the clear. Together they make
+//       #34 robust: the input is always empty when the user sees the panel again.
+//   NOTE: No idle-timer clear — clearing on open is the only trigger (OUT per spec).
 // ---------------------------------------------------------------------------
 window.addEventListener("focus", () => {
   if (inFlight) return;        // NIT-2: don't disturb an in-flight round-trip
   input.value = "";
   setStatus("");
   input.focus();
+});
+
+// ---------------------------------------------------------------------------
+// Blur-dismiss for the `main` input window (deferred input_blur_dismiss
+// follow-up, chunk 2 Task 2.4). The main window is a normal focusable window;
+// losing focus / click-outside hides it. Pure-DOM — no lib.rs change needed
+// (the symmetric `focus` listener above already proves DOM events work here).
+// This is for the INPUT window ONLY — the click-through `widget` window is NOT
+// dismissed on outside clicks (ADR-0006 2026-05-31).
+// Guarded by inFlight so a widget interaction mid-round-trip does not tear down
+// the session (the widget window is focus:false per tauri.conf.json so normal
+// usage will not trigger blur; the guard is defense-in-depth).
+// ---------------------------------------------------------------------------
+window.addEventListener("blur", () => {
+  if (inFlight) return;
+  hidePanel().catch(() => {/* ignore */});
 });

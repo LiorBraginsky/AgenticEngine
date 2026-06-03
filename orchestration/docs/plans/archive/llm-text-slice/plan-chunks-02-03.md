@@ -1,3 +1,5 @@
+> 🗄️ ARCHIVED 2026-06-03 — shipped. Historical record; do not edit.
+
 # LLM Text-Reply Slice — Implementation Plan (chunks 02 + 03, one PR)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -14,7 +16,7 @@
 
 ## Status
 
-`DEMO PASSED — opening PR`. Both chunks code-complete + reviewer-approved + **behavioral DoD proven by Lior's live macOS demo (2026-06-03)**: real Claude (Sonnet 4.6) reply rendered in the overlay widget; `session_end{completed}`; errors graceful. **Two bugs found AT the demo gate and fixed** (exactly what the live gate exists to catch): (1) prod client built with empty `apiKey` — resolved env key now reaches the constructor (`67bb5d9`, + regression test); (2) overlay 2s handshake timeout raced LLM generation → raised to 30s, injectable (`528fbb3`). Deferred-but-recorded: gotchas #42 (early-ack/streaming), #43 (loading feedback), #44 (widget resize). Mechanical gates green throughout. ADR-0010/0011 `proposed` → Lior accepts at PR review. **Next:** one PR (both chunks) → Lior reviews + accepts ADRs + merges → then Q1 strike + archive.
+`SHIPPED 2026-06-03` — chunks 02+03 merged via **PR #10** (merge `5e174ec`). **ADR-0010 + ADR-0011 `accepted`**; open-question **Q1 decided & struck**. Behavioral DoD **proven by Lior's live macOS demo**: real Claude (Sonnet 4.6) reply rendered in the overlay widget; `session_end{completed}`; errors graceful; the mock color-picker flow live-confirmed (behaviour-preservation). **Two bugs found AT the demo gate and fixed** (exactly what the live gate exists to catch): (1) prod client built with empty `apiKey` → resolved env key now reaches the constructor (`67bb5d9`, + regression test); (2) overlay 2s handshake timeout raced LLM generation → raised to 30s, injectable (`528fbb3`). Mechanical gates green throughout (workspace `bun test`, typecheck, lint:strict, `git diff packages/protocol` empty). **Deferred-but-recorded:** gotchas #42 (early-ack/streaming), #43 (loading feedback), #44 (widget resize), dead `session.ts` cleanup. The `mock` provider is permanent (ADR-0010 — test/integration harness).
 
 ## ADRs
 

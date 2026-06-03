@@ -1,6 +1,7 @@
 ---
-status: proposed
+status: accepted
 date: 2026-06-02
+accepted: 2026-06-03
 deciders: [lior]
 tags: [adr, daemon, llm, auth, subscription]
 ---
@@ -9,7 +10,7 @@ tags: [adr, daemon, llm, auth, subscription]
 
 ## Status
 
-`proposed`
+`accepted` (Lior, 2026-06-03 — at PR #10 review; chunks 02+03 merged)
 
 ## Context
 

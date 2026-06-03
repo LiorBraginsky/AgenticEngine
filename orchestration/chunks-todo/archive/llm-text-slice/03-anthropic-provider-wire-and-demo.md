@@ -1,6 +1,8 @@
+> 🗄️ ARCHIVED 2026-06-03 — done. Historical record; do not edit.
+
 # Chunk 3: AnthropicApiProvider + end-to-end wiring + overlay text renderer + live demo
 
-**Status:** todo
+**Status:** done
 **Created:** 2026-06-02
 **Phase:** llm-text-slice (first post-v0 vertical slice)
 **Estimated size:** ~1 day

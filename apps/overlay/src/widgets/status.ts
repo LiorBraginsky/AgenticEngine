@@ -25,7 +25,14 @@ export function renderLoader(host: HTMLElement): void {
   const spinner = document.createElement("div");
   spinner.className = "status-loader";
 
+  // Optional muted "Thinking…" label — polished in chunk 4 appearance pass.
+  // Class .status-loader-label is styled at ≤12px, rgba(245,245,247,0.6).
+  const label = document.createElement("span");
+  label.className = "status-loader-label";
+  label.textContent = "Thinking…";
+
   card.appendChild(spinner);
+  card.appendChild(label);
   host.appendChild(card);
 }
 

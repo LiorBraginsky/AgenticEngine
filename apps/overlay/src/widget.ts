@@ -1,10 +1,13 @@
 // apps/overlay/src/widget.ts
 import { listen, emit } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { LogicalSize } from "@tauri-apps/api/dpi";
 import type { ColorPickerPrimitive, ColorSwatch } from "@agentic/protocol";
 import { renderColorPicker, renderConfirmation } from "./widgets/color-picker.js";
 import { renderTextReply } from "./widgets/text-reply.js";
 import { renderLoader, renderStatus } from "./widgets/status.js";
 import type { StatusVariant } from "./widgets/status.js";
+import { clampWidgetHeight } from "./lifecycle/measure-height.js";
 
 // Event channel names — shared contract between main.ts and widget.ts.
 // (Intra-app only; NOT part of the frozen wire protocol.)
@@ -23,8 +26,34 @@ const EV_SHOW_STATUS = "show-status";    // main → widget : { variant, message
 // while the card auto-dismisses anyway).
 let currentMode: "picker" | "text" | "loader" | "error" | "timeout" | "cancelled" | undefined;
 
-const host = document.getElementById("widget-host");
-if (host === null) throw new Error("Required DOM element #widget-host not found");
+const hostEl = document.getElementById("widget-host");
+if (hostEl === null) throw new Error("Required DOM element #widget-host not found");
+// After the null guard, alias to a non-nullable reference so closures (e.g.
+// resizeToContent's requestAnimationFrame callback) can use it without a
+// possible-null narrowing error — TS doesn't narrow module-level vars inside
+// nested functions because they can be re-assigned.
+const host: HTMLElement = hostEl;
+
+// Width must match tauri.conf.json width:360 and main.ts WIDGET_WIDTH_LOGICAL.
+// Height-only resize keeps computeWidgetX() (right-anchor) correct without
+// recomputation — the × close button stays on-screen (ADR-0006 2026-05-31).
+const WIDGET_WIDTH_LOGICAL = 360;
+
+/**
+ * Resize the widget window to fit its current content (gotcha #44, Task 4.3).
+ * Schedules inside requestAnimationFrame so the DOM has already painted.
+ * Uses window.screen.availHeight (logical pixels on macOS with DPI accounted
+ * for by WebKit) with a fallback chain for rare environments where it is 0.
+ */
+function resizeToContent(): void {
+  requestAnimationFrame(() => {
+    // #widget-host has 12px padding top + bottom = 24px total host chrome.
+    const content = host.scrollHeight + 24;
+    const screenH = window.screen.availHeight || window.innerHeight || 800;
+    const h = clampWidgetHeight(content, screenH);
+    void getCurrentWindow().setSize(new LogicalSize(WIDGET_WIDTH_LOGICAL, h));
+  });
+}
 
 void listen<{ picker: ColorPickerPrimitive }>(EV_SHOW, (event) => {
   currentMode = "picker";
@@ -41,10 +70,12 @@ void listen<{ picker: ColorPickerPrimitive }>(EV_SHOW, (event) => {
       // main.ts has moved hideWidgetWindow() to the linger timer (~1200ms),
       // so this card remains visible until the window hides.
       renderConfirmation(host, picked);
+      resizeToContent();
       void emit(EV_RESULT, picked);
     },
     onCancel: () => { void emit(EV_CANCEL); },
   });
+  resizeToContent();
 });
 
 // Display-only text reply — wired with onDismiss so × and Escape can dismiss.
@@ -55,6 +86,7 @@ void listen<{ content: string }>(EV_SHOW_TEXT, (event) => {
   renderTextReply(host, event.payload.content, () => {
     void emit(EV_TEXT_DISMISS);
   });
+  resizeToContent();
 });
 
 // Thinking loader — shown from onSessionStart until content/status arrives.
@@ -62,6 +94,7 @@ void listen<{ content: string }>(EV_SHOW_TEXT, (event) => {
 void listen(EV_SHOW_LOADER, () => {
   currentMode = "loader";
   renderLoader(host);
+  resizeToContent();
 });
 
 // Timed status card — error, timeout, or cancelled.
@@ -70,6 +103,7 @@ void listen<{ variant: StatusVariant; message: string }>(EV_SHOW_STATUS, (event)
   const { variant, message } = event.payload;
   currentMode = variant;
   renderStatus(host, variant, message);
+  resizeToContent();
 });
 
 // C2: Escape-to-cancel — document-level keydown listener.

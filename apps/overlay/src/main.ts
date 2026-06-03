@@ -18,6 +18,7 @@ import { runSession } from "./ws/session-client.js";
 import type { ToolCallContext } from "./ws/session-client.js";
 import type { ColorSwatch } from "@agentic/protocol";
 import { HideScheduler } from "./lifecycle/hide-scheduler.js";
+import { statusForEndReason } from "./lifecycle/session-end-reason.js";
 import type { StatusVariant } from "./widgets/status.js";
 
 // ---------------------------------------------------------------------------
@@ -222,10 +223,39 @@ input.addEventListener("keydown", (e: KeyboardEvent) => {
         showWidgetWindow().catch(() => {/* ignore */});
       },
     })
-      .then(() => {
+      .then((result) => {
         // 6.5b SUCCESS: branch on what the widget rendered.
         // Status is shown in the widget zone (chunk 3) — #status in the main window
         // has been removed (Nit A: vestigial element gone).
+
+        // ── D1 (chunk 4): wire-level error/timeout card ────────────────────
+        // The daemon emits session_end{reason:"error"|"timeout"} on provider
+        // failures (formatErrorEnd strips detail). runSession resolves (not
+        // rejects) for all reason values — the .catch() path only fires on
+        // transport-level failures. So D1 lives here, not in .catch().
+        // Guard: only intercept when the widget is showing a loader or nothing
+        // (if text/picker is already rendered, a race-condition session_end
+        // must not override real content).
+        const endStatus = statusForEndReason(result.reason);
+        if (
+          endStatus !== undefined &&
+          (lastRenderKind === "loader" || lastRenderKind === undefined)
+        ) {
+          lastRenderKind = endStatus.variant as typeof lastRenderKind;
+          emitTo(WIDGET_LABEL, EV_SHOW_STATUS, {
+            variant: endStatus.variant satisfies StatusVariant,
+            message: endStatus.message,
+          }).catch(() => {/* ignore */});
+          showWidgetWindow().catch(() => {/* ignore */});
+          hideScheduler.scheduleHide(endStatus.ms, () => {
+            hideWidgetWindow().catch(() => {/* ignore */});
+          });
+          hidePanel().catch(() => {/* ignore */});
+          inFlight = false;
+          activeCtx = undefined;
+          pickerSettled = false;
+          return;
+        }
 
         // ── Fix 2 (review hardening): single-owner cancel dismiss ──────────
         //

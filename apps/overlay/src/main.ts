@@ -60,10 +60,15 @@ const EV_SHOW = "show-picker";
 const EV_RESULT = "picker-result";
 const EV_CANCEL = "picker-cancel";
 const EV_SHOW_TEXT = "show-text";     // main → widget : { content } (display-only)
+const EV_TEXT_DISMISS = "text-dismiss"; // widget → main : user dismissed the text card
 
 // Only one picker is live at a time in v0 (single in-flight session, 6.5a guard).
 let activeCtx: ToolCallContext | undefined;
 let pickerSettled = false;
+
+// Tracks what the widget last rendered, so the teardown timer hides the
+// ephemeral picker confirmation but NEVER the persistent text answer.
+let lastRenderKind: "picker" | "text" | undefined;
 
 // Widget window dimensions — must match tauri.conf.json width:360.
 const WIDGET_WIDTH_LOGICAL = 360;
@@ -113,6 +118,7 @@ async function hideWidgetWindow(): Promise<void> {
 function onToolCall(ctx: ToolCallContext): void {
   activeCtx = ctx;
   pickerSettled = false;
+  lastRenderKind = "picker";
   // Hide the input window so the picker is the only surface (input already
   // hides on submit in main flow; this guards the click-away/Escape-less path).
   hidePanel().catch(() => {/* ignore */});
@@ -124,10 +130,11 @@ function onToolCall(ctx: ToolCallContext): void {
  * Display-only handler for show_text replies (C3-2).
  * Mirrors the onToolCall show path (hidePanel + emitTo + showWidgetWindow)
  * minus result/cancel wiring (display-only: no tool_result ever sent).
- * The existing ~1200ms linger in runSession().then() auto-dismisses the card.
- * No new timer added (gotcha #33/#34 guard).
+ * Text answers are CONTENT — they persist until human-dismissed (Escape / new
+ * request / ×). The teardown timer is NOT invoked for text (see .then() branch).
  */
 function onShowText(content: string): void {
+  lastRenderKind = "text";
   hidePanel().catch(() => {/* ignore */});
   emitTo(WIDGET_LABEL, EV_SHOW_TEXT, { content }).catch(() => {/* ignore */});
   showWidgetWindow().catch(() => {/* ignore */});
@@ -149,6 +156,15 @@ void listen(EV_CANCEL, () => {
   hideWidgetWindow().catch(() => {/* ignore */});
 });
 
+// Text card dismiss — fired by widget.ts on × click or Escape (when mode=text).
+// Hides the widget and clears the render kind so no stale state remains.
+void listen(EV_TEXT_DISMISS, () => {
+  if (lastRenderKind !== "text") return;
+  hideWidgetWindow().catch(() => {/* ignore */});
+  lastRenderKind = undefined;
+  input.value = "";
+});
+
 // ---------------------------------------------------------------------------
 // In-flight guard — prevents double-Enter opening a second session (6.5a)
 // ---------------------------------------------------------------------------
@@ -165,23 +181,41 @@ input.addEventListener("keydown", (e: KeyboardEvent) => {
     const text = input.value.trim();
     if (!text) return;
 
+    // A new request replaces any persistent answer (content dismiss-on-new-request).
+    if (lastRenderKind !== undefined) {
+      hideWidgetWindow().catch(() => {});
+      lastRenderKind = undefined;
+    }
+
     // Immediately show pending indicator and lock against re-submit (6.5a).
     inFlight = true;
     setStatus("…");
 
     runSession(text, factory, { onToolCall, onShowText })
       .then(({ sessionId, reason }) => {
-        // 6.5b SUCCESS: render result, keep visible briefly (~1200ms) so it's
-        // readable, THEN hide and reset.
+        // 6.5b SUCCESS: branch on what the widget rendered.
         setStatus(`session ${sessionId} — ${reason}`);
-        setTimeout(() => {
-          hidePanel().catch(() => {/* ignore hide errors */});
-          hideWidgetWindow().catch(() => {/* ignore */});
-          input.value = "";
+        // Picker confirmation stays ephemeral (~1200ms, ADR-0006 2026-06-01).
+        // Text answer is CONTENT — it persists until the user dismisses it
+        // (Escape / new request / ×). Do NOT hide the widget for text.
+        if (lastRenderKind === "text") {
+          // Content persists. Only release the input/session latches.
+          hidePanel().catch(() => {});
           inFlight = false;
           activeCtx = undefined;
           pickerSettled = false;
-        }, 1200);
+          // lastRenderKind stays "text" so dismiss handlers know a card is live.
+        } else {
+          setTimeout(() => {
+            hidePanel().catch(() => {/* ignore hide errors */});
+            hideWidgetWindow().catch(() => {/* ignore */});
+            input.value = "";
+            inFlight = false;
+            activeCtx = undefined;
+            pickerSettled = false;
+            lastRenderKind = undefined;
+          }, 1200);
+        }
       })
       .catch((err: unknown) => {
         // 6.5c FAILURE: render error, do NOT auto-hide — panel stays so the

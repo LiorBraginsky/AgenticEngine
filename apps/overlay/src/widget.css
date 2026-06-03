@@ -81,7 +81,9 @@ html, body {
 
 /* C3-2 — text-reply card (display-only, show_text tool_call) */
 .text-reply-card {
-  padding: 14px 16px;
+  position: relative;
+  /* Top padding bumped so text content clears the absolute-positioned .cp-close button */
+  padding: 40px 16px 16px;
 }
 
 .text-reply-content {

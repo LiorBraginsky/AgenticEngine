@@ -449,3 +449,48 @@ test("runSession fires onSessionStart once, immediately after session_start is s
   // After all content, order must be start then text (start never fires again)
   expect(order).toEqual(["start", "text"]);
 });
+
+// ---------------------------------------------------------------------------
+// Fix 1 (review hardening): deterministic HandshakeTimeoutError wins race
+//
+// The timeout handler must set `settled = true` / `clearTimeout(timer)` BEFORE
+// calling `ws.close()`, so that a synchronous `close` event fired by `ws.close()`
+// cannot reach `fail()` first and overwrite the rejection with the generic
+// "WebSocket closed…" message.
+// ---------------------------------------------------------------------------
+test("runSession: HandshakeTimeoutError is the rejection when close fires synchronously right after timeout", async () => {
+  jest.useFakeTimers();
+  try {
+    const listeners: Record<string, ((ev: { data?: unknown }) => void)[]> = {};
+    const ws: import("./types.js").WebSocketLike = {
+      send: () => {},
+      // close() fires the "close" event SYNCHRONOUSLY — worst-case race.
+      close: () => {
+        (listeners["close"] ?? []).forEach((cb) => cb({}));
+      },
+      addEventListener: (t, cb) => { (listeners[t] ??= []).push(cb); },
+    };
+
+    const p = runSession("hi", () => ws, { handshakeTimeoutMs: 100 });
+
+    // open → session_start sent
+    (listeners["open"] ?? []).forEach((cb) => cb({}));
+
+    // Advance past the timeout — the handler fires, calls ws.close() which
+    // synchronously fires "close". Without the fix the close listener's fail()
+    // would win; with the fix the HandshakeTimeoutError always wins.
+    jest.advanceTimersByTime(200);
+
+    // Flush microtasks
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // The rejection MUST be a HandshakeTimeoutError — never "WebSocket closed…"
+    let caught: unknown;
+    try { await p; } catch (e) { caught = e; }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).name).toBe("HandshakeTimeoutError");
+  } finally {
+    jest.useRealTimers();
+  }
+});

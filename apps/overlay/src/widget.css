@@ -23,7 +23,8 @@ html, body {
   color: #f5f5f7;
 }
 
-/* C2: "Cancel" — widened, labeled, unmissable even at display edge */
+/* C2: close/cancel control — shared by "× Cancel" (picker) and "× Close" (text card);
+   widened, labeled, unmissable even at display edge */
 .cp-close {
   position: absolute;
   top: 8px;

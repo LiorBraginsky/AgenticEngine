@@ -142,6 +142,13 @@ export function runSession(
 
     const timeoutMs = options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
     const timer = setTimeout(() => {
+      // Mirror what fail() does: set settled + clearTimeout BEFORE ws.close() so
+      // the synchronous "close" event that ws.close() may fire cannot reach fail()
+      // first and overwrite the rejection with a generic "WebSocket closed…" error.
+      // Without this, the HandshakeTimeoutError only wins the race by WebSocket
+      // spec luck (close dispatched asynchronously) — not deterministically.
+      settled = true;
+      clearTimeout(timer);
       ws.close();
       // Use a distinguishable error name so callers can classify timeout vs
       // transport error without string-matching (main.ts timeout-card discriminator).

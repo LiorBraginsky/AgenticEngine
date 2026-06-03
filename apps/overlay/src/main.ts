@@ -18,6 +18,7 @@ import { runSession } from "./ws/session-client.js";
 import type { ToolCallContext } from "./ws/session-client.js";
 import type { ColorSwatch } from "@agentic/protocol";
 import { HideScheduler } from "./lifecycle/hide-scheduler.js";
+import type { StatusVariant } from "./widgets/status.js";
 
 // ---------------------------------------------------------------------------
 // Real WebSocket factory — adapts browser WebSocket to the seam's WebSocketLike.
@@ -42,11 +43,6 @@ function getElement<T extends HTMLElement>(id: string): T {
 }
 
 const input = getElement<HTMLInputElement>("query-input");
-const status = getElement<HTMLDivElement>("status");
-
-function setStatus(text: string): void {
-  status.textContent = text;
-}
 
 async function hidePanel(): Promise<void> {
   await invoke("hide_panel");
@@ -161,7 +157,7 @@ void listen(EV_CANCEL, () => {
   // Chunk 3: symmetric confirm-then-dismiss for cancel (mirrors picker's confirmation).
   // Show a brief "Cancelled" card in the widget zone, then auto-dismiss after 1200ms.
   lastRenderKind = "cancelled";
-  emitTo(WIDGET_LABEL, EV_SHOW_STATUS, { variant: "cancelled", message: "Cancelled" }).catch(() => {/* ignore */});
+  emitTo(WIDGET_LABEL, EV_SHOW_STATUS, { variant: "cancelled" satisfies StatusVariant, message: "Cancelled" }).catch(() => {/* ignore */});
   hideScheduler.scheduleHide(1200, () => { hideWidgetWindow().catch(() => {/* ignore */}); });
 });
 
@@ -228,29 +224,33 @@ input.addEventListener("keydown", (e: KeyboardEvent) => {
     })
       .then(() => {
         // 6.5b SUCCESS: branch on what the widget rendered.
-        // Note: setStatus() to the main window is no longer called here — the
-        // widget zone shows the content directly (chunk 3 removes status-under-input).
+        // Status is shown in the widget zone (chunk 3) — #status in the main window
+        // has been removed (Nit A: vestigial element gone).
 
-        // Picker confirmation stays ephemeral (~1200ms, ADR-0006 2026-06-01).
-        // Text answer is CONTENT — it persists until the user dismisses it
-        // (Escape / new request / ×). Do NOT hide the widget for text.
+        // ── Fix 2 (review hardening): single-owner cancel dismiss ──────────
         //
-        // INVARIANT: After onShowText fires, lastRenderKind === "text" and no
-        // loader/status timer is pending (loader is "until-replaced", not timed).
-        // The onSessionStart loader is replaced when onShowText renders content —
-        // there is no race where a loader timer could hide the text answer.
-        // This invariant is guaranteed by: (a) HideScheduler having at most one
-        // pending handle (loader sets none; status timers are only set in the
-        // error/cancel paths below), and (b) lastRenderKind being "text" here,
-        // which gates the persist branch. No timer ever auto-hides content.
+        // Exactly THREE paths reach .then():
+        //   "text"      — content persists (no hide ever). Release latches only.
+        //   "picker"    — ephemeral confirmation. Schedule the 1200ms teardown.
+        //   "cancelled" — EV_CANCEL handler ALREADY owns the 1200ms timed dismiss.
+        //                 Release latches immediately; do NOT schedule a second hide.
+        //   "loader"    — session ended before any content (edge case). Hide immediately.
+        //   undefined   — defensive fallback; behave like loader.
+        //
+        // INVARIANT (content-persist): No timer in this .then() ever auto-hides
+        // a text answer. "text" is the ONLY content render kind; no other path
+        // may set lastRenderKind to "text" before reaching this branch.
+
         if (lastRenderKind === "text") {
           // Content persists. Only release the input/session latches.
+          // lastRenderKind stays "text" so dismiss handlers (Escape/×/new-request)
+          // know a card is live and can hide the widget on demand.
           hidePanel().catch(() => {});
           inFlight = false;
           activeCtx = undefined;
           pickerSettled = false;
-          // lastRenderKind stays "text" so dismiss handlers know a card is live.
-        } else {
+        } else if (lastRenderKind === "picker") {
+          // Picker confirmation stays ephemeral (~1200ms, ADR-0006 2026-06-01).
           // #33: capture the token at schedule time; the callback is a no-op if a
           // newer session started before the 1200ms elapsed (belt-and-suspenders
           // alongside HideScheduler's own cancelPending).
@@ -265,6 +265,22 @@ input.addEventListener("keydown", (e: KeyboardEvent) => {
             pickerSettled = false;
             lastRenderKind = undefined;
           });
+        } else {
+          // "cancelled": EV_CANCEL already scheduled the 1200ms hide — release
+          //              latches here so a new request is not blocked, but do NOT
+          //              schedule another hide (that would cancel the EV_CANCEL one).
+          // "loader" / undefined: session ended before content — hide immediately.
+          hidePanel().catch(() => {});
+          if (lastRenderKind !== "cancelled") {
+            // No cancel card is showing — tear down immediately.
+            hideWidgetWindow().catch(() => {/* ignore */});
+            lastRenderKind = undefined;
+          }
+          // For "cancelled": keep lastRenderKind so the EV_CANCEL hide callback
+          // can identify what it's dismissing; it clears the window at 1200ms.
+          inFlight = false;
+          activeCtx = undefined;
+          pickerSettled = false;
         }
       })
       .catch((err: unknown) => {
@@ -285,14 +301,14 @@ input.addEventListener("keydown", (e: KeyboardEvent) => {
         if (isTimeout) {
           lastRenderKind = "timeout";
           emitTo(WIDGET_LABEL, EV_SHOW_STATUS, {
-            variant: "timeout",
+            variant: "timeout" satisfies StatusVariant,
             message: "No response — the model is taking too long. Try again.",
           }).catch(() => {/* ignore */});
           hideScheduler.scheduleHide(2500, () => { hideWidgetWindow().catch(() => {/* ignore */}); });
         } else {
           const msg = err instanceof Error ? err.message : String(err);
           lastRenderKind = "error";
-          emitTo(WIDGET_LABEL, EV_SHOW_STATUS, { variant: "error", message: msg }).catch(() => {/* ignore */});
+          emitTo(WIDGET_LABEL, EV_SHOW_STATUS, { variant: "error" satisfies StatusVariant, message: msg }).catch(() => {/* ignore */});
           hideScheduler.scheduleHide(2000, () => { hideWidgetWindow().catch(() => {/* ignore */}); });
         }
         inFlight = false;
@@ -322,7 +338,6 @@ input.addEventListener("keydown", (e: KeyboardEvent) => {
 window.addEventListener("focus", () => {
   if (inFlight) return;        // NIT-2: don't disturb an in-flight round-trip
   input.value = "";
-  setStatus("");
   input.focus();
 });
 

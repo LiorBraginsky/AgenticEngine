@@ -529,6 +529,101 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ---
 
+### Chunk 4 — Widget polish + error-card (demo follow-up, Lior-authorized 2026-06-03)
+
+> Added AFTER the first live demo (Lior authorized full widget polish + the error-card gap). Same branch / same PR — one focused commit at the Chunk 4 boundary. Frontend-only (`apps/overlay`, + `tauri.conf.json`/capabilities config). **Brief-staleness note:** loader, status cards, the `timeout` variant, `×`/dismiss, `HideScheduler`, dismiss-policy are ALL already shipped in chunks 1-3 — do NOT rebuild them. Chunk 4's genuinely-new scope is only: D1 wire-error card, scroll cap, height auto-resize (#44), appearance polish.
+
+**Goal:** Make the widget window resize to fit its content (gotcha #44), fix the broken internal scroll, polish all five render modes, and close the verified D1 gap where a wire-level `session_end{reason:"error"}` shows nothing in the overlay.
+
+**Architecture:** Frontend-only. Height auto-resize via the Tauri JS window API (`setSize` after a measure step); **width stays fixed at 360** so the existing right-anchor (`computeWidgetX`, depends only on width) stays correct without recomputation — the 2026-06-01 off-screen-`×` bug zone is never re-entered. D1 is a `result.reason` branch in the existing `.then()` in `main.ts`, reusing the already-built `EV_SHOW_STATUS` / `renderStatus` path.
+
+**Decisions (resolved by orchestrator on architect defaults; Lior authorized the scope):**
+- **Q1 — `widget.resizable: false → true`** (programmatic `setSize` may be gated by `resizable:false` on macOS; `decorations:false` still blocks user-drag → zero UX regression). If the demo shows `setSize` works under `resizable:false`, revert the one line. If `setSize` needs a Rust command in `lib.rs`, STOP and flag (leaves frontend-only — like the blur fallback).
+- **Q2 — appearance = refine the EXISTING dark `.color-picker-widget` language** (consistent padding/radius/shadow, semantic status tints, optional muted "Thinking…" label, thin dark scrollbar), max-height cap 65vh. No new visual language. Lior reacts/redirects at the re-demo.
+- **Q3 — capabilities:** may need `core:window:allow-set-size` on the `widget` window's capability JSON (config edit, in scope). Only a Rust requirement escalates.
+- **Q4 — D1 copy = generic** "Something went wrong. Try again." (wire strips `detail` by design; specifics need a protocol change = OUT).
+- **ADR: none** — height auto-resize FULFILLS the 2026-05-31 "content-sized" intent (the fixed `height:200` was the unrealized shortcut); restating it would be amendment-noise. Resolves gotcha #44.
+
+**Reality check (architect, verified against actual source + ADR-0006):**
+- D1 is real and lives in the `.then()`, not `.catch()`: the daemon emits `session_end{reason:"error"}` (`packages/daemon/src/providers/anthropic-api-provider.ts:77-89` `formatErrorEnd`, strips `detail`); `runSession` RESOLVES on any reason (`session-client.ts:251-257`); `main.ts:225` `.then()` branches only on `lastRenderKind`, never `result.reason` (zero refs in `apps/overlay/src`) → loader silently hides. Protocol `SessionEndReason` already includes `error`/`timeout` (`packages/protocol/src/envelope.ts:18-21`) → frontend-only fixable.
+- #44 verified: `tauri.conf.json:36` `height:200, resizable:false`; real content budget ~120px; `.text-reply-content max-height:320px` never engages `overflow-y:auto`; `html,body{overflow:hidden}` clips → no scroll.
+- Right-anchor is width-driven only (`computeWidgetX` `main.ts:90-102`) → height-only resize keeps `×` on-screen with no x-recompute. Click-through (2026-05-31) is preserved (content-sizing strengthens it).
+- All behavioral DoD below → live macOS demo (folded into the single closeout demo). #44 marked resolved ONLY after the demo passes.
+
+#### Task 4.1: D1 — render an error/timeout card on a wire `session_end{reason}`
+**Files:** create `apps/overlay/src/lifecycle/session-end-reason.ts` (+ `.test.ts`); modify `apps/overlay/src/main.ts` (`.then()` `:225-285`).
+- [ ] Failing test `session-end-reason.test.ts`: `statusForEndReason("error")` → `{variant:"error", message:"Something went wrong. Try again.", ms:2000}`; `("timeout")` → `{variant:"timeout", message:"No response — the model is taking too long. Try again.", ms:2500}`; `("completed")`/`("cancelled")`/unknown → `undefined`. (`SessionEndReason` is an OPEN enum — never throw.)
+- [ ] Run → FAIL. Implement `statusForEndReason(reason: string)` (pure, DOM-free; `import type { StatusVariant } from "../widgets/status.js"`). Run → PASS.
+- [ ] Wire into `.then((result) => {...})` (currently `.then(() => {...})`): at the TOP, before the `lastRenderKind` switch, intercept a wire error/timeout:
+  ```ts
+  const endStatus = statusForEndReason(result.reason);
+  if (endStatus !== undefined && (lastRenderKind === "loader" || lastRenderKind === undefined)) {
+    lastRenderKind = endStatus.variant;
+    emitTo(WIDGET_LABEL, EV_SHOW_STATUS, { variant: endStatus.variant satisfies StatusVariant, message: endStatus.message }).catch(() => {});
+    showWidgetWindow().catch(() => {});
+    hideScheduler.scheduleHide(endStatus.ms, () => { hideWidgetWindow().catch(() => {}); });
+    hidePanel().catch(() => {}); inFlight = false; activeCtx = undefined; pickerSettled = false;
+    return;
+  }
+  ```
+  Guard `loader|undefined` ensures a legitimate `text`/`picker`/`cancelled` render is never overridden. Verify typecheck + `bun test`.
+> Behavioral: a real provider error (invalid/missing API key → `session_end{reason:"error"}`) shows a card, not a silent hide — demo-gated.
+
+#### Task 4.2: Fix the internal scroll cap
+**Files:** `apps/overlay/src/widget.css` (`.text-reply-content`).
+- [ ] Replace `max-height: 320px` with `max-height: calc(65vh - 80px)` (subtracts card+host chrome; matches `MAX_HEIGHT_FRACTION` 65vh of Task 4.3 — keep both in sync) so `overflow-y:auto` engages within the sized window. Verify typecheck + `bun test`.
+> Behavioral: long reply scrolls inside the card, no clipped bottom — demo-gated.
+
+#### Task 4.3: Height auto-resize the `widget` window (gotcha #44 core)
+**Files:** create `apps/overlay/src/lifecycle/measure-height.ts` (+ `.test.ts`); modify `apps/overlay/src/widget.ts`; modify `apps/overlay/src-tauri/tauri.conf.json` (+ maybe `capabilities/default.json`).
+- [ ] Failing test `measure-height.test.ts`: `clampWidgetHeight(20,1000)===WIDGET_MIN_HEIGHT`; `(300,1000)===300`; `(2000,1000)===floor(1000*MAX_HEIGHT_FRACTION)`; `MAX_HEIGHT_FRACTION` in [0.6,0.7].
+- [ ] Run → FAIL. Implement (pure, DOM-free):
+  ```ts
+  export const WIDGET_MIN_HEIGHT = 64;
+  export const MAX_HEIGHT_FRACTION = 0.65;
+  export function clampWidgetHeight(contentHeight: number, screenHeight: number): number {
+    const ceiling = Math.floor(screenHeight * MAX_HEIGHT_FRACTION);
+    return Math.min(Math.max(contentHeight, WIDGET_MIN_HEIGHT), ceiling);
+  }
+  ```
+  Run → PASS.
+- [ ] In `widget.ts` add `resizeToContent()` (import `getCurrentWindow` from `@tauri-apps/api/window`, `LogicalSize` from `@tauri-apps/api/dpi`, `clampWidgetHeight`; `WIDGET_WIDTH_LOGICAL = 360` MUST match main.ts + tauri.conf):
+  ```ts
+  function resizeToContent(): void {
+    requestAnimationFrame(() => {
+      const content = host.scrollHeight + 24; // #widget-host 12px top+bottom padding
+      const screenH = window.screen.availHeight || window.innerHeight || 800;
+      const h = clampWidgetHeight(content, screenH);
+      void getCurrentWindow().setSize(new LogicalSize(WIDGET_WIDTH_LOGICAL, h));
+    });
+  }
+  ```
+  Call `resizeToContent()` at the end of each `listen` handler (`EV_SHOW` picker, `EV_SHOW_TEXT`, `EV_SHOW_LOADER`, `EV_SHOW_STATUS`) and after the `onPick`/`renderConfirmation` render.
+- [ ] `tauri.conf.json`: `widget.resizable: false → true` (keep `height:200` as initial). Flag Q1 at demo.
+- [ ] Read `capabilities/default.json`; if the `widget` window lacks `core:window:allow-set-size`, add it (config edit, in scope). If a Rust change is required → STOP + flag Q3.
+- [ ] Verify typecheck + `bun test` + `lint:strict`.
+> Behavioral: each mode fits its content; long reply caps ≤65% + scrolls; loader small; `×` never clipped (width unchanged) — demo-gated. Resolve gotcha #44 ONLY after this demo passes.
+
+#### Task 4.4: Appearance polish across all five modes (frontend-design skill)
+**Files:** `apps/overlay/src/widget.css` (+ maybe `widgets/status.ts` for an optional loader label).
+- [ ] Invoke `frontend-design` skill; refine the EXISTING dark `.color-picker-widget` language: unify padding/radius/shadow across loader/text/status/picker/confirmation; keep labeled `.cp-close` top-right (verify 40px top padding holds at min height); polish loader spinner (optional muted "Thinking…" label, ≤12px, `rgba(245,245,247,0.6)`); keep semantic status tints (error red / timeout orange / cancelled grey); thin dark scrollbar for `.text-reply-content`. Dark-theme only, system font stack, no web fonts, no new deps.
+- [ ] Do NOT rename existing classes (`.status-card`, `.status-error/timeout/cancelled/loader`, `.text-reply-content`, `.cp-close`) — tests + main.ts/widget.ts depend on them. Verify `bun test` green.
+- [ ] Verify typecheck + `bun test` + `lint:strict`.
+> Behavioral: looks good across all modes — subjective, Lior confirms/redirects at demo.
+
+#### Task 4.5: Commit (Chunk 4 boundary)
+- [ ] Final verify: overlay typecheck + `lint:strict` + `bun test` green; `git diff` only `apps/overlay` (+ `src-tauri/tauri.conf.json`, maybe `capabilities/default.json`).
+- [ ] Commit:
+  ```
+  git add apps/overlay
+  git commit -m "feat(overlay): content-size widget (#44) + scroll fix + D1 wire-error card + appearance polish (chunk 4)
+
+  Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+  ```
+> Chunk 4 behavioral DoD folded into the single closeout demo. Do NOT mark #44 resolved or any behavioral line done until the demo PASSES.
+
+---
+
 ## Resolved decisions (Lior, 2026-06-03)
 
 **Plan APPROVED — Phase 2 go.** One PR (01→02→03), one live macOS demo at the end.

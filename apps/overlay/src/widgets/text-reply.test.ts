@@ -54,3 +54,13 @@ test("renderTextReply replaces previous content on successive calls (host is cle
   expect(host.querySelectorAll(".text-reply-card").length).toBe(1);
   expect(host.querySelector(".text-reply-content")!.textContent).toBe("second");
 });
+
+test("renderTextReply renders a dismiss control that fires onDismiss when clicked", () => {
+  const host = makeHost();
+  let dismissed = false;
+  renderTextReply(host, "hello", () => { dismissed = true; });
+  const close = host.querySelector<HTMLButtonElement>(".cp-close");
+  expect(close).not.toBeNull();
+  close!.click();
+  expect(dismissed).toBe(true);
+});

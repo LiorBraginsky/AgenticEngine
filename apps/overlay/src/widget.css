@@ -1,4 +1,27 @@
-/* Transparent body — the Tauri widget window transparency shows through. */
+/* ─────────────────────────────────────────────────────────────────────────
+   Overlay widget — refined dark glass aesthetic (chunk 4 polish)
+   Transparent body; Tauri window transparency shows through.
+   All class names preserved — tests + main.ts/widget.ts depend on them.
+   ───────────────────────────────────────────────────────────────────────── */
+
+/* Design tokens — single source of truth for the dark glass language */
+:root {
+  --widget-bg:          rgba(22, 22, 24, 0.96);
+  --widget-border:      rgba(255, 255, 255, 0.08);
+  --widget-radius:      16px;
+  --widget-shadow:      0 12px 40px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.3);
+  --widget-font:        -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+  --widget-fg:          #f5f5f7;
+  --widget-fg-muted:    rgba(245, 245, 247, 0.55);
+  --widget-pad-v:       18px;
+  --widget-pad-h:       18px;
+
+  /* Semantic status tints */
+  --tint-error:         255, 59, 48;
+  --tint-timeout:       255, 149, 0;
+  --tint-cancelled:     142, 142, 147;
+}
+
 html, body {
   margin: 0;
   padding: 0;
@@ -13,46 +36,69 @@ html, body {
   box-sizing: border-box;
 }
 
+/* ── Base card chrome ── */
 .color-picker-widget {
   position: relative;
-  background: rgba(28, 28, 30, 0.94);
-  border-radius: 14px;
-  padding: 16px 16px 18px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  color: #f5f5f7;
+  background: var(--widget-bg);
+  border: 1px solid var(--widget-border);
+  border-radius: var(--widget-radius);
+  padding: var(--widget-pad-v) var(--widget-pad-h);
+  box-shadow: var(--widget-shadow);
+  font-family: var(--widget-font);
+  color: var(--widget-fg);
+  /* Subtle inner highlight along the top edge — glass depth cue */
+  background-image: linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.045) 0px,
+    transparent 1px
+  );
 }
 
-/* C2: "Cancel" — widened, labeled, unmissable even at display edge */
+/* ── C2: close / cancel control ──────────────────────────────────────────
+   Shared by "× Cancel" (picker) and "× Close" (text card).
+   Widened, labeled, unmissable even at display edge.
+   Preserved as-is per hard constraint — only visual refinement. */
 .cp-close {
   position: absolute;
-  top: 8px;
-  right: 10px;
+  top: 10px;
+  right: 12px;
   width: auto;
-  min-width: 52px;
+  min-width: 54px;
   height: 24px;
-  padding: 0 8px;
-  border: 1px solid rgba(255, 255, 255, 0.25);
-  border-radius: 6px;
-  background: rgba(255, 80, 80, 0.18);
-  color: #f5f5f7;
+  padding: 0 9px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 7px;
+  background: rgba(255, 70, 70, 0.14);
+  color: rgba(245, 245, 247, 0.9);
+  font-family: var(--widget-font);
   font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.04em;
   line-height: 24px;
   cursor: pointer;
   white-space: nowrap;
+  transition: background 0.15s ease, border-color 0.15s ease;
 }
-.cp-close:hover { background: rgba(255, 80, 80, 0.38); border-color: rgba(255, 80, 80, 0.6); }
+.cp-close:hover {
+  background: rgba(255, 70, 70, 0.30);
+  border-color: rgba(255, 70, 70, 0.55);
+  color: #fff;
+}
 
+/* ── Picker mode ── */
 .cp-question {
   font-size: 14px;
-  margin: 2px 28px 14px 2px;
+  font-weight: 400;
+  line-height: 1.45;
+  color: var(--widget-fg);
+  /* Right margin clears the .cp-close button; top margin gives breathing room */
+  margin: 2px 70px 14px 0;
+  letter-spacing: 0.01em;
 }
 
 .cp-swatches {
   display: flex;
-  gap: 10px;
+  gap: 9px;
   flex-wrap: wrap;
 }
 
@@ -62,57 +108,156 @@ html, body {
   justify-content: center;
   width: 64px;
   height: 64px;
-  border: 2px solid rgba(255, 255, 255, 0.18);
-  border-radius: 10px;
+  border: 1.5px solid rgba(255, 255, 255, 0.16);
+  border-radius: 11px;
   cursor: pointer;
   padding: 0;
   overflow: hidden;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
 }
-.cp-swatch:hover { border-color: rgba(255, 255, 255, 0.6); }
+.cp-swatch:hover {
+  border-color: rgba(255, 255, 255, 0.65);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.12);
+}
 
 .cp-swatch-label {
   width: 100%;
   font-size: 10px;
+  font-family: var(--widget-font);
   text-align: center;
   padding: 2px 0;
-  background: rgba(0, 0, 0, 0.45);
-  color: #fff;
+  background: rgba(0, 0, 0, 0.50);
+  color: rgba(255, 255, 255, 0.9);
+  letter-spacing: 0.02em;
 }
 
-/* C3-2 — text-reply card (display-only, show_text tool_call) */
+/* ── Text-reply mode ── */
 .text-reply-card {
-  padding: 14px 16px;
+  position: relative;
+  /* 40px top pad clears the absolute-positioned .cp-close button */
+  padding: 40px var(--widget-pad-h) var(--widget-pad-v);
 }
 
 .text-reply-content {
   font-size: 14px;
-  line-height: 1.5;
-  color: #f5f5f7;
+  line-height: 1.6;
+  color: var(--widget-fg);
   word-wrap: break-word;
   white-space: pre-wrap;
-  max-height: 320px;
+  letter-spacing: 0.01em;
+  /* NO CSS max-height here — a vh-based cap is circular with the resize logic:
+     when the window is initially small, vh = small window height → tiny cap →
+     clipped scrollHeight → window stays small (gotcha #44 regression).
+     The scroll cap is applied in px by resizeToContent() in widget.ts AFTER
+     measuring the full natural content height against screen.availHeight.
+     overflow-y:auto remains so the JS-driven px cap can engage scrolling. */
   overflow-y: auto;
+
+  /* Thin dark scrollbar — WebKit only (macOS WKWebView) */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+.text-reply-content::-webkit-scrollbar {
+  width: 4px;
+}
+.text-reply-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+.text-reply-content::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.20);
+  border-radius: 2px;
+}
+.text-reply-content::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.35);
 }
 
-/* C1 — confirmation card (shown after pick, before window hides) */
+/* ── Loader mode ── */
+
+/* Card wrapper: centres spinner + optional label, reuses .color-picker-widget chrome */
+.status-loader-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 64px;
+  padding: var(--widget-pad-v) var(--widget-pad-h);
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+.status-loader {
+  width: 22px;
+  height: 22px;
+  border: 2.5px solid rgba(245, 245, 247, 0.16);
+  border-top-color: rgba(245, 245, 247, 0.80);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+/* Optional muted "Thinking…" label injected alongside the spinner */
+.status-loader-label {
+  font-size: 11.5px;
+  font-family: var(--widget-font);
+  color: var(--widget-fg-muted);
+  letter-spacing: 0.03em;
+  user-select: none;
+}
+
+/* ── Status cards (error / timeout / cancelled) ── */
+.status-card {
+  font-size: 13px;
+  font-family: var(--widget-font);
+  line-height: 1.45;
+  padding: 13px var(--widget-pad-h);
+  border-radius: 10px;
+  color: var(--widget-fg);
+  letter-spacing: 0.01em;
+}
+
+.status-error {
+  background: rgba(var(--tint-error), 0.15);
+  border: 1px solid rgba(var(--tint-error), 0.32);
+  box-shadow: 0 0 0 1px rgba(var(--tint-error), 0.08) inset;
+}
+
+.status-timeout {
+  background: rgba(var(--tint-timeout), 0.13);
+  border: 1px solid rgba(var(--tint-timeout), 0.30);
+  box-shadow: 0 0 0 1px rgba(var(--tint-timeout), 0.07) inset;
+}
+
+.status-cancelled {
+  background: rgba(var(--tint-cancelled), 0.12);
+  border: 1px solid rgba(var(--tint-cancelled), 0.25);
+  box-shadow: 0 0 0 1px rgba(var(--tint-cancelled), 0.06) inset;
+}
+
+/* ── Confirmation mode ── */
 .cp-confirmation {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 14px 16px;
+  gap: 13px;
+  padding: 15px var(--widget-pad-h);
 }
 
 .cp-confirm-swatch {
   width: 36px;
   height: 36px;
-  border-radius: 8px;
+  border-radius: 9px;
   flex-shrink: 0;
-  border: 2px solid rgba(255, 255, 255, 0.22);
+  border: 1.5px solid rgba(255, 255, 255, 0.22);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
 }
 
 .cp-confirm-label {
   font-size: 14px;
   font-weight: 500;
-  color: #f5f5f7;
+  font-family: var(--widget-font);
+  color: var(--widget-fg);
   letter-spacing: 0.01em;
 }

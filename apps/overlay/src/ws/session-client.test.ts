@@ -403,3 +403,94 @@ test("runSession: handshake timeout still fires when daemon never responds (tran
     jest.useRealTimers();
   }
 });
+
+// ---------------------------------------------------------------------------
+// Task 3.1 — onSessionStart fires once, right after session_start is sent,
+// before any content (show_text / tool_call) arrives. Frontend-only signal.
+// ---------------------------------------------------------------------------
+test("runSession fires onSessionStart once, immediately after session_start is sent (before any content)", async () => {
+  const fake = makeFake();
+  const order: string[] = [];
+
+  const p = runSession("hi", () => fake.ws, {
+    onSessionStart: () => order.push("start"),
+    onShowText: () => order.push("text"),
+  });
+
+  // open event → session_start sent → onSessionStart must fire immediately
+  fake.fire("open", {});
+  expect(order).toEqual(["start"]); // fired right after send, no content yet
+
+  // Extract the client_session_id that was sent
+  const cid = (JSON.parse(fake.sent[0]!) as { client_session_id: string }).client_session_id;
+
+  // Daemon replies with ack
+  fake.fire("message", {
+    data: JSON.stringify({ type: "session_ack", session_id: "s3", client_session_id: cid }),
+  });
+
+  // Daemon replies with show_text tool_call — must match the real protocol shape
+  // (primitive: "text" is required; see tool-call-handler.test.ts showTextToolCall fixture)
+  fake.fire("message", {
+    data: JSON.stringify({
+      type: "tool_call",
+      session_id: "s3",
+      call_id: "c3",
+      payload: { tool: "show_text", args: { text: { primitive: "text", content: "hello" } } },
+    }),
+  });
+
+  // Daemon ends the session
+  fake.fire("message", {
+    data: JSON.stringify({ type: "session_end", session_id: "s3", reason: "completed" }),
+  });
+
+  await p;
+  // After all content, order must be start then text (start never fires again)
+  expect(order).toEqual(["start", "text"]);
+});
+
+// ---------------------------------------------------------------------------
+// Fix 1 (review hardening): deterministic HandshakeTimeoutError wins race
+//
+// The timeout handler must set `settled = true` / `clearTimeout(timer)` BEFORE
+// calling `ws.close()`, so that a synchronous `close` event fired by `ws.close()`
+// cannot reach `fail()` first and overwrite the rejection with the generic
+// "WebSocket closed…" message.
+// ---------------------------------------------------------------------------
+test("runSession: HandshakeTimeoutError is the rejection when close fires synchronously right after timeout", async () => {
+  jest.useFakeTimers();
+  try {
+    const listeners: Record<string, ((ev: { data?: unknown }) => void)[]> = {};
+    const ws: import("./types.js").WebSocketLike = {
+      send: () => {},
+      // close() fires the "close" event SYNCHRONOUSLY — worst-case race.
+      close: () => {
+        (listeners["close"] ?? []).forEach((cb) => cb({}));
+      },
+      addEventListener: (t, cb) => { (listeners[t] ??= []).push(cb); },
+    };
+
+    const p = runSession("hi", () => ws, { handshakeTimeoutMs: 100 });
+
+    // open → session_start sent
+    (listeners["open"] ?? []).forEach((cb) => cb({}));
+
+    // Advance past the timeout — the handler fires, calls ws.close() which
+    // synchronously fires "close". Without the fix the close listener's fail()
+    // would win; with the fix the HandshakeTimeoutError always wins.
+    jest.advanceTimersByTime(200);
+
+    // Flush microtasks
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // The rejection MUST be a HandshakeTimeoutError — never "WebSocket closed…"
+    let caught: unknown;
+    try { await p; } catch (e) { caught = e; }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).name).toBe("HandshakeTimeoutError");
+  } finally {
+    jest.useRealTimers();
+  }
+});

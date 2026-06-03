@@ -17,6 +17,9 @@ import type { WebSocketFactory } from "./ws/types.js";
 import { runSession } from "./ws/session-client.js";
 import type { ToolCallContext } from "./ws/session-client.js";
 import type { ColorSwatch } from "@agentic/protocol";
+import { HideScheduler } from "./lifecycle/hide-scheduler.js";
+import { statusForEndReason } from "./lifecycle/session-end-reason.js";
+import type { StatusVariant } from "./widgets/status.js";
 
 // ---------------------------------------------------------------------------
 // Real WebSocket factory — adapts browser WebSocket to the seam's WebSocketLike.
@@ -41,11 +44,6 @@ function getElement<T extends HTMLElement>(id: string): T {
 }
 
 const input = getElement<HTMLInputElement>("query-input");
-const status = getElement<HTMLDivElement>("status");
-
-function setStatus(text: string): void {
-  status.textContent = text;
-}
 
 async function hidePanel(): Promise<void> {
   await invoke("hide_panel");
@@ -59,11 +57,20 @@ const WIDGET_LABEL = "widget";
 const EV_SHOW = "show-picker";
 const EV_RESULT = "picker-result";
 const EV_CANCEL = "picker-cancel";
-const EV_SHOW_TEXT = "show-text";     // main → widget : { content } (display-only)
+const EV_SHOW_TEXT = "show-text";       // main → widget : { content } (display-only)
+const EV_TEXT_DISMISS = "text-dismiss"; // widget → main : user dismissed the text card
+const EV_SHOW_LOADER = "show-loader";   // main → widget : {} — thinking loader (chunk 3)
+const EV_SHOW_STATUS = "show-status";   // main → widget : { variant, message } (chunk 3)
 
 // Only one picker is live at a time in v0 (single in-flight session, 6.5a guard).
 let activeCtx: ToolCallContext | undefined;
 let pickerSettled = false;
+
+// Tracks what the widget last rendered, so the teardown timer hides the
+// ephemeral picker confirmation but NEVER the persistent text answer.
+// Status modes (loader, error, timeout, cancelled) are set here so the
+// persist-content path is not confused with a real text answer.
+let lastRenderKind: "picker" | "text" | "loader" | "error" | "timeout" | "cancelled" | undefined;
 
 // Widget window dimensions — must match tauri.conf.json width:360.
 const WIDGET_WIDTH_LOGICAL = 360;
@@ -113,6 +120,7 @@ async function hideWidgetWindow(): Promise<void> {
 function onToolCall(ctx: ToolCallContext): void {
   activeCtx = ctx;
   pickerSettled = false;
+  lastRenderKind = "picker";
   // Hide the input window so the picker is the only surface (input already
   // hides on submit in main flow; this guards the click-away/Escape-less path).
   hidePanel().catch(() => {/* ignore */});
@@ -124,10 +132,11 @@ function onToolCall(ctx: ToolCallContext): void {
  * Display-only handler for show_text replies (C3-2).
  * Mirrors the onToolCall show path (hidePanel + emitTo + showWidgetWindow)
  * minus result/cancel wiring (display-only: no tool_result ever sent).
- * The existing ~1200ms linger in runSession().then() auto-dismisses the card.
- * No new timer added (gotcha #33/#34 guard).
+ * Text answers are CONTENT — they persist until human-dismissed (Escape / new
+ * request / ×). The teardown timer is NOT invoked for text (see .then() branch).
  */
 function onShowText(content: string): void {
+  lastRenderKind = "text";
   hidePanel().catch(() => {/* ignore */});
   emitTo(WIDGET_LABEL, EV_SHOW_TEXT, { content }).catch(() => {/* ignore */});
   showWidgetWindow().catch(() => {/* ignore */});
@@ -146,13 +155,35 @@ void listen(EV_CANCEL, () => {
   if (activeCtx === undefined || pickerSettled) return;
   pickerSettled = true;
   activeCtx.sendCancel();
+  // Chunk 3: symmetric confirm-then-dismiss for cancel (mirrors picker's confirmation).
+  // Show a brief "Cancelled" card in the widget zone, then auto-dismiss after 1200ms.
+  lastRenderKind = "cancelled";
+  emitTo(WIDGET_LABEL, EV_SHOW_STATUS, { variant: "cancelled" satisfies StatusVariant, message: "Cancelled" }).catch(() => {/* ignore */});
+  hideScheduler.scheduleHide(1200, () => { hideWidgetWindow().catch(() => {/* ignore */}); });
+});
+
+// Text card dismiss — fired by widget.ts on × click or Escape (when mode=text).
+// Hides the widget and clears the render kind so no stale state remains.
+void listen(EV_TEXT_DISMISS, () => {
+  if (lastRenderKind !== "text") return;
   hideWidgetWindow().catch(() => {/* ignore */});
+  lastRenderKind = undefined;
+  input.value = "";
 });
 
 // ---------------------------------------------------------------------------
 // In-flight guard — prevents double-Enter opening a second session (6.5a)
 // ---------------------------------------------------------------------------
 let inFlight = false;
+
+// ---------------------------------------------------------------------------
+// Session-scoped hide timer (gotcha #33).
+// A monotonic token stamps each submit; the picker-teardown callback checks it
+// and no-ops if a newer session has already started. HideScheduler also
+// cancels any pending handle on scheduleHide/cancelPending for belt-and-suspenders.
+// ---------------------------------------------------------------------------
+const hideScheduler = new HideScheduler();
+let sessionToken = 0; // monotonic; incremented per submit
 
 // ---------------------------------------------------------------------------
 // Submit handler — Enter key
@@ -165,31 +196,151 @@ input.addEventListener("keydown", (e: KeyboardEvent) => {
     const text = input.value.trim();
     if (!text) return;
 
-    // Immediately show pending indicator and lock against re-submit (6.5a).
-    inFlight = true;
-    setStatus("…");
+    // A new request replaces any persistent answer (content dismiss-on-new-request).
+    if (lastRenderKind !== undefined) {
+      hideWidgetWindow().catch(() => {});
+      lastRenderKind = undefined;
+    }
 
-    runSession(text, factory, { onToolCall, onShowText })
-      .then(({ sessionId, reason }) => {
-        // 6.5b SUCCESS: render result, keep visible briefly (~1200ms) so it's
-        // readable, THEN hide and reset.
-        setStatus(`session ${sessionId} — ${reason}`);
-        setTimeout(() => {
-          hidePanel().catch(() => {/* ignore hide errors */});
-          hideWidgetWindow().catch(() => {/* ignore */});
-          input.value = "";
+    // #33: cancel any pending prior-session hide timer and bump the session
+    // token so stale in-flight callbacks know they are superseded.
+    hideScheduler.cancelPending();
+    sessionToken += 1;
+
+    // Lock against re-submit (6.5a). Loader is shown via onSessionStart below.
+    inFlight = true;
+
+    runSession(text, factory, {
+      onToolCall,
+      onShowText,
+      onSessionStart: () => {
+        // Chunk 3: show the thinking loader in the widget zone immediately after
+        // session_start is sent — before any content arrives.
+        // Loader is "until-replaced" (not timed) — it is replaced by the first
+        // onToolCall / onShowText / error / cancel, never by a timer.
+        lastRenderKind = "loader";
+        emitTo(WIDGET_LABEL, EV_SHOW_LOADER, {}).catch(() => {/* ignore */});
+        showWidgetWindow().catch(() => {/* ignore */});
+      },
+    })
+      .then((result) => {
+        // 6.5b SUCCESS: branch on what the widget rendered.
+        // Status is shown in the widget zone (chunk 3) — #status in the main window
+        // has been removed (Nit A: vestigial element gone).
+
+        // ── D1 (chunk 4): wire-level error/timeout card ────────────────────
+        // The daemon emits session_end{reason:"error"|"timeout"} on provider
+        // failures (formatErrorEnd strips detail). runSession resolves (not
+        // rejects) for all reason values — the .catch() path only fires on
+        // transport-level failures. So D1 lives here, not in .catch().
+        // Guard: only intercept when the widget is showing a loader or nothing
+        // (if text/picker is already rendered, a race-condition session_end
+        // must not override real content).
+        const endStatus = statusForEndReason(result.reason);
+        if (
+          endStatus !== undefined &&
+          (lastRenderKind === "loader" || lastRenderKind === undefined)
+        ) {
+          lastRenderKind = endStatus.variant;
+          emitTo(WIDGET_LABEL, EV_SHOW_STATUS, {
+            variant: endStatus.variant satisfies StatusVariant,
+            message: endStatus.message,
+          }).catch(() => {/* ignore */});
+          showWidgetWindow().catch(() => {/* ignore */});
+          hideScheduler.scheduleHide(endStatus.ms, () => {
+            hideWidgetWindow().catch(() => {/* ignore */});
+          });
+          hidePanel().catch(() => {/* ignore */});
           inFlight = false;
           activeCtx = undefined;
           pickerSettled = false;
-        }, 1200);
+          return;
+        }
+
+        // ── Fix 2 (review hardening): single-owner cancel dismiss ──────────
+        //
+        // Exactly THREE paths reach .then():
+        //   "text"      — content persists (no hide ever). Release latches only.
+        //   "picker"    — ephemeral confirmation. Schedule the 1200ms teardown.
+        //   "cancelled" — EV_CANCEL handler ALREADY owns the 1200ms timed dismiss.
+        //                 Release latches immediately; do NOT schedule a second hide.
+        //   "loader"    — session ended before any content (edge case). Hide immediately.
+        //   undefined   — defensive fallback; behave like loader.
+        //
+        // INVARIANT (content-persist): No timer in this .then() ever auto-hides
+        // a text answer. "text" is the ONLY content render kind; no other path
+        // may set lastRenderKind to "text" before reaching this branch.
+
+        if (lastRenderKind === "text") {
+          // Content persists. Only release the input/session latches.
+          // lastRenderKind stays "text" so dismiss handlers (Escape/×/new-request)
+          // know a card is live and can hide the widget on demand.
+          hidePanel().catch(() => {});
+          inFlight = false;
+          activeCtx = undefined;
+          pickerSettled = false;
+        } else if (lastRenderKind === "picker") {
+          // Picker confirmation stays ephemeral (~1200ms, ADR-0006 2026-06-01).
+          // #33: capture the token at schedule time; the callback is a no-op if a
+          // newer session started before the 1200ms elapsed (belt-and-suspenders
+          // alongside HideScheduler's own cancelPending).
+          const myToken = sessionToken;
+          hideScheduler.scheduleHide(1200, () => {
+            if (myToken !== sessionToken) return; // superseded — abort
+            hidePanel().catch(() => {/* ignore hide errors */});
+            hideWidgetWindow().catch(() => {/* ignore */});
+            input.value = "";
+            inFlight = false;
+            activeCtx = undefined;
+            pickerSettled = false;
+            lastRenderKind = undefined;
+          });
+        } else {
+          // "cancelled": EV_CANCEL already scheduled the 1200ms hide — release
+          //              latches here so a new request is not blocked, but do NOT
+          //              schedule another hide (that would cancel the EV_CANCEL one).
+          // "loader" / undefined: session ended before content — hide immediately.
+          hidePanel().catch(() => {});
+          if (lastRenderKind !== "cancelled") {
+            // No cancel card is showing — tear down immediately.
+            hideWidgetWindow().catch(() => {/* ignore */});
+            lastRenderKind = undefined;
+          }
+          // For "cancelled": keep lastRenderKind so the EV_CANCEL hide callback
+          // can identify what it's dismissing; it clears the window at 1200ms.
+          inFlight = false;
+          activeCtx = undefined;
+          pickerSettled = false;
+        }
       })
       .catch((err: unknown) => {
-        // 6.5c FAILURE: render error, do NOT auto-hide — panel stays so the
-        // user can see the error. Clear the in-flight latch so they can retry
-        // or press Esc to dismiss.
-        const msg = err instanceof Error ? err.message : String(err);
-        setStatus(`error: ${msg}`);
-        hideWidgetWindow().catch(() => {/* ignore */});
+        // 6.5c FAILURE: classify the rejection and show a timed status card in
+        // the widget zone (chunk 3 — moves status out of the hidden main window).
+        //
+        // Handshake-timeout (gotcha #42): discriminated by err.name === "HandshakeTimeoutError"
+        // (set in session-client.ts), with a /timed out/i message fallback for safety.
+        // Timeout renders a friendly "taking too long" card (~2500ms) — never the raw message.
+        // Any other error renders the "error" card with the message (~2000ms).
+        //
+        // The widget window is already visible (shown on onSessionStart), so we
+        // only need to schedule the auto-dismiss — no showWidgetWindow() needed.
+        const isTimeout =
+          (err instanceof Error && err.name === "HandshakeTimeoutError") ||
+          (err instanceof Error && /timed out/i.test(err.message));
+
+        if (isTimeout) {
+          lastRenderKind = "timeout";
+          emitTo(WIDGET_LABEL, EV_SHOW_STATUS, {
+            variant: "timeout" satisfies StatusVariant,
+            message: "No response — the model is taking too long. Try again.",
+          }).catch(() => {/* ignore */});
+          hideScheduler.scheduleHide(2500, () => { hideWidgetWindow().catch(() => {/* ignore */}); });
+        } else {
+          const msg = err instanceof Error ? err.message : String(err);
+          lastRenderKind = "error";
+          emitTo(WIDGET_LABEL, EV_SHOW_STATUS, { variant: "error" satisfies StatusVariant, message: msg }).catch(() => {/* ignore */});
+          hideScheduler.scheduleHide(2000, () => { hideWidgetWindow().catch(() => {/* ignore */}); });
+        }
         inFlight = false;
         activeCtx = undefined;
         pickerSettled = false;
@@ -205,10 +356,33 @@ input.addEventListener("keydown", (e: KeyboardEvent) => {
 // On window focus (hotkey reveals the window): clear input + re-focus.
 // Uses the pure DOM focus event — no Tauri event system needed,
 // avoiding the need for core:event:* permissions.
+//
+// #34 clear-on-open — two-part coverage:
+//   (a) This focus handler clears input.value when not in-flight (primary path).
+//   (b) #33 fix (hideScheduler + sessionToken) eliminates the stale-timer re-show
+//       path that could have bypassed this guard — a cancelled timer never fires,
+//       so there is no re-show event that would skip the clear. Together they make
+//       #34 robust: the input is always empty when the user sees the panel again.
+//   NOTE: No idle-timer clear — clearing on open is the only trigger (OUT per spec).
 // ---------------------------------------------------------------------------
 window.addEventListener("focus", () => {
   if (inFlight) return;        // NIT-2: don't disturb an in-flight round-trip
   input.value = "";
-  setStatus("");
   input.focus();
+});
+
+// ---------------------------------------------------------------------------
+// Blur-dismiss for the `main` input window (deferred input_blur_dismiss
+// follow-up, chunk 2 Task 2.4). The main window is a normal focusable window;
+// losing focus / click-outside hides it. Pure-DOM — no lib.rs change needed
+// (the symmetric `focus` listener above already proves DOM events work here).
+// This is for the INPUT window ONLY — the click-through `widget` window is NOT
+// dismissed on outside clicks (ADR-0006 2026-05-31).
+// Guarded by inFlight so a widget interaction mid-round-trip does not tear down
+// the session (the widget window is focus:false per tauri.conf.json so normal
+// usage will not trigger blur; the guard is defense-in-depth).
+// ---------------------------------------------------------------------------
+window.addEventListener("blur", () => {
+  if (inFlight) return;
+  hidePanel().catch(() => {/* ignore */});
 });

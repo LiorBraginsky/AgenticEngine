@@ -1,6 +1,8 @@
+> 🗄️ ARCHIVED 2026-06-03 — done. Historical record; do not edit.
+
 # Chunk 2: Input lifecycle hygiene (session-scoped timers + clear-on-open + blur-dismiss)
 
-**Status:** in-progress
+**Status:** done
 **Created:** 2026-06-03
 **Phase:** overlay-ux-pass (frontend UX polish, post-llm-text-slice)
 **Depends on:** chunk 1 (sequential — shared overlay session/window lifecycle, §7.1). **Hard prerequisite for chunk 3**: gotcha #33 explicitly says the stale-timer bug "must be fixed before the status text is removed/reworked."

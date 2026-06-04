@@ -1,7 +1,7 @@
 ---
 title: Roadmap
 status: living-document
-last-major-update: 2026-05-30
+last-major-update: 2026-06-04
 tags: [roadmap, milestones]
 ---
 
@@ -62,6 +62,33 @@ tags: [roadmap, milestones]
 **Web admin tab** (settings / plugin management, per [[0003-local-daemon-ws-architecture]]) comes as a *separate later chunk* — a parallel frontend, not a replacement.
 
 > Phases 1 and 2 below remain as **capability areas** (the complete backend and the complete frontend). The walking skeleton cuts a thin slice through both first; the remaining items in each phase are filled in afterward. **No new ADR needed** — this is a planning approach (walking-skeleton-first), not an architectural decision, and it is consistent with ADRs 0001–0008.
+
+---
+
+## Conversation & Interaction Model — north-star + route (locked 2026-06-04)
+
+> **Post-v0 status:** Walking Skeleton v0, the **LLM text-reply slice** (real Claude, ADR-0009/0010/0011), and an **overlay UX pass** (persistent text, status zone, widget resize) have all shipped. This section sets the **stable interaction north-star** the next work aims at — it refines *how* Phases 2–4 below realize interaction. Decisions are recorded in **[[adr/0012-conversation-and-memory-model]]**; behavioral + prior-art rationale lives in project memory (conversational-interaction-model, prior-art-findings).
+
+**North-star — "one agent, talked to two ways, that remembers":**
+- ONE agent; the user always talks only to it.
+- **Dual-modality input is FIRM and co-equal: voice + text** — both unified underneath as "add a turn to a thread" (one behavioral contract, two affordances).
+- Output = ephemeral **widgets, not a chat log**. Agent paradigm, not chatbot.
+- **Memory = a persistent "super-chat":** each conversation is a **thread** that distills into the super-chat; new threads draw on it. Within-thread = multi-turn; cross-thread continuity = the super-chat.
+
+**Locked decisions** (→ [[adr/0012-conversation-and-memory-model]]): dual-modality co-equal · agent-paradigm (widgets out) · memory = super-chat, user interacts only via threads · within-thread multi-turn / cross-thread = super-chat. **Memory transparency (non-negotiable):** invisible *by default*, BUT a **view/edit/forget escape-hatch + provenance/expiry tags + security-scanned writes + no silent overwrite of human entries**, built from day one (default-hidden). An opaque always-injecting memory is the category's #1 churn driver *and* a poisoning surface that chains with the CSWSH gap (known-gotcha #31).
+
+**The route (big parts, ordered — not all at once):**
+1. **Memory foundation** — super-chat + thread model (within-thread multi-turn now; cross-thread distillation as it matures) + the transparency hatch. Two stores (uncapped archive + small distilled slice); SQLite + files first, vector/graph as a swappable provider. **Chunk-1; everything depends on it.**
+2. **Text continuation affordance** — lightweight add-a-turn to the live thread, widgets out, **not a persistent chat box**. Exact affordance (inline "Live Card" vs re-summoned "Continuation Pill") decided at build, per the interaction research.
+3. **Voice parity** — voice as a co-equal turn (open-mic continuation; refines Phase 4), designed as a primary driver, not bolted on.
+4. **Richer widget output** — beyond text (compare-tables, etc.; closed-set primitives, ADR-0005 open-question Q2).
+5. **Concurrent threads + background** ([[known-gotchas]] #45) — multiple live threads, long/background tasks. Later.
+
+**Security hardening pass (near-term, before any non-dev release):** un-defer the per-install WS token + all secrets in the OS Keychain + bind 127.0.0.1-only + untrusted-by-default plugin/MCP supply chain. Executes the already-decided token (ADR-0003 p.5; only timing was deferred); maps to known-gotchas #31/#35/#38. Prior-art-verified as the highest-leverage, lowest-risk security move.
+
+**Bounded-open (resolve at the relevant part):** exact text reply affordance · voice↔text mixing within one thread · discoverability of the reply affordance · distillation mechanics (when/how a thread consolidates; retrieval/scoping/privacy) · **external/third-party rich-widget rendering** (Spotify/weather mini-apps *not* built from our primitives — [[open-questions]] Q11; A2UI / sandboxed-mini-app candidates; ADR-0005's `custom_content` is the weak current answer). *(A2UI is **not** adopted for our **own** primitives — ADR-0005 covers those natively — but it stays a live candidate for the external case.)*
+
+> **Reuse note (answers "won't I lose competitors' ecosystem?"):** integration breadth = the open **MCP** commons + the open **SKILL.md** standard, NOT competitors' proprietary skill catalogs. Reuse = point at the same MCP servers (and competitors can be mounted as MCP servers). **Caveat:** MCP is decided (ADR-0004) but **not yet built** — this is roadmap, not a current capability.
 
 ---
 
@@ -177,6 +204,7 @@ tags: [roadmap, milestones]
 - Voice TTS (Jarvis-style voice-out)
 - End-user plugin creation via `create_plugin` meta-tool
 - Local LLM (Ollama / llama.cpp) support
+- **"Do work" / long-running coding-agent tasks** ([[open-questions]] Q12) — a **background-task tier** (gotcha #45) driven from the overlay command surface, via MCP work-tools + **sandboxing**; explicitly NOT a pivot to a coding agent (moat = the surface, not capability). Differentiated entry = kick off by voice/overlay command + glance progress. Don't close the door (MCP + agent-port + #45 accommodate it); don't build yet.
 
 ---
 

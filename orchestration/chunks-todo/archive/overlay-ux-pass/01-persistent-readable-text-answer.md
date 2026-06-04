@@ -1,6 +1,8 @@
+> 🗄️ ARCHIVED 2026-06-03 — done. Historical record; do not edit.
+
 # Chunk 1: Persistent, readable LLM text answer (kill the auto-vanish)
 
-**Status:** in-progress
+**Status:** done
 **Created:** 2026-06-03
 **Phase:** overlay-ux-pass (frontend UX polish, post-llm-text-slice)
 **Estimated size:** ~0.5 day

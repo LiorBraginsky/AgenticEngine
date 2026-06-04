@@ -1,3 +1,5 @@
+> 🗄️ ARCHIVED 2026-06-03 — shipped. Historical record; do not edit.
+
 # Overlay UX Pass — Combined Implementation Plan (Chunks 01 → 02 → 03)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -12,7 +14,7 @@
 
 ## Status
 
-IN PROGRESS - IMPLEMENTATION (Phase 2; plan approved by Lior 2026-06-03)
+shipped
 
 ---
 

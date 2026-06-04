@@ -1,7 +1,7 @@
 ---
 title: Open Questions
 status: living-document
-last-major-update: 2026-05-25
+last-major-update: 2026-06-04
 tags: [open-questions, decisions]
 ---
 
@@ -148,6 +148,37 @@ When product-market fit is demonstrated, evaluate these three scenarios — not 
 - **Status:** `proposed` (see [[glossary]])
 - **Blocks:** documentation consistency
 - **Notes:** Lior to finalize terminology in [[glossary]].
+
+---
+
+## Q11: External / third-party rich-widget rendering
+
+- **Status:** `open` (surfaced 2026-06-04 by Lior)
+- **Blocks:** Phase 5 (plugins) / any external-widget support
+- **Current thinking:** [[adr/0005-ui-contract-closed-set]]'s closed-set cleanly covers widgets **we** draw. But third-party **rich** widgets that are **not** composed of our primitives — a Spotify widget, a weather mini-app, "calling a little program into the overlay" — are only weakly served by ADR-0005's `custom_content` sanitized-HTML escape hatch. How should an external rich widget render in the overlay, cross-frontend, **without** the arbitrary-code/XSS footgun?
+- **Candidates:**
+  - **A2UI** (Google, open agent-UI interchange format; some competitors render it) — as the format for *external* widgets only, NOT replacing our own primitive protocol.
+  - **Sandboxed mini-app** (iframe-like isolated surface with a capability boundary).
+  - **Extend `custom_content`** (richer but still sanitized) — least new infra, least power.
+- **Why it's not "closed by ADR-0005":** ADR-0005 decided OUR primitives; this is the *external* case it doesn't fully answer. Per the standing rule, research this when the plugin/external-widget layer is tackled rather than reflex-rejecting it. See [[adr/0012-conversation-and-memory-model]] Option E.
+- **Relates:** Q2 (our primitive list), Q4 (plugin/untrusted-code security — external widgets are exactly that surface).
+- **To research/decide during Phase 5 (plugins).**
+
+---
+
+## Q12: "Do work" / long-running agent tasks (coding-agent capability)
+
+- **Status:** `open` — post-personal-assistant-v1 horizon
+- **Blocks:** nothing now — a deliberate scope question for later
+- **The question:** should the agent host long-running **"do work"** tasks — e.g. "build me a React app and host it" — the capability Hermes / OpenClaw / Claude Code / Cursor target? Lior doesn't want to write off that whole class of users.
+- **Reframe (not a pivot):** this is **not** "become a coding agent." It is a **background-task tier** (see [[known-gotchas]] #45) driven *from the overlay command surface*, via **MCP work-tools** (filesystem / shell / git / deploy) + **sandboxing** + a progress/result surface. The architecture already accommodates it ([[adr/0004-typescript-bun-mcp]] MCP, [[adr/0010-pluggable-llm-provider-abstraction]] agent-port, the #45 background model).
+- **Tensions to design around:**
+  - **Security:** arbitrary code execution is the exact footgun behind "don't run X on your workstation" — it fights the **"safe install" security moat**. Any such capability must be **sandboxed / opt-in / explicit-grant**, never default.
+  - **Identity / focus:** the moat is the **interaction surface** (overlay/voice/widgets), not being a better coding agent (a crowded, well-funded space). Don't compete on capability.
+  - **Sequencing:** pre-v1, solo; the personal-assistant overlay + memory layer come first.
+- **Possible differentiated entry (if/when we go there):** kick off a long task by **voice/overlay command** and **glance progress** — a different UX from a terminal/IDE agent.
+- **Stance:** **don't close the door** (the seams support it); **don't walk through it yet.** Revisit after the personal-assistant v1.
+- **Relates:** [[adr/0004-typescript-bun-mcp]], [[adr/0010-pluggable-llm-provider-abstraction]], [[known-gotchas]] #45, project memory `prior-art-findings`.
 
 ---
 

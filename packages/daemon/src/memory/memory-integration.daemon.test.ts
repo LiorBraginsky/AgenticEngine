@@ -3,7 +3,7 @@ import { MemoryStore } from "./store.js";
 import { WriteGate, REDACTION_MARKER } from "./write-gate.js";
 import { ConsolidationHook } from "./consolidation-hook.js";
 import { tmpdir } from "node:os";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 
@@ -104,6 +104,10 @@ test("forget hard-scrubs content on disk; message + tombstone rows remain; tail 
   const stillThere = db.query("SELECT 1 FROM messages WHERE id = ?").get(row.id);
   expect(stillThere).not.toBeNull();
   expect(store.readThreadTail(row.thread_id, 50).some((m) => m.content === REDACTION_MARKER)).toBe(true);
+  // Finding 2: verify the JSONL mirror no longer contains the plaintext (real erasure).
+  const mirrorContent = readFileSync(join(dataDir, "threads", `${row.thread_id}.jsonl`), "utf8");
+  expect(mirrorContent).not.toContain("yeet.sh");
+  expect(mirrorContent).toContain(REDACTION_MARKER);
   store.close();
 });
 

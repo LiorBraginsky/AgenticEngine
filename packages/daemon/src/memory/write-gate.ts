@@ -39,6 +39,7 @@ export class WriteGate {
   forget(messageId: string, ctx: WriteContext, reason?: string): void {
     const db = this.store.rawDb();
     const now = Date.now();
+    const threadId = this.threadOf(messageId);
     const tx = db.transaction(() => {
       db.query(
         "INSERT INTO mutations (id, target_message_id, kind, actor, reason, replacement_content, authored_by, created_at) VALUES (?, ?, 'tombstone', ?, ?, NULL, ?, ?)",
@@ -46,7 +47,13 @@ export class WriteGate {
       db.query("UPDATE messages SET content = ? WHERE id = ?").run(REDACTION_MARKER, messageId);
     });
     tx();
-    this.store.mirrorEvent(this.threadOf(messageId), { event: "forget", target_message_id: messageId, actor: ctx.actor, created_at: now });
+    // Rewrite the JSONL mirror so the message line's content is replaced with the
+    // redaction marker. Required by plan.md §109 ("the mirror never holds plaintext
+    // after a forget either") and spec §3.2 invariant 1 ("real erasure, not a soft hide").
+    // This makes forget a mirror-rewrite, not purely append-only — the plan's own contract.
+    this.store.redactMirrorMessage(threadId, messageId);
+    // Append the redaction event line so the audit trail records that a forget occurred.
+    this.store.mirrorEvent(threadId, { event: "forget", target_message_id: messageId, actor: ctx.actor, created_at: now });
   }
 
   /** edit = appended correction record referencing the original (never in-place). */

@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { mkdirSync, appendFileSync } from "node:fs";
+import { mkdirSync, appendFileSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { SCHEMA_DDL, REDACTION_MARKER } from "./schema.js";
 import type { SessionMessage } from "../providers/provider.js";
@@ -99,6 +99,35 @@ export class MemoryStore {
 
   mirrorEvent(threadId: string, payload: Record<string, unknown>): void {
     this.mirror(threadId, payload);
+  }
+
+  /**
+   * Rewrite the per-thread JSONL mirror so the message line for `messageId`
+   * has its `content` replaced by REDACTION_MARKER.
+   *
+   * Called by WriteGate.forget() to enforce ARCHIVE-AS-TRUTH / spec §3.2
+   * invariant 1: "the mirror never holds plaintext after a forget either."
+   * This makes forget a rewrite (not purely append-only) for the mirror —
+   * required by the plan's own contract, not a new design decision.
+   */
+  redactMirrorMessage(threadId: string, messageId: string): void {
+    const mirrorPath = join(this.threadsDir, `${threadId}.jsonl`);
+    if (!existsSync(mirrorPath)) return;
+    const lines = readFileSync(mirrorPath, "utf8").split("\n");
+    const rewritten = lines.map((line) => {
+      if (!line) return line; // preserve trailing newline's empty string
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        return line; // unparseable line — leave intact
+      }
+      if (parsed["event"] === "message" && parsed["id"] === messageId) {
+        return JSON.stringify({ ...parsed, content: REDACTION_MARKER });
+      }
+      return line;
+    });
+    writeFileSync(mirrorPath, rewritten.join("\n"));
   }
 
   close(): void {

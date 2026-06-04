@@ -1,6 +1,6 @@
 import { test, expect } from "bun:test";
 import { tmpdir } from "node:os";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { MemoryStore } from "./store.js";
 import { WriteGate, REDACTION_MARKER } from "./write-gate.js";
@@ -8,7 +8,7 @@ import { WriteGate, REDACTION_MARKER } from "./write-gate.js";
 function fresh() {
   const dir = mkdtempSync(join(tmpdir(), "mf01-wg-"));
   const store = new MemoryStore({ dataDir: dir });
-  return { store, gate: new WriteGate(store) };
+  return { store, gate: new WriteGate(store), dir };
 }
 const CTX = { actor: "user", authored_by: "human" as const };
 
@@ -34,6 +34,27 @@ test("forget appends a tombstone AND hard-scrubs the message content; rows remai
   // within-thread read redacts it
   expect(store.readThreadTail(t, 10)).toEqual([{ role: "user", content: REDACTION_MARKER }]);
   store.close();
+});
+
+test("forget rewrites the JSONL mirror so plaintext is gone and REDACTION_MARKER is present (Finding 2 — ARCHIVE-AS-TRUTH)", () => {
+  // This test reproduces the reviewer's finding: after a forget, the JSONL mirror
+  // previously still contained the original {event:"message", content:"<plaintext>"}
+  // line, violating the plan's "the mirror never holds plaintext after a forget either"
+  // contract and spec §3.2 invariant 1 ("real erasure, not a soft hide").
+  const { store, gate, dir } = fresh();
+  const t = store.createThread();
+  const [mid] = gate.appendTurn(t, [{ role: "user", content: "secret token abc" }], "s1", CTX);
+  gate.forget(mid!, CTX, "user requested");
+  store.close();
+
+  const mirrorPath = join(dir, "threads", `${t}.jsonl`);
+  const mirrorContent = readFileSync(mirrorPath, "utf8");
+
+  // The mirror must NOT contain the original plaintext.
+  expect(mirrorContent).not.toContain("secret token abc");
+  // The mirror MUST contain the redaction marker (either in the rewritten message
+  // line or in the appended forget event line).
+  expect(mirrorContent).toContain(REDACTION_MARKER);
 });
 
 test("edit appends a correction; the original message row is NOT mutated in place", () => {

@@ -67,9 +67,11 @@ export function startDaemon(port: number = DAEMON_PORT) {
         // via the session_id→thread_id binding recorded after the provider minted it.
         let turnThreadId: string | undefined;
         let priorState: ProviderSessionState | undefined;
+        let hydratedCount = 0;
         if (inbound.type === "session_start") {
           const begin = lifecycle.beginTurn(inbound);
           turnThreadId = begin.threadId;
+          hydratedCount = begin.priorMessages.length;
           // Hydrate the thread tail into the messages[] seam (provider.ts:5).
           // phase:"done"/session_id:"" are don't-cares on start — every provider
           // reads only `.messages`; the mock adapter maps a session_start to a
@@ -92,7 +94,12 @@ export function startDaemon(port: number = DAEMON_PORT) {
 
         const sid = result.nextState.session_id;
         if (sid) {
-          if (turnThreadId) lifecycle.bindSession(sid, turnThreadId);
+          // bindSession is called on every advance that returns a sid, but
+          // hydratedCount is only meaningful on the session_start advance (the
+          // first message of a session). For non-session_start messages, the
+          // binding already exists (set during the session_start advance) and
+          // we must NOT overwrite the stored hydratedCount with 0.
+          if (turnThreadId && inbound.type === "session_start") lifecycle.bindSession(sid, turnThreadId, hydratedCount);
           if (result.nextState.phase === "done") {
             // ── §7.1 behavioral change: flush the turn to the durable thread,
             //    THEN drop RAM (was a bare sessions.delete(sid) at index.ts:70).

@@ -84,9 +84,10 @@ test("turn 2 with the minted thread_id hydrates turn-1's messages (within-thread
     .all(threadId) as { content: string }[];
   db2.close();
   const contents = all.map((m) => m.content);
-  expect(contents).toContain("deploy is yeet.sh"); // turn 1, carried forward
-  expect(contents).toContain("what's the deploy?"); // turn 2, appended after it
-  expect(contents.indexOf("deploy is yeet.sh")).toBeLessThan(contents.indexOf("what's the deploy?"));
+  // EXACT equality: must be exactly 2 rows (turn-1 message + turn-2 message) in order.
+  // If endTurn double-persists the hydrated tail this becomes ["deploy is yeet.sh",
+  // "deploy is yeet.sh", "what's the deploy?"] (3 rows), and toEqual catches it.
+  expect(contents).toEqual(["deploy is yeet.sh", "what's the deploy?"]);
 });
 
 test("forget hard-scrubs content on disk; message + tombstone rows remain; tail redacts", () => {

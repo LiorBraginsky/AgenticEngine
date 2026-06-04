@@ -90,6 +90,8 @@ tags: [roadmap, milestones]
 
 > **Reuse note (answers "won't I lose competitors' ecosystem?"):** integration breadth = the open **MCP** commons + the open **SKILL.md** standard, NOT competitors' proprietary skill catalogs. Reuse = point at the same MCP servers (and competitors can be mounted as MCP servers). **Caveat:** MCP is decided (ADR-0004) but **not yet built** — this is roadmap, not a current capability.
 
+> **Non-goal — "self-improvement" is NOT a separate feature/chunk.** The felt "it gets better over time" is **emergent**, not something to build directly: ~80% comes from **memory done well** (ADR-0012 — personalization + preference-application; the provenance/expiry/no-silent-overwrite hygiene is exactly what makes improvement *healthy* rather than compounding-wrong), and the "notice a repeated pattern → automate it" part is **Phase 6 Rituals + a proactivity layer**. **Do NOT build a "self-improvement" chunk.** (Outcome/procedural learning — learning from failures to change *approach* — is a far-later, research-heavy step, never under this marketing banner. "Agent rewrites its own code/prompts" = marketing frontier + overlaps [[open-questions]] Q12.)
+
 ---
 
 ## Phase 1: Engine skeleton

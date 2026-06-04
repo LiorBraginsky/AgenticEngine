@@ -1,4 +1,7 @@
 import { test, expect, afterAll, beforeAll } from "bun:test";
+import { MemoryStore } from "./store.js";
+import { WriteGate, REDACTION_MARKER } from "./write-gate.js";
+import { ConsolidationHook } from "./consolidation-hook.js";
 import { tmpdir } from "node:os";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
@@ -84,4 +87,60 @@ test("turn 2 with the minted thread_id hydrates turn-1's messages (within-thread
   expect(contents).toContain("deploy is yeet.sh"); // turn 1, carried forward
   expect(contents).toContain("what's the deploy?"); // turn 2, appended after it
   expect(contents.indexOf("deploy is yeet.sh")).toBeLessThan(contents.indexOf("what's the deploy?"));
+});
+
+test("forget hard-scrubs content on disk; message + tombstone rows remain; tail redacts", () => {
+  const store = new MemoryStore({ dataDir }); // SAME on-disk DB the daemon wrote
+  const gate = new WriteGate(store);
+  const db = store.rawDb();
+  const row = db.query("SELECT id, thread_id FROM messages WHERE content = 'deploy is yeet.sh' LIMIT 1").get() as { id: string; thread_id: string };
+  gate.forget(row.id, { actor: "user", authored_by: "human" }, "test");
+  const after = db.query("SELECT content FROM messages WHERE id = ?").get(row.id) as { content: string };
+  expect(after.content).toBe(REDACTION_MARKER);
+  expect(after.content).not.toContain("yeet.sh");
+  const tomb = db.query("SELECT kind FROM mutations WHERE target_message_id = ? AND kind='tombstone'").get(row.id);
+  expect(tomb).not.toBeNull();
+  const stillThere = db.query("SELECT 1 FROM messages WHERE id = ?").get(row.id);
+  expect(stillThere).not.toBeNull();
+  expect(store.readThreadTail(row.thread_id, 50).some((m) => m.content === REDACTION_MARKER)).toBe(true);
+  store.close();
+});
+
+test("edit appends a correction; original message row is unchanged in place", () => {
+  // Real-I/O: operates on the same on-disk DB the daemon wrote.
+  // Adaptation: mock provider only appends user messages (no assistant turns in MF-01).
+  // The edit test's intent — correction appended, original not mutated in place — is
+  // identical regardless of role. We target a user message that still has real content
+  // (not yet redacted by the forget test above).
+  const store = new MemoryStore({ dataDir });
+  const gate = new WriteGate(store);
+  const db = store.rawDb();
+  // Pick a user message that has NOT been redacted (content != REDACTION_MARKER).
+  const row = db.query(
+    "SELECT id FROM messages WHERE role='user' AND content != ? LIMIT 1",
+  ).get(REDACTION_MARKER) as { id: string };
+  const before = (db.query("SELECT content FROM messages WHERE id = ?").get(row.id) as { content: string }).content;
+  gate.edit(row.id, "edited reply", { actor: "user", authored_by: "human" }, "test");
+  const afterOriginal = (db.query("SELECT content FROM messages WHERE id = ?").get(row.id) as { content: string }).content;
+  expect(afterOriginal).toBe(before); // NOT mutated in place
+  const corr = db.query("SELECT kind, replacement_content FROM mutations WHERE target_message_id=? AND kind='correction'").get(row.id) as { kind: string; replacement_content: string };
+  expect(corr.kind).toBe("correction");
+  expect(corr.replacement_content).toBe("edited reply");
+  // within-thread read surfaces the correction
+  const msgRow = db.query("SELECT thread_id FROM messages WHERE id = ?").get(row.id) as { thread_id: string };
+  const tail = store.readThreadTail(msgRow.thread_id, 50);
+  expect(tail.some((m) => m.content === "edited reply")).toBe(true);
+  store.close();
+});
+
+test("dismiss invokes the registered consolidation-hook and flips status to dismissed", () => {
+  const store = new MemoryStore({ dataDir });
+  const hook = new ConsolidationHook(store);
+  const calls: string[] = [];
+  hook.register((tid, trig) => calls.push(`${tid}:${trig}`));
+  const tid = (store.rawDb().query("SELECT thread_id FROM threads LIMIT 1").get() as { thread_id: string }).thread_id;
+  hook.dismiss(tid);
+  expect(calls).toEqual([`${tid}:dismiss`]);
+  expect((store.rawDb().query("SELECT status FROM threads WHERE thread_id=?").get(tid) as { status: string }).status).toBe("dismissed");
+  store.close();
 });

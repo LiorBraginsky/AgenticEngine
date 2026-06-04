@@ -78,3 +78,19 @@ test("Envelope union STILL has exactly 6 known message types (show_text is a TOO
   // RC-1: show_text is additive to the TOOL union, never the envelope union.
   expect(Envelope.options.length).toBe(6);
 });
+
+test("session_start with optional thread_id parses (additive field, MF-01)", () => {
+  const r = parseEnvelope({ type: "session_start", trigger: "user", text: "hi", thread_id: "t-1" });
+  expect(r.kind).toBe("ok");
+  if (r.kind === "ok" && r.message.type === "session_start") {
+    expect(r.message.thread_id).toBe("t-1");
+  }
+});
+
+test("session_start WITHOUT thread_id still parses (field is optional)", () => {
+  expect(parseEnvelope({ type: "session_start", trigger: "user", text: "hi" }).kind).toBe("ok");
+});
+
+test("adding thread_id does NOT grow the envelope union (still 6 variants)", () => {
+  expect(Envelope.options.length).toBe(6);
+});

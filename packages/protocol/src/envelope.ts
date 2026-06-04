@@ -29,6 +29,14 @@ export const SessionStart = z.object({
   trigger: Trigger,
   text: z.string().optional(),
   client_session_id: z.string().optional(),
+  /**
+   * MF-01 (spec §3.1 / §5): additive optional thread continuation handle.
+   * Present ⇒ daemon hydrates that thread's tail; absent/unknown ⇒ daemon mints
+   * a NEW thread (single-turn = a degenerate one-turn thread). This is the SAME
+   * additive-optional posture as `trigger`/`source` — NOT a 7th envelope variant;
+   * the 6-variant discriminated union is byte-unchanged.
+   */
+  thread_id: z.string().optional(),
 });
 
 /** Daemon → frontend. Daemon MINTS `session_id` (crypto.randomUUID) and echoes

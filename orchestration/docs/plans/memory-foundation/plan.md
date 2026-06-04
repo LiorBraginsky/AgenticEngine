@@ -1245,3 +1245,13 @@ The approved mechanism: the within-thread-multi-turn mechanism uses a **two-line
 - Integration test: `/Users/lior/WebstormProjects/playground/AgenticEngine/packages/daemon/src/memory/memory-integration.daemon.test.ts`
 - Smoke-probe: `/Users/lior/WebstormProjects/playground/AgenticEngine/packages/daemon/scripts/memory-smoke.ts`
 - Frozen lines cited: ADR-0010 decision 6 (`orchestration/docs/adr/0010-pluggable-llm-provider-abstraction.md`); spec §3.1 (`orchestration/docs/specs/2026-06-04-memory-foundation.md`).
+
+---
+
+## Implementation progress (orchestrator log)
+
+- **Tasks 1–4 DONE** (Worker 1) — commits `a83257a` (envelope thread_id), `1e99899` (schema+store), `4811497` (write-gate), `70dd459` (consolidation-hook). Orchestrator-verified gate: typecheck exit 0, **153 pass / 0 fail**, lint:strict exit 0. Deviation noted: write-gate `appendTurn(ctx)` + `void ctx` instead of `_ctx` (project ESLint disallows `_`-prefixed unused args) — semantically identical, MF-03 reads `ctx`. Minor: `store.ts` uses a deprecated `bun:sqlite` `.run()` overload (hint, not a lint error) — reviewer to opine.
+- **Task 5 DONE** (Worker 2) — commit `4556fb6` (thread-lifecycle + adapter hydration + index.ts wiring). Orchestrator-verified: gate typecheck 0 / **158 pass** / lint 0; **reducer freeze HELD across whole branch** (`git diff origin/main..HEAD -- mock-agent.ts mock-agent.test.ts` empty — ADR-0010 decision 6 intact); only `mock-provider.ts` (+17/-6) + its test changed in providers/.
+- **Tasks 6–8 DONE** (Worker 3) — commits `31d04f6` (real-I/O within-thread multi-turn), `2d5f57c` (real-I/O forget/edit/dismiss), `5997016` (smoke-probe + package.json script). Orchestrator-verified: typecheck 0 / **163 pass** / lint 0; **smoke-probe exits 0** with on-disk thread persisted (criterion 6). Reality-adaptation (Worker 3): the edit-test queries `role='user'` (the mock produces only user messages, no assistant rows) instead of the plan's `role='assistant'` — same intent (correction appended, original not mutated). NO mocked store, NO test-double provider, NO `injector.ts` change — criterion 2 runs on the default mock path.
+- **Review** — in progress (engine-reviewer vs origin/main).
+- **Verified-done + closeout** — pending Phase 3.

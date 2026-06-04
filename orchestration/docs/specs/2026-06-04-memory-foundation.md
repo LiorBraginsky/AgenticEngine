@@ -33,7 +33,7 @@ Build the **first part of the locked Conversation & Memory route** ([[../adr/001
 - **Distillation as an observable, recoverable consolidation EVENT** (ADR-0012 5b) — fired on thread-dismiss, recorded **even when nothing is retained**.
 - The **four checkpoints** (write-gate · provider-port · injection-point · archive-as-truth) + the **5b consolidation-hook** as clean pass-throughs.
 - The transparency tag **schema** (provenance / scope / expiry / confidence), stamped even by the dumb v0.
-- The transparency-hatch **logic** (5a view/edit/forget · 5d write-scan · 5e no-overwrite · 5f isolation), each filling a foundation seam in its own sub-chunk.
+- The transparency-hatch **logic** (5a view/edit/forget · 5d write-scan · 5e no-overwrite · 5f isolation), each filling a foundation seam in its own sub-chunk. *(5b and 5c are not separate logic chunks: 5b = the consolidation-hook + event above; 5c = the tag schema above.)*
 
 **Out of scope (deferred, with WHY):**
 - **A smart distiller** — what's worth remembering, scoped how — OUT because it is the evergreen-hard problem ADR-0012 itself names in *"What we'll regret in 6 months"* (line 94). The v0 is deliberately dumb; the provider port makes the smart one a drop-in later.
@@ -61,11 +61,11 @@ Build the **first part of the locked Conversation & Memory route** ([[../adr/001
 
 - Each turn stays an ephemeral session — **ADR-0001 ephemerality and gotcha #30 (RAM/eviction) are untouched.**
 - `session_start` gains an **additive optional `thread_id`** (frozen-envelope-safe — additive field, no new variant, no behavioral change to the 6-variant union; see §5).
-- On `session_start{thread_id}`: the daemon loads the thread's recent messages into `ProviderSessionState.messages[]` (the seam already reserved for this — `provider.ts:8` "Multi-turn later = append more; NOT a rewrite").
+- On `session_start{thread_id}`: the daemon loads the thread's recent messages into `ProviderSessionState.messages[]` (the seam already reserved for this — `provider.ts:5` "Multi-turn later = append more; NOT a rewrite").
 - On turn end: the turn's messages are appended back to the **durable thread** through the write-gate (§3.3).
 - No `thread_id` (or unknown id) ⇒ a **new thread** is minted — single-turn behavior is the degenerate case (one-turn thread), so nothing regresses.
 
-> **§7.1 runtime-coupling note:** this changes *what the daemon does with session state at end* — today `index.ts:71` does `sessions.delete(sid)` and the state is gone. The wire stays frozen; the **behavioral** contract (state now also flushes to a durable thread) changes deliberately. This is the kind of behavioral drift the v0 02a-scar warns about, so it is called out explicitly and lives behind the write-gate, not scattered.
+> **§7.1 runtime-coupling note:** this changes *what the daemon does with session state at end* — today `index.ts:70` does `sessions.delete(sid)` and the state is gone. The wire stays frozen; the **behavioral** contract (state now also flushes to a durable thread) changes deliberately. This is the kind of behavioral drift the v0 02a-scar warns about, so it is called out explicitly and lives behind the write-gate, not scattered.
 
 ### 3.2 — Distillation scope + the HARD INVARIANT (Seam 4)
 
@@ -99,7 +99,7 @@ Each transparency requirement = **(seam now, logic in its own sub-chunk):**
 - **5b distillation-as-event** → a **consolidation-hook** fired on `threads.status→dismissed` + the `distillation_events` table — both foundation **01** / the distiller emits the observable event, **even on empty consolidation** — **02** / surfaced by **5a**. The **dismiss-trigger is frozen**; an idle-timeout trigger is an optional architect-time addition (§7).
 - **5d scan** → write-gate no-op (foundation) / the security scanner (later sub-chunk).
 - **5e no-overwrite** → write-gate knows the `authored_by:human` flag (foundation) / the policy (later sub-chunk).
-- **5f isolation** → provider-port + a `scope` tag (foundation) / the cross-thread-bleed rules (later sub-chunk).
+- **5f isolation** → provider-port + a `scope` tag (foundation) / the cross-thread-bleed rules (later sub-chunk) — which **read what the write-gate (5d/5e) admitted**, hence MF-04 sequences after MF-03 (§6 F2).
 
 **Rules governing the decomposition (Lior, verbatim intent):**
 - A later sub-chunk may **only fill** an existing seam — **never re-plumb** the write/inject path.
@@ -119,8 +119,9 @@ Two stores, SQLite + files, **boring on purpose** (ADR-0012 decision 6). *Illust
 **Mutation model — MUTATION-AS-APPEND (frozen here per §5.2 — a shared 01/02/5a contract, NOT an architect-time choice; this is the storage seam forget/edit needs so it does not become surgery later, per §3.3 rule #1):**
 The archive is append-only at the EVENT level; user-facing edit/forget never mutate a turn in place.
 - **forget** = an appended **tombstone** (`who` / `when` / `why`) referencing a `messages.id`, PLUS a **hard-scrub** of that row's `content` (replaced with a redaction marker — real erasure, not a soft hide). The turn row and the tombstone remain as immutable history.
-- **edit** = an appended **correction / version** record referencing the original (never in-place) — preserving append-only, the `authored_by:human` flag, and 5e no-overwrite.
+- **edit** = an appended **correction** record (`mutations.kind = correction`) referencing the original (never in-place) — preserving append-only, the `authored_by:human` flag, and 5e no-overwrite.
 - **re-derive AND the injection-point MUST honor tombstones** — a forgotten fact never re-appears in a rebuilt slice or in injected context.
+- **forget purges the LIVE distilled slice too, not only the next re-derive (grill S2).** A forget must **immediately** invalidate (drop + mark for re-derive) any `distilled_facts` row whose `provenance` references the forgotten content — closing the window where a still-cached slice would inject a just-forgotten fact. (Tracking: a `mutations` row may target a distilled fact as well as a `messages.id`; the §3.4 invariant "no fact may exist only in the distilled layer" guarantees the re-derive can rebuild *everything except* what was forgotten.) The **mechanism seam** for this purge lives where the slice does — **chunk 02** (with the 01 tombstone) — and is covered by the **forget-survives-re-derive** test extended to assert the *live* slice, not only a rebuilt one.
 This is what makes §4.2's *forget-survives-re-derive* test meaningful — and the **F1 split** keeps it honest: the **storage mechanism** (mutations table + tombstone + hard-scrub + tombstone-honoring **within-thread read**) lives in chunk **01**; **tombstone-honoring re-derive + injection** (and the forget-survives-re-derive **test**) live in **02** — *because re-derive and the injection-point are themselves born in 02, not 01*; the **API + UI + policy** live in **5a**.
 
 **Files vs SQLite split** (architect-time detail): SQLite is the structured/searchable store; plain files (e.g. per-thread JSONL) serve as the human-readable mirror / export / audit surface. The **source-of-truth is the archive** regardless of which medium holds the canonical bytes — §3.2 invariant 1 (as redefined) governs.
@@ -147,6 +148,8 @@ ONE short live demo on macOS at the route's end (a couple-days route — per-chu
 2. **same thread, next turn:** "what's the deploy script called?" → `yeet.sh` — *within-thread multi-turn, live*;
 3. **dismiss** the overlay (the session dies; the thread persists + distills);
 4. **re-summon → a NEW thread** → "remind me the deploy script?" → `yeet.sh` — *cross-thread continuity, live*.
+5. *(once MF-05 / 5a has landed — resolves the §4.2 flag, option i)* open the hatch, **edit or forget** the fact → a fresh thread reflects the change — *transparency, live*.
+6. *(MF-05)* the agent **uses** a remembered fact → the **in-overlay provenance affordance** appears → click → lands in History — *discoverability, live* (§3.5 / §7; this is the demo step that proves MF-05's `[behavioral]` provenance criterion).
 
 ### 4.2 Intermediate chunks → REAL-I/O proof (no per-chunk live demo)
 
@@ -155,7 +158,7 @@ ONE short live demo on macOS at the route's end (a couple-days route — per-chu
 - The three **mechanical swap/integrity proofs**, all real-I/O (not mocked):
   - **swap-proof** — two providers re-derive the slice from the same untouched archive (§3.2 invariant 3);
   - **forget-survives-re-derive** — a forgotten fact stays gone after re-derivation (exercises the MUTATION-AS-APPEND tombstone + tombstone-aware re-derive *mechanism* established in chunk 01, §3.4);
-  - **lossless integrity** — the archive is byte-stable across distill / re-derive cycles.
+  - **lossless integrity** — the **distill / re-derive cycle is read-only over the archive**: it never mutates `messages`/`mutations`. The archive changes *only* via an explicit mutation event (turn append / edit / forget). (NB: this is byte-stability **across distillation**, NOT across a forget — a forget *deliberately* hard-scrubs content per §3.2 invariant 1; the two must not be conflated into a whole-archive byte-equality assertion.)
   - **distillation-observable** (5b) — every consolidation emits a `distillation_events` record, *including one that retains nothing* (proves "deliberately retained nothing" is distinguishable from "silently lost the thread").
 
 > **Flagged for Lior (§7.2):** the **5a hatch builds a *visible* UI**, and §6.1 says visible UI needs a live demo — which collides with "no per-chunk demo." Resolution options: **(i, recommended)** extend the route-closing demo with one *edit-a-fact / forget-a-fact* step once 5a lands (this is ADR-0012's "full route demo incl. hatch" as the *closing* demo); **(ii)** give 5a a single small standalone visual confirm as an explicit exception. Not decided here — surfaced for your call at 5a.
@@ -172,19 +175,21 @@ ONE short live demo on macOS at the route's end (a couple-days route — per-chu
 
 ## 6. Proposed decomposition (for Lior's review — formalized into chunk files after the grill)
 
-> Sizes are ~1 day. Dependencies are **runtime-coupled even where files are disjoint** (all chunks share the same daemon + memory store) — so "parallel" is used sparingly and re-validated at integration (§7.1).
+> Sizes are ~1 day. Dependencies are **runtime-coupled even where files are disjoint** (all chunks share the same daemon + memory store) — so the chain is **strictly sequential** (no parallel sub-chunks), and each chunk **re-validates its reality check at integration** (§7.1).
 
-| # | Chunk | Establishes / fills | Depends on | Size |
+> **Chunk `#` = the FILE number** (execution order). The ADR transparency id each fills is in parentheses. **Crosswalk:** `03 = 5d/5e` · `04 = 5f` · `05 = 5a` (the ADR ids are NOT in execution order — 5a is logically "first-named" but built **last** because it reads the injection that 03+04 shape; see the F2 note). **NB (grill S4):** these chunk ids are scoped to *this route* — distinct from the LLM-slice's "chunk-03" (the `anthropic-api` adapter) referenced in `provider.ts`/`injector.ts` comments. Refer to them as **MF-01…MF-05** when grepping across routes.
+
+| # | Chunk (fills) | Establishes / fills | Depends on | Size |
 |---|---|---|---|---|
-| 01 | **Durable store + thread/session + within-thread multi-turn** | SQLite+files store; `threads`/`messages`/`mutations`/`distillation_events`; `session_start{thread_id}`; load same-thread tail → multi-turn; **WRITE-GATE** (pass-through) + **ARCHIVE-AS-TRUTH**; **forget/edit storage SEAM** (MUTATION-AS-APPEND: tombstone + hard-scrub + tombstone-honoring **within-thread read**, §3.4); **5b CONSOLIDATION-HOOK** (pass-through on `threads.status→dismissed` + event table); tag-schema columns present; **real-I/O smoke-probe** | none | ~1 d |
-| 02 | **Distillation/retrieval seam + dumb distiller + cross-thread** | **PROVIDER-PORT** (retrieve/distill); `DumbTailProvider`; **INJECTION-POINT**; `distilled_facts`; cross-thread continuity; **distiller fires the 5b consolidation EVENT** (even when empty) + **tombstone-honoring re-derive/injection** (F1); **swap-proof + forget + lossless + distillation-observable** tests | 01 | ~1–1.5 d |
-| 5a | **Hatch logic — view/edit/forget** | fills injection-point + archive read/edit/forget **API + UI + policy** (storage mechanism already in 01); **surfaces `distillation_events` (5b)**; surface per §3.5 lean **+ mandatory in-overlay provenance affordance** (§7, ADR-0005 closed-set) | 02 | ~1 d |
-| 5d/5e | **Write-gate logic — scan + no-overwrite** | fills WRITE-GATE: 5d security-scan of writes, 5e no-silent-overwrite of `authored_by:human` | **02** (gate from 01, but "scan before it enters the prompt" is only end-to-end provable once the injection path exists in 02) | ~1 d |
-| 5f | **Thread-isolation logic** | fills PROVIDER-PORT + `scope` tag with cross-thread-bleed rules | 02 | ~1 d |
+| **01** | Durable store + thread/session + within-thread multi-turn | SQLite+files store; `threads`/`messages`/`mutations`/`distillation_events`; `session_start{thread_id}`; load same-thread tail → multi-turn; **WRITE-GATE** (pass-through) + **ARCHIVE-AS-TRUTH**; **forget/edit storage SEAM** (MUTATION-AS-APPEND: tombstone + hard-scrub + tombstone-honoring **within-thread read**, §3.4); **5b CONSOLIDATION-HOOK** (pass-through on `threads.status→dismissed` + event table); tag-schema columns present; **real-I/O smoke-probe** | **none** | ~1 d |
+| **02** | Distillation/retrieval seam + dumb distiller + cross-thread | **PROVIDER-PORT** (retrieve/distill); `DumbTailProvider`; **INJECTION-POINT**; `distilled_facts`; cross-thread continuity; **distiller fires the 5b consolidation EVENT** (even when empty) + **tombstone-honoring re-derive/injection** (F1); **swap-proof + forget + lossless + distillation-observable** tests | **01** | ~1–1.5 d |
+| **03** (5d/5e) | Write-gate logic — scan + no-overwrite | fills WRITE-GATE: 5d security-scan of writes, 5e no-silent-overwrite of `authored_by:human`. "Scan before it enters the prompt" is only end-to-end provable once the injection path exists in 02 | **02** | ~1 d |
+| **04** (5f) | Thread-isolation logic | fills PROVIDER-PORT + `scope` tag with cross-thread-bleed rules; reads what the write-gate (03) admitted | **03** | ~1 d |
+| **05** (5a) | Hatch logic — view/edit/forget | fills injection-point + archive read/edit/forget **API + UI + policy** (storage mechanism already in 01); **surfaces `distillation_events` (5b)**; surface per §3.5 lean **+ mandatory in-overlay provenance affordance** (§7, ADR-0005 closed-set) | **04** | ~1 d |
 
-- **5–6 chunks** (within the skill's ≤7 limit). **5d and 5e are proposed merged** (both fill the one write-gate, tightly coupled); the grill / Lior may split them.
-- **§7.1 runtime coupling (grill F2) — the sub-chunks are NOT "parallel, no-coupling."** 5d/5e (write-gate) → 5f (provider/distill) → 5a (injection/hatch) form a **data-flow chain** on the same daemon + store: what 5d/5e admit changes what 5f distills changes what 5a injects/surfaces. Build them **sequentially in that order, or with an explicit reality-check re-validation at integration** (the v0 02a scar: a shared-runtime baseline moved under a chunk and silently dead-coded it). Disjoint files do **not** make them independent.
-- The **route-closing live demo (§4.1)** exercises 01 + 02 capabilities; it fires once the cross-thread path is complete and gates the route's behavioral `done`. 5a/5d-5e/5f close out on **real-I/O proof** (with the 5a visible-UI exception flagged in §4.2).
+- **5 chunks** (within the skill's ≤7 limit). **5d and 5e are merged into MF-03** (both fill the one write-gate, tightly coupled); the orchestrator may split them but neither may introduce a second write path.
+- **§7.1 runtime coupling (grill F2) — MF-03 → MF-04 → MF-05 are NOT "parallel, no-coupling."** They form a **data-flow chain** on the same daemon + store: what 03 admits changes what 04 distills/scopes changes what 05 injects/surfaces. The `Depends on:` edges above are therefore **sequential** (03→02, 04→03, 05→04), not all-→02 — encoding the chain so a scheduler can't parallelize them. (The v0 02a scar: a shared-runtime baseline moved under a chunk and silently dead-coded it.) Disjoint files do **not** make them independent.
+- The **route-closing live demo (§4.1)** exercises 01 + 02 capabilities (and, once 05 lands, the hatch + provenance steps); it gates the route's behavioral `done`. MF-03/04/05 close out on **real-I/O proof** (with the 05 visible-UI exception resolved into the closing demo, §4.1/§4.2).
 
 ---
 

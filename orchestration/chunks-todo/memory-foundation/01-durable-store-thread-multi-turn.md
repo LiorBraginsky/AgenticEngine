@@ -69,5 +69,5 @@ Frozen — DO NOT: add a 7th envelope variant; put policy in the write-gate (chu
 
 ## Notes / Open questions
 
-- **§7.1 runtime-coupling (spec §3.1 note):** this chunk changes the *behavioral* contract — `index.ts:71` currently `sessions.delete(sid)` and the state is gone; now state also flushes to a durable thread. The wire stays frozen; the behavior changes deliberately. Localized to the write-gate, not scattered (the v0 02a-scar lesson).
+- **§7.1 runtime-coupling (spec §3.1 note):** this chunk changes the *behavioral* contract — `index.ts:70` currently `sessions.delete(sid)` and the state is gone; now state also flushes to a durable thread. The wire stays frozen; the behavior changes deliberately. Localized to the write-gate, not scattered (the v0 02a-scar lesson).
 - **Files-vs-SQLite canonical-byte split** (spec §3.4) is an architect-time call; ARCHIVE-AS-TRUTH (spec §3.2 invariant 1) governs regardless.

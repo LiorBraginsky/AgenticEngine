@@ -53,3 +53,4 @@ Frozen — DO NOT: re-plumb the write/inject path; add isolation rules (chunk 04
 
 - **§7.1 runtime-coupling (grill F2):** 03 → 04 → 05 are a data-flow chain on the shared daemon+store (what 03 admits changes what 04 distills changes what 05 injects/surfaces). Build in that order or re-validate the reality check at integration — disjoint files do **not** make them independent.
 - 5d/5e are **merged here** (both fill the one write-gate). If the build finds them genuinely separable, splitting is allowed — but neither may introduce a second write path.
+- **Naming (grill S4):** this is **memory-foundation chunk 03 (MF-03)** — distinct from the LLM-slice's "chunk-03" (the `anthropic-api` adapter) referenced in `provider.ts`/`injector.ts` comments. Use MF-03 when grepping across routes.

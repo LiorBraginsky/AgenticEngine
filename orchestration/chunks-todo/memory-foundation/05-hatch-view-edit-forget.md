@@ -4,7 +4,7 @@
 **Created:** 2026-06-04
 **Phase:** Conversation & Interaction Model · route part 1 (Memory foundation)
 **Estimated size:** ~1 day
-**Depends on:** 02 *(and sequence AFTER 03 + 04 per spec §6 F2 data-flow — 5a reads the injection that scan + isolation shape)*
+**Depends on:** 04 *(hard prerequisite is the 02 injection-point + archive; the **sequential** edge is 04 per spec §6 F2 — 5a reads the injection that scan (03) + isolation (04) shape; §7.1 — disjoint files are not parallel-safe)*
 **Spec:** `orchestration/docs/specs/2026-06-04-memory-foundation.md` (§3.5, §4.1, §4.2, §7) · **ADR:** [[../../docs/adr/0012-conversation-and-memory-model]] (decisions 5a, 5b-surface; decision 3 launcher-feel) · [[../../docs/adr/0005-ui-contract-closed-set]] (closed-set primitives for any overlay affordance)
 
 ## Scope
@@ -34,8 +34,9 @@ The **final chunk** of the route. It **fills** the injection-point + archive wit
   2. same thread → "what's the deploy script called?" → `yeet.sh` (within-thread multi-turn);
   3. dismiss (session dies; thread persists + distills);
   4. re-summon → NEW thread → "remind me the deploy script?" → `yeet.sh` (cross-thread continuity);
-  5. **(resolves the §4.2 flag → option i)** open the hatch, **edit/forget** the fact → a new thread reflects the change.
-- [ ] **[behavioral]** the in-overlay provenance affordance is visible and leads into History (confirmed within the live demo).
+  5. **(resolves the §4.2 flag → option i)** open the hatch, **edit/forget** the fact → a new thread reflects the change;
+  6. the agent **uses** a remembered fact → the **in-overlay provenance affordance** appears → click → lands in History (the step that proves the discoverability criterion below).
+- [ ] **[behavioral]** the in-overlay provenance affordance is visible and leads into History (proven by demo **step 6** above — not assumed).
 - [ ] **[mechanical]** `typecheck` + `lint:strict` + `bun test` green.
 
 ## Orchestrator brief (read by the orchestrator from this file)

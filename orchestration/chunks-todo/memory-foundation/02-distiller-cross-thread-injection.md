@@ -18,7 +18,7 @@ This chunk adds the **distillation/retrieval seam + the dumb v0 distiller + cros
 - **INJECTION-POINT** — the single place the distilled slice composes into agent context at new-thread start (spec §3.3).
 - **`distilled_facts` populated** by the distiller with tags stamped (`provenance`/`scope`/`expiry`/`confidence`/`authored_by:machine`).
 - **5b observable distillation:** the distiller fires on chunk-01's consolidation-hook (dismiss) and writes a `distillation_events` record **even when nothing is retained** (spec §3.4, §4.2 — the "deliberately nothing" vs "silently lost" distinction).
-- **Tombstone-honoring re-derive + injection (F1):** a re-derived slice and injected context **never** resurface a tombstoned fact (the 01 storage half + this 02 read/inject half together close the forget loop).
+- **Tombstone-honoring re-derive + injection (F1):** a re-derived slice and injected context **never** resurface a tombstoned fact (the 01 storage half + this 02 read/inject half together close the forget loop). **Plus (grill S2):** a forget **immediately** invalidates any live `distilled_facts` row referencing the forgotten content — no window where a cached slice injects a just-forgotten fact.
 - **Cross-thread continuity:** a new thread draws the distilled slice from prior threads through the real daemon→store path.
 
 **Out:** (each states WHY)
@@ -32,6 +32,7 @@ This chunk adds the **distillation/retrieval seam + the dumb v0 distiller + cros
 - [ ] **[mechanical]** `MemoryProvider` port defined; `DumbTailProvider` implements it; a second trivial provider implements it (for the swap-proof).
 - [ ] **[mechanical]** real-I/O **swap-proof**: provider A distills → sliceA; drop `distilled_facts`; provider B re-derives → sliceB from the **same untouched `messages`**; `messages` byte-unchanged (lossless); sliceB matches provider B's contract.
 - [ ] **[mechanical]** real-I/O **forget-survives-re-derive**: forget a fact (tombstone from 01) → re-derive → the fact is absent from the rebuilt slice **and** from injected context.
+- [ ] **[mechanical]** real-I/O **forget-purges-the-LIVE-slice (spec §3.4, grill S2)**: a forget **immediately** invalidates any cached `distilled_facts` row whose `provenance` references the forgotten content — assert the fact is gone from the *current* (un-rebuilt) injected slice, not only after the next re-derive.
 - [ ] **[mechanical]** real-I/O **cross-thread continuity**: a new thread's `session_start` injects the distilled slice from a prior thread, through the real daemon→store path.
 - [ ] **[mechanical]** real-I/O **distillation-observable** (5b): dismissing a thread writes a `distillation_events` row **even when 0 facts retained**.
 - [ ] **[mechanical]** real-I/O **lossless integrity**: the archive is byte-stable across distill / re-derive cycles.

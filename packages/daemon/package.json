@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "bun run src/index.ts",
-    "test-client": "bun run scripts/test-client.ts"
+    "test-client": "bun run scripts/test-client.ts",
+    "memory-smoke": "bun run scripts/memory-smoke.ts"
   },
   "dependencies": {
     "@agentic/protocol": "workspace:*",

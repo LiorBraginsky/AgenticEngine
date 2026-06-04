@@ -93,6 +93,29 @@ test("tool_cancel from awaiting_pick ⇒ ok:true, session_end{cancelled}", async
   if (end.type === "session_end") expect(end.reason).toBe("cancelled");
 });
 
+// ── (v) hydrated session_start: prior tail preserved + new turn appended ──────
+test("hydrated session_start: prior tail preserved and new user turn appended (within-thread multi-turn, mock path)", async () => {
+  const hydrated: ProviderSessionState = {
+    phase: "done",
+    session_id: "",
+    messages: [{ role: "user", content: "deploy is yeet.sh" }],
+  };
+  const result = await mockProvider.advance(hydrated, {
+    type: "session_start",
+    trigger: "user",
+    text: "what's the deploy?",
+    client_session_id: "c-hydrate",
+  });
+  // Reducer took its normal fresh-start path → byte-identical color-picker flow.
+  expect(result.ok).toBe(true);
+  expect(result.nextState.phase).toBe("awaiting_pick");
+  // Multi-turn: turn-1's message carried into turn-2's state, turn-2 appended.
+  expect(result.nextState.messages).toEqual([
+    { role: "user", content: "deploy is yeet.sh" },
+    { role: "user", content: "what's the deploy?" },
+  ]);
+});
+
 // ── (iv) malformed tool_result ⇒ ok:false, no throw, phase preserved ──────────
 test("malformed tool_result ⇒ ok:false, error.kind==='malformed_tool_result', no throw, outbound empty, phase preserved", async () => {
   const startResult = await mockProvider.advance(undefined, {

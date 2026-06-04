@@ -27,9 +27,17 @@ export const mockProvider: AgentProvider = {
     state: ProviderSessionState | undefined,
     inbound: Parameters<AgentProvider["advance"]>[1],
   ): Promise<ProviderResult> {
-    // 1. Derive the reducer's MockSessionState | undefined by stripping messages[]
+    // 1. Derive the reducer's MockSessionState | undefined by stripping messages[].
+    //    HYDRATION (MF-01): a session_start may carry a hydrated tail in
+    //    state.messages (within-thread multi-turn). The pure reducer has NO
+    //    concept of prior history (MockSessionState has no messages[]) and
+    //    accepts session_start only when state === undefined (mock-agent.ts:59-78).
+    //    So on session_start we ALWAYS hand the reducer `undefined` (its normal
+    //    fresh-start path, BYTE-UNCHANGED per ADR-0010 decision 6) and re-attach
+    //    the hydrated tail onto messages[] in step 3 — "append more, NOT a
+    //    rewrite" (provider.ts:5 / spec §3.1). Adapter translation, not a reducer change.
     let reducerState: MockSessionState | undefined;
-    if (state === undefined) {
+    if (inbound.type === "session_start" || state === undefined) {
       reducerState = undefined;
     } else if (state.phase === "awaiting_pick") {
       reducerState = {
@@ -39,10 +47,7 @@ export const mockProvider: AgentProvider = {
       };
     } else {
       // phase: "done"
-      reducerState = {
-        phase: "done",
-        session_id: state.session_id,
-      };
+      reducerState = { phase: "done", session_id: state.session_id };
     }
 
     // 2. Call the unchanged reducer

@@ -3,6 +3,7 @@ import { mkdirSync, appendFileSync, readFileSync, writeFileSync, existsSync } fr
 import { join } from "node:path";
 import { SCHEMA_DDL, REDACTION_MARKER } from "./schema.js";
 import type { SessionMessage } from "../providers/provider.js";
+import type { DistilledFact } from "./memory-provider.js";
 
 export interface MemoryStoreOptions {
   /** Directory for the SQLite file + the threads/ JSONL mirror. */
@@ -15,6 +16,27 @@ interface TailRow {
   content: string;
   tombstoned: number;
   correction: string | null;
+}
+
+export interface DistilledFactRow {
+  fact: string;
+  provenance: string;
+  scope: string;
+  expiry: number | null;
+  confidence: number;
+  authored_by: string;
+}
+
+export interface DistillationEventRow {
+  facts_produced: number;
+  trigger: string;
+  distiller_version: string;
+}
+
+export interface MessageForDistillRow {
+  id: string;
+  role: string;
+  content: string;
 }
 
 export class MemoryStore {
@@ -90,6 +112,97 @@ export class MemoryStore {
         role: r.role,
         content: r.tombstoned ? REDACTION_MARKER : (r.correction ?? r.content),
       }));
+  }
+
+  // ---- MF-02: distilled_facts + distillation_events SQL methods ----
+
+  /** INSERT each DistilledFact into distilled_facts with derived_at = now. */
+  insertDistilledFacts(facts: DistilledFact[], distillerVersion: string): void {
+    const insert = this.db.query(
+      "INSERT INTO distilled_facts (id, fact, provenance, scope, expiry, confidence, authored_by, derived_at, distiller_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    );
+    const tx = this.db.transaction(() => {
+      for (const f of facts) {
+        insert.run(crypto.randomUUID(), f.fact, f.provenance, f.scope, f.expiry ?? null, f.confidence, f.authored_by, Date.now(), distillerVersion);
+      }
+    });
+    tx();
+  }
+
+  /** SELECT all distilled_facts ordered by derived_at DESC, limited to `limit` rows. */
+  readDistilledFacts(limit: number): DistilledFactRow[] {
+    return this.db
+      .query("SELECT fact, provenance, scope, expiry, confidence, authored_by FROM distilled_facts ORDER BY derived_at DESC LIMIT ?")
+      .all(limit) as DistilledFactRow[];
+  }
+
+  /** Returns true if a tombstone mutation exists for the given messageId. */
+  isMessageTombstoned(messageId: string): boolean {
+    const row = this.db
+      .query("SELECT 1 FROM mutations WHERE target_message_id = ? AND kind = 'tombstone'")
+      .get(messageId);
+    return row !== null;
+  }
+
+  /** DELETE distilled_facts rows by exact provenance match; returns changed row count. */
+  dropDistilledFactsByProvenance(provenance: string): number {
+    const result = this.db.query("DELETE FROM distilled_facts WHERE provenance = ? RETURNING id").all(provenance);
+    return result.length;
+  }
+
+  /** DELETE distilled_facts rows with provenance "thread:<threadId>"; returns changed count. */
+  dropDistilledFactsForThread(threadId: string): number {
+    const provenance = `thread:${threadId}`;
+    const result = this.db.query("DELETE FROM distilled_facts WHERE provenance = ? RETURNING id").all(provenance);
+    return result.length;
+  }
+
+  /** DELETE all rows from distilled_facts (used for swap-proof test). */
+  dropAllDistilledFacts(): void {
+    this.db.query("DELETE FROM distilled_facts").run();
+  }
+
+  /** INSERT a distillation event row into distillation_events. */
+  insertDistillationEvent(threadId: string, trigger: string, factsProduced: number, distillerVersion: string): void {
+    this.db
+      .query(
+        "INSERT INTO distillation_events (id, thread_id, trigger, facts_produced, distiller_version, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      )
+      .run(crypto.randomUUID(), threadId, trigger, factsProduced, distillerVersion, Date.now());
+  }
+
+  /** SELECT distillation_events for a thread, ordered by created_at ASC. */
+  readDistillationEvents(threadId: string): DistillationEventRow[] {
+    return this.db
+      .query("SELECT facts_produced, trigger, distiller_version FROM distillation_events WHERE thread_id = ? ORDER BY created_at ASC")
+      .all(threadId) as DistillationEventRow[];
+  }
+
+  /**
+   * Like readThreadTail but returns message `id` field and honors tombstones
+   * (redacts content to REDACTION_MARKER rather than omitting the row).
+   * DumbTailProvider uses `id` for provenance and filters redacted rows itself.
+   */
+  readThreadMessagesForDistill(threadId: string): MessageForDistillRow[] {
+    const rows = this.db
+      .query(
+        `SELECT m.id AS id, m.role AS role, m.content AS content,
+                MAX(CASE WHEN x.kind = 'tombstone' THEN 1 ELSE 0 END) AS tombstoned,
+                (SELECT replacement_content FROM mutations
+                   WHERE target_message_id = m.id AND kind = 'correction'
+                   ORDER BY created_at DESC LIMIT 1) AS correction
+         FROM messages m
+         LEFT JOIN mutations x ON x.target_message_id = m.id
+         WHERE m.thread_id = ?
+         GROUP BY m.id
+         ORDER BY m.turn_index ASC`,
+      )
+      .all(threadId) as TailRow[];
+    return rows.map((r) => ({
+      id: r.id,
+      role: r.role,
+      content: r.tombstoned ? REDACTION_MARKER : (r.correction ?? r.content),
+    }));
   }
 
   /** Raw helpers used by WriteGate (mutations) — kept here so all SQL lives in the store. */

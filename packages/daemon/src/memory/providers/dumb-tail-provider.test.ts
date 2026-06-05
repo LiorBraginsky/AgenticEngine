@@ -1,0 +1,99 @@
+import { test, expect } from "bun:test";
+import { tmpdir } from "node:os";
+import { mkdtempSync } from "node:fs";
+import { join } from "node:path";
+import { MemoryStore } from "../store.js";
+import { WriteGate } from "../write-gate.js";
+import { DumbTailProvider } from "./dumb-tail-provider.js";
+
+function freshStore() {
+  const dir = mkdtempSync(join(tmpdir(), "mf02-dt-"));
+  return { store: new MemoryStore({ dataDir: dir }) };
+}
+
+const provider = new DumbTailProvider();
+
+test("DumbTailProvider.id is 'dumb-tail'", () => {
+  expect(provider.id).toBe("dumb-tail");
+});
+
+test("DumbTailProvider.distill emits one fact per live tail message with message-id provenance and confidence=1", async () => {
+  const { store } = freshStore();
+  const t = store.createThread();
+  store.appendMessages(t, [{ role: "user", content: "deploy is yeet.sh" }], "s1");
+  const r = await provider.distill(store, t);
+  expect(r.threadId).toBe(t);
+  expect(r.facts.length).toBe(1);
+  expect(r.facts[0]!.fact).toBe("deploy is yeet.sh");
+  expect(r.facts[0]!.confidence).toBe(1);
+  expect(r.facts[0]!.scope).toBe("cross-thread");
+  expect(r.facts[0]!.authored_by).toBe("machine");
+  expect(r.facts[0]!.expiry).toBeNull();
+  // provenance should be the message id (a UUID)
+  expect(typeof r.facts[0]!.provenance).toBe("string");
+  expect(r.facts[0]!.provenance.length).toBeGreaterThan(0);
+  store.close();
+});
+
+test("DumbTailProvider.distill skips a tombstoned message (F1)", async () => {
+  const { store } = freshStore();
+  const gate = new WriteGate(store);
+  const t = store.createThread();
+  const [mid] = store.appendMessages(t, [{ role: "user", content: "secret" }], "s1");
+  gate.forget(mid!, { actor: "user", authored_by: "human" });
+  const r = await provider.distill(store, t);
+  expect(r.facts.length).toBe(0); // forgotten message yields no fact
+  store.close();
+});
+
+test("DumbTailProvider.distill returns empty facts for an empty thread (still a valid DistillResult)", async () => {
+  const { store } = freshStore();
+  const t = store.createThread();
+  const r = await provider.distill(store, t);
+  expect(r.threadId).toBe(t);
+  expect(r.facts).toEqual([]);
+  store.close();
+});
+
+test("DumbTailProvider.distill takes only the last DISTILL_TAIL_N=5 messages", async () => {
+  const { store } = freshStore();
+  const t = store.createThread();
+  for (let i = 0; i < 7; i++) {
+    store.appendMessages(t, [{ role: "user", content: `msg-${i}` }], "s1");
+  }
+  const r = await provider.distill(store, t);
+  expect(r.facts.length).toBe(5);
+  // Should be the LAST 5 (msg-2 through msg-6)
+  const contents = r.facts.map((f) => f.fact);
+  expect(contents).toEqual(["msg-2", "msg-3", "msg-4", "msg-5", "msg-6"]);
+  store.close();
+});
+
+test("DumbTailProvider.retrieve returns persisted facts as '[remembered] ...' prefixed messages", async () => {
+  const { store } = freshStore();
+  store.insertDistilledFacts(
+    [{ fact: "deploy is yeet.sh", provenance: "m-1", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" }],
+    "dumb-tail",
+  );
+  const t = store.createThread();
+  const slice = await provider.retrieve(store, t);
+  expect(slice).toEqual([{ role: "user", content: "[remembered] deploy is yeet.sh" }]);
+  store.close();
+});
+
+test("DumbTailProvider.retrieve skips a fact whose provenance message is tombstoned (defense-in-depth)", async () => {
+  const { store } = freshStore();
+  const gate = new WriteGate(store);
+  const t = store.createThread();
+  const [mid] = store.appendMessages(t, [{ role: "user", content: "secret" }], "s1");
+  // Manually insert a distilled fact with the message id as provenance (as if distill ran before forget)
+  store.insertDistilledFacts(
+    [{ fact: "secret", provenance: mid!, scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" }],
+    "dumb-tail",
+  );
+  gate.forget(mid!, { actor: "user", authored_by: "human" });
+  // retrieve should skip the fact since its provenance message is now tombstoned
+  const slice = await provider.retrieve(store, t);
+  expect(slice.length).toBe(0);
+  store.close();
+});

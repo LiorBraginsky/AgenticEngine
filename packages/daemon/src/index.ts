@@ -86,8 +86,16 @@ export function startDaemon(port: number = DAEMON_PORT) {
           const incomingThreadId = inbound.thread_id;
           if (prevThreadId && prevThreadId !== incomingThreadId) {
             if (!(ws.data.dismissedThreadIds?.has(prevThreadId))) {
-              await hook.dismiss(prevThreadId);
-              (ws.data.dismissedThreadIds ??= new Set<string>()).add(prevThreadId);
+              // B1: dismiss errors must NOT crash the daemon or block the new session.
+              // Use finally so the Set is always updated — preventing retry-loops even
+              // on a partial/failed dismiss (we'd rather skip a re-distill than loop).
+              try {
+                await hook.dismiss(prevThreadId);
+              } catch (err) {
+                console.error("[daemon] dismiss error (non-fatal, thread:", prevThreadId, "):", err);
+              } finally {
+                (ws.data.dismissedThreadIds ??= new Set<string>()).add(prevThreadId);
+              }
             }
           }
           const begin = await lifecycle.beginTurn(inbound);
@@ -138,7 +146,20 @@ export function startDaemon(port: number = DAEMON_PORT) {
       },
       close(ws) {
         // Leak-free cleanup: remove any sessions owned by this connection.
+        // S1: If the WS drops mid-turn (between session_start and phase==="done"),
+        // the accumulated messages[] would be lost without this flush.
+        // lifecycle.endTurn internally slices by hydratedCount so only the new-this-turn
+        // delta is persisted — the hydrated prefix is NOT re-written to the store.
         for (const sid of ws.data.sessionIds) {
+          const session = sessions.get(sid);
+          const threadId = lifecycle.threadForSession(sid);
+          if (session && threadId && session.messages.length > 0) {
+            try {
+              lifecycle.endTurn(threadId, sid, session.messages);
+            } catch (err) {
+              console.error("[daemon] partial-turn flush error on disconnect (sid:", sid, "):", err);
+            }
+          }
           sessions.delete(sid);
           lifecycle.forgetSession(sid);
         }

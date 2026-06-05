@@ -88,6 +88,14 @@ test("forget also purges a thread-level (fixed-marker) fact derived from the for
   store.close();
 });
 
+test("S2: forget throws a descriptive error for an unknown messageId instead of null-deref", () => {
+  // Verifies the S2 fix: threadOf() used to blindly cast null to { thread_id: string },
+  // causing a silent TypeError. Now it throws a descriptive error including the messageId.
+  const { store, gate } = fresh();
+  expect(() => gate.forget("nonexistent-id", CTX)).toThrow("nonexistent-id");
+  store.close();
+});
+
 test("edit appends a correction; the original message row is NOT mutated in place", () => {
   const { store, gate } = fresh();
   const t = store.createThread();

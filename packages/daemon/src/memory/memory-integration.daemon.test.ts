@@ -142,7 +142,7 @@ test("dismiss invokes the registered consolidation-hook and flips status to dism
   const store = new MemoryStore({ dataDir });
   const hook = new ConsolidationHook(store);
   const calls: string[] = [];
-  hook.register((tid, trig) => calls.push(`${tid}:${trig}`));
+  hook.register((tid, trig) => { calls.push(`${tid}:${trig}`); });
   const tid = (store.rawDb().query("SELECT thread_id FROM threads LIMIT 1").get() as { thread_id: string }).thread_id;
   hook.dismiss(tid);
   expect(calls).toEqual([`${tid}:dismiss`]);

@@ -61,7 +61,7 @@ Build the **first part of the locked Conversation & Memory route** ([[../adr/001
 
 - Each turn stays an ephemeral session — **ADR-0001 ephemerality and gotcha #30 (RAM/eviction) are untouched.**
 - `session_start` gains an **additive optional `thread_id`** (frozen-envelope-safe — additive field, no new variant, no behavioral change to the 6-variant union; see §5).
-- On `session_start{thread_id}`: the daemon loads the thread's recent messages into `ProviderSessionState.messages[]` (the seam already reserved for this — `provider.ts:5` "Multi-turn later = append more; NOT a rewrite").
+- On `session_start{thread_id}`: the daemon loads the thread's recent messages into `ProviderSessionState.messages[]` (the seam already reserved for this — `provider.ts:5` "Multi-turn later = append more; NOT a rewrite"). The pure provider **reducer consumes this unchanged**; the **adapter re-attaches the hydrated tail via the reserved `messages[]` seam** — "append more, not a rewrite". *(MF-01 reconciliation, 2026-06-04, Lior-approved: ADR-0010 decision-6 reducer-freeze held byte-for-byte; this prose tightened from the looser "the existing provider consumes it unchanged" to "reducer-unchanged; adapter re-attaches" — the 2-line mock-adapter strip-in change is the seam being used, not a reducer change.)*
 - On turn end: the turn's messages are appended back to the **durable thread** through the write-gate (§3.3).
 - No `thread_id` (or unknown id) ⇒ a **new thread** is minted — single-turn behavior is the degenerate case (one-turn thread), so nothing regresses.
 

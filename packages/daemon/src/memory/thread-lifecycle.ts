@@ -2,6 +2,7 @@ import type { Envelope } from "@agentic/protocol";
 import type { MemoryStore } from "./store.js";
 import type { WriteGate } from "./write-gate.js";
 import type { SessionMessage } from "../providers/provider.js";
+import type { MemoryProvider } from "./memory-provider.js";
 
 type SessionStart = Extract<Envelope, { type: "session_start" }>;
 
@@ -36,16 +37,24 @@ export class ThreadLifecycle {
   constructor(
     private readonly store: MemoryStore,
     private readonly gate: WriteGate,
+    private readonly memoryProvider?: MemoryProvider,
   ) {}
 
-  beginTurn(inbound: SessionStart): { threadId: string; priorMessages: SessionMessage[] } {
+  async beginTurn(inbound: SessionStart): Promise<{ threadId: string; priorMessages: SessionMessage[] }> {
     const requested = inbound.thread_id;
     if (requested && this.store.threadExists(requested)) {
       const priorMessages = this.store.readThreadTail(requested, TAIL_LIMIT);
       return { threadId: requested, priorMessages };
     }
-    // No / unknown thread_id ⇒ mint a NEW thread (single-turn = degenerate one-turn thread).
-    return { threadId: this.store.createThread(), priorMessages: [] };
+    // No / unknown thread_id ⇒ mint a NEW thread.
+    // Inject the cross-thread distilled slice from prior threads (MF-02 injection-point).
+    // The slice is read-only context — endTurn's delta-flush excludes it from persistence
+    // because hydratedCount = slice.length, so only the turn's own messages are flushed.
+    const newThreadId = this.store.createThread();
+    const priorMessages = this.memoryProvider
+      ? await this.memoryProvider.retrieve(this.store, newThreadId)
+      : [];
+    return { threadId: newThreadId, priorMessages };
   }
 
   /**

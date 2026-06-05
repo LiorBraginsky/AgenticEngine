@@ -7,12 +7,19 @@ import type { ProviderSessionState, ProviderInput } from "./providers/provider.j
 import { MemoryStore } from "./memory/store.js";
 import { WriteGate } from "./memory/write-gate.js";
 import { ThreadLifecycle } from "./memory/thread-lifecycle.js";
+import { ConsolidationHook } from "./memory/consolidation-hook.js";
+import { buildMemoryProvider } from "./memory/memory-provider-selector.js";
+import { registerDistiller } from "./memory/distiller-registration.js";
 
 export const DAEMON_HOST = "127.0.0.1"; // loopback only (ADR-0003 p.3)
 export const DAEMON_PORT = 7777;
 
 const sessions = new Map<string, ProviderSessionState>();
-type SocketData = { sessionIds: Set<string> };
+type SocketData = {
+  sessionIds: Set<string>;
+  activeThreadId?: string;
+  dismissedThreadIds?: Set<string>;
+};
 
 function send(ws: { send(data: string): number }, msg: Envelope): void {
   // Outbound is validated against the frozen contract too (defence in depth).
@@ -30,7 +37,11 @@ export function startDaemon(port: number = DAEMON_PORT) {
   const provider = buildInjector();
   const dataDir = Bun.env.AGENTIC_DATA_DIR ?? join(homedir(), ".agentic-engine");
   const store = new MemoryStore({ dataDir });
-  const lifecycle = new ThreadLifecycle(store, new WriteGate(store));
+  const gate = new WriteGate(store);
+  const memoryProvider = buildMemoryProvider();
+  const hook = new ConsolidationHook(store);
+  registerDistiller(hook, store, memoryProvider);
+  const lifecycle = new ThreadLifecycle(store, gate, memoryProvider);
 
   return Bun.serve<SocketData>({
     hostname: DAEMON_HOST,
@@ -69,8 +80,27 @@ export function startDaemon(port: number = DAEMON_PORT) {
         let priorState: ProviderSessionState | undefined;
         let hydratedCount = 0;
         if (inbound.type === "session_start") {
-          const begin = lifecycle.beginTurn(inbound);
+          // PROVISIONAL: thread-switch dismiss — superseded by connection-model CM-01 close(ws) path
+          // (spec: orchestration/docs/specs/2026-06-05-connection-model.md §3.2)
+          const prevThreadId = ws.data.activeThreadId;
+          const incomingThreadId = inbound.thread_id;
+          if (prevThreadId && prevThreadId !== incomingThreadId) {
+            if (!(ws.data.dismissedThreadIds?.has(prevThreadId))) {
+              // B1: dismiss errors must NOT crash the daemon or block the new session.
+              // Use finally so the Set is always updated — preventing retry-loops even
+              // on a partial/failed dismiss (we'd rather skip a re-distill than loop).
+              try {
+                await hook.dismiss(prevThreadId);
+              } catch (err) {
+                console.error("[daemon] dismiss error (non-fatal, thread:", prevThreadId, "):", err);
+              } finally {
+                (ws.data.dismissedThreadIds ??= new Set<string>()).add(prevThreadId);
+              }
+            }
+          }
+          const begin = await lifecycle.beginTurn(inbound);
           turnThreadId = begin.threadId;
+          ws.data.activeThreadId = turnThreadId;
           hydratedCount = begin.priorMessages.length;
           // Hydrate the thread tail into the messages[] seam (provider.ts:5).
           // phase:"done"/session_id:"" are don't-cares on start — every provider
@@ -116,7 +146,20 @@ export function startDaemon(port: number = DAEMON_PORT) {
       },
       close(ws) {
         // Leak-free cleanup: remove any sessions owned by this connection.
+        // S1: If the WS drops mid-turn (between session_start and phase==="done"),
+        // the accumulated messages[] would be lost without this flush.
+        // lifecycle.endTurn internally slices by hydratedCount so only the new-this-turn
+        // delta is persisted — the hydrated prefix is NOT re-written to the store.
         for (const sid of ws.data.sessionIds) {
+          const session = sessions.get(sid);
+          const threadId = lifecycle.threadForSession(sid);
+          if (session && threadId && session.messages.length > 0) {
+            try {
+              lifecycle.endTurn(threadId, sid, session.messages);
+            } catch (err) {
+              console.error("[daemon] partial-turn flush error on disconnect (sid:", sid, "):", err);
+            }
+          }
           sessions.delete(sid);
           lifecycle.forgetSession(sid);
         }

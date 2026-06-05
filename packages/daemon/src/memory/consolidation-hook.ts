@@ -1,7 +1,7 @@
 import type { MemoryStore } from "./store.js";
 
 export type ConsolidationTrigger = "dismiss";
-export type ConsolidationHandler = (threadId: string, trigger: ConsolidationTrigger) => void;
+export type ConsolidationHandler = (threadId: string, trigger: ConsolidationTrigger) => void | Promise<void>;
 
 /**
  * 5b CONSOLIDATION-HOOK (spec §3.3) — the dismiss-lifecycle pass-through where
@@ -20,8 +20,8 @@ export class ConsolidationHook {
   }
 
   /** Mark a thread dismissed and fire the consolidation pass-through. */
-  dismiss(threadId: string): void {
+  async dismiss(threadId: string): Promise<void> {
     this.store.rawDb().query("UPDATE threads SET status = 'dismissed' WHERE thread_id = ?").run(threadId);
-    this.handler(threadId, "dismiss");
+    await this.handler(threadId, "dismiss");
   }
 }

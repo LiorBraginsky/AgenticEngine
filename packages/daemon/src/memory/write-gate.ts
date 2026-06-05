@@ -54,6 +54,10 @@ export class WriteGate {
     this.store.redactMirrorMessage(threadId, messageId);
     // Append the redaction event line so the audit trail records that a forget occurred.
     this.store.mirrorEvent(threadId, { event: "forget", target_message_id: messageId, actor: ctx.actor, created_at: now });
+    // purge any live distilled_facts rows referencing the forgotten content (grill S2)
+    // Both message-level provenance (DumbTail shape) and thread-level provenance (FixedMarker shape).
+    this.store.dropDistilledFactsByProvenance(messageId);
+    this.store.dropDistilledFactsForThread(threadId);
   }
 
   /** edit = appended correction record referencing the original (never in-place). */
@@ -67,7 +71,8 @@ export class WriteGate {
   }
 
   private threadOf(messageId: string): string {
-    const row = this.store.rawDb().query("SELECT thread_id FROM messages WHERE id = ?").get(messageId) as { thread_id: string };
-    return row.thread_id;
+    const row = this.store.rawDb().query("SELECT thread_id FROM messages WHERE id = ?").get(messageId);
+    if (!row) throw new Error(`[WriteGate] message ${messageId} not found — cannot determine thread`);
+    return (row as { thread_id: string }).thread_id;
   }
 }

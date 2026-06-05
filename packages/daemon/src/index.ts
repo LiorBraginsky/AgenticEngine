@@ -15,7 +15,11 @@ export const DAEMON_HOST = "127.0.0.1"; // loopback only (ADR-0003 p.3)
 export const DAEMON_PORT = 7777;
 
 const sessions = new Map<string, ProviderSessionState>();
-type SocketData = { sessionIds: Set<string> };
+type SocketData = {
+  sessionIds: Set<string>;
+  activeThreadId?: string;
+  dismissedThreadIds?: Set<string>;
+};
 
 function send(ws: { send(data: string): number }, msg: Envelope): void {
   // Outbound is validated against the frozen contract too (defence in depth).
@@ -76,8 +80,19 @@ export function startDaemon(port: number = DAEMON_PORT) {
         let priorState: ProviderSessionState | undefined;
         let hydratedCount = 0;
         if (inbound.type === "session_start") {
+          // PROVISIONAL: thread-switch dismiss — superseded by connection-model CM-01 close(ws) path
+          // (spec: orchestration/docs/specs/2026-06-05-connection-model.md §3.2)
+          const prevThreadId = ws.data.activeThreadId;
+          const incomingThreadId = inbound.thread_id;
+          if (prevThreadId && prevThreadId !== incomingThreadId) {
+            if (!(ws.data.dismissedThreadIds?.has(prevThreadId))) {
+              await hook.dismiss(prevThreadId);
+              (ws.data.dismissedThreadIds ??= new Set<string>()).add(prevThreadId);
+            }
+          }
           const begin = await lifecycle.beginTurn(inbound);
           turnThreadId = begin.threadId;
+          ws.data.activeThreadId = turnThreadId;
           hydratedCount = begin.priorMessages.length;
           // Hydrate the thread tail into the messages[] seam (provider.ts:5).
           // phase:"done"/session_id:"" are don't-cares on start — every provider

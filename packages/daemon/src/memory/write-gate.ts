@@ -54,6 +54,10 @@ export class WriteGate {
     this.store.redactMirrorMessage(threadId, messageId);
     // Append the redaction event line so the audit trail records that a forget occurred.
     this.store.mirrorEvent(threadId, { event: "forget", target_message_id: messageId, actor: ctx.actor, created_at: now });
+    // purge any live distilled_facts rows referencing the forgotten content (grill S2)
+    // Both message-level provenance (DumbTail shape) and thread-level provenance (FixedMarker shape).
+    this.store.dropDistilledFactsByProvenance(messageId);
+    this.store.dropDistilledFactsForThread(threadId);
   }
 
   /** edit = appended correction record referencing the original (never in-place). */

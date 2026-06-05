@@ -57,6 +57,37 @@ test("forget rewrites the JSONL mirror so plaintext is gone and REDACTION_MARKER
   expect(mirrorContent).toContain(REDACTION_MARKER);
 });
 
+// ---- Step 4.1: forget purges live distilled_facts (grill S2) ----
+
+test("forget IMMEDIATELY purges the live distilled_facts row for the forgotten message (grill S2)", () => {
+  const { store, gate } = fresh();
+  const t = store.createThread();
+  const [mid] = gate.appendTurn(t, [{ role: "user", content: "secret token abc" }], "s1", CTX);
+  // distill → the fact is live in distilled_facts (provenance = mid)
+  store.insertDistilledFacts(
+    [{ fact: "secret token abc", provenance: mid!, scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" }],
+    "dumb-tail",
+  );
+  expect(store.readDistilledFacts(10).length).toBe(1);
+  gate.forget(mid!, CTX, "user requested");
+  // The LIVE slice is empty IMMEDIATELY — not only after a re-derive.
+  expect(store.readDistilledFacts(10).length).toBe(0);
+  store.close();
+});
+
+test("forget also purges a thread-level (fixed-marker) fact derived from the forgotten thread (grill S2)", () => {
+  const { store, gate } = fresh();
+  const t = store.createThread();
+  const [mid] = gate.appendTurn(t, [{ role: "user", content: "x" }], "s1", CTX);
+  store.insertDistilledFacts(
+    [{ fact: `thread:${t} has 1 live messages`, provenance: `thread:${t}`, scope: "cross-thread", expiry: null, confidence: 0.5, authored_by: "machine" }],
+    "fixed-marker",
+  );
+  gate.forget(mid!, CTX);
+  expect(store.readDistilledFacts(10).length).toBe(0); // thread-level fact purged too
+  store.close();
+});
+
 test("edit appends a correction; the original message row is NOT mutated in place", () => {
   const { store, gate } = fresh();
   const t = store.createThread();

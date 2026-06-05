@@ -7,6 +7,9 @@ import type { ProviderSessionState, ProviderInput } from "./providers/provider.j
 import { MemoryStore } from "./memory/store.js";
 import { WriteGate } from "./memory/write-gate.js";
 import { ThreadLifecycle } from "./memory/thread-lifecycle.js";
+import { ConsolidationHook } from "./memory/consolidation-hook.js";
+import { buildMemoryProvider } from "./memory/memory-provider-selector.js";
+import { registerDistiller } from "./memory/distiller-registration.js";
 
 export const DAEMON_HOST = "127.0.0.1"; // loopback only (ADR-0003 p.3)
 export const DAEMON_PORT = 7777;
@@ -30,7 +33,11 @@ export function startDaemon(port: number = DAEMON_PORT) {
   const provider = buildInjector();
   const dataDir = Bun.env.AGENTIC_DATA_DIR ?? join(homedir(), ".agentic-engine");
   const store = new MemoryStore({ dataDir });
-  const lifecycle = new ThreadLifecycle(store, new WriteGate(store));
+  const gate = new WriteGate(store);
+  const memoryProvider = buildMemoryProvider();
+  const hook = new ConsolidationHook(store);
+  registerDistiller(hook, store, memoryProvider);
+  const lifecycle = new ThreadLifecycle(store, gate, memoryProvider);
 
   return Bun.serve<SocketData>({
     hostname: DAEMON_HOST,
@@ -69,7 +76,7 @@ export function startDaemon(port: number = DAEMON_PORT) {
         let priorState: ProviderSessionState | undefined;
         let hydratedCount = 0;
         if (inbound.type === "session_start") {
-          const begin = lifecycle.beginTurn(inbound);
+          const begin = await lifecycle.beginTurn(inbound);
           turnThreadId = begin.threadId;
           hydratedCount = begin.priorMessages.length;
           // Hydrate the thread tail into the messages[] seam (provider.ts:5).

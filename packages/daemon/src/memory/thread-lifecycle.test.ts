@@ -5,6 +5,9 @@ import { join } from "node:path";
 import { MemoryStore } from "./store.js";
 import { WriteGate } from "./write-gate.js";
 import { ThreadLifecycle } from "./thread-lifecycle.js";
+import { DumbTailProvider } from "./providers/dumb-tail-provider.js";
+
+const dumbTailProvider = new DumbTailProvider();
 
 function fresh() {
   const dir = mkdtempSync(join(tmpdir(), "mf01-tl-"));
@@ -12,52 +15,59 @@ function fresh() {
   return { store, lifecycle: new ThreadLifecycle(store, new WriteGate(store)) };
 }
 
-test("no thread_id mints a NEW thread; prior tail is empty (single-turn = degenerate one-turn thread)", () => {
+function freshTL() {
+  const dir = mkdtempSync(join(tmpdir(), "mf02-tl-"));
+  const store = new MemoryStore({ dataDir: dir });
+  const lifecycle = new ThreadLifecycle(store, new WriteGate(store), dumbTailProvider);
+  return { store, lifecycle };
+}
+
+test("no thread_id mints a NEW thread; prior tail is empty (single-turn = degenerate one-turn thread)", async () => {
   const { lifecycle } = fresh();
-  const begin = lifecycle.beginTurn({ type: "session_start", trigger: "user", text: "hi" });
+  const begin = await lifecycle.beginTurn({ type: "session_start", trigger: "user", text: "hi" });
   expect(typeof begin.threadId).toBe("string");
   expect(begin.priorMessages).toEqual([]);
 });
 
-test("unknown thread_id ALSO mints a new thread (graceful, never throws)", () => {
+test("unknown thread_id ALSO mints a new thread (graceful, never throws)", async () => {
   const { lifecycle } = fresh();
-  const begin = lifecycle.beginTurn({ type: "session_start", trigger: "user", text: "hi", thread_id: "does-not-exist" });
+  const begin = await lifecycle.beginTurn({ type: "session_start", trigger: "user", text: "hi", thread_id: "does-not-exist" });
   expect(begin.threadId).not.toBe("does-not-exist");
   expect(begin.priorMessages).toEqual([]);
 });
 
-test("turn 1 flush → turn 2 with that thread_id hydrates turn-1's messages (within-thread multi-turn)", () => {
+test("turn 1 flush → turn 2 with that thread_id hydrates turn-1's messages (within-thread multi-turn)", async () => {
   const { lifecycle } = fresh();
-  const t1 = lifecycle.beginTurn({ type: "session_start", trigger: "user", text: "deploy is yeet.sh" });
+  const t1 = await lifecycle.beginTurn({ type: "session_start", trigger: "user", text: "deploy is yeet.sh" });
   lifecycle.endTurn(t1.threadId, "sess-1", [{ role: "user", content: "deploy is yeet.sh" }]);
-  const t2 = lifecycle.beginTurn({ type: "session_start", trigger: "user", text: "what's the deploy?", thread_id: t1.threadId });
+  const t2 = await lifecycle.beginTurn({ type: "session_start", trigger: "user", text: "what's the deploy?", thread_id: t1.threadId });
   expect(t2.threadId).toBe(t1.threadId);
   expect(t2.priorMessages).toEqual([{ role: "user", content: "deploy is yeet.sh" }]);
 });
 
-test("session_id→thread_id mapping resolves later turns, then is cleaned up", () => {
+test("session_id→thread_id mapping resolves later turns, then is cleaned up", async () => {
   const { lifecycle } = fresh();
-  const t = lifecycle.beginTurn({ type: "session_start", trigger: "user", text: "x" });
+  const t = await lifecycle.beginTurn({ type: "session_start", trigger: "user", text: "x" });
   lifecycle.bindSession("sess-9", t.threadId, 0);
   expect(lifecycle.threadForSession("sess-9")).toBe(t.threadId);
   lifecycle.endTurn(t.threadId, "sess-9", [{ role: "user", content: "x" }]);
   expect(lifecycle.threadForSession("sess-9")).toBeUndefined();
 });
 
-test("endTurn flushes only the DELTA (new messages this turn), not the hydrated prefix (Finding 1 — double-persist guard)", () => {
+test("endTurn flushes only the DELTA (new messages this turn), not the hydrated prefix (Finding 1 — double-persist guard)", async () => {
   // This test reproduces the reviewer's proof: two turns on the same thread must
   // produce EXACTLY 2 rows, not 3 (where turn-1's message appears at turn_index 0 AND 1).
   const { store, lifecycle } = fresh();
 
   // Turn 1: single-turn (no prior tail) — flush 1 message.
-  const t1 = lifecycle.beginTurn({ type: "session_start", trigger: "user", text: "deploy is yeet.sh" });
+  const t1 = await lifecycle.beginTurn({ type: "session_start", trigger: "user", text: "deploy is yeet.sh" });
   // bindSession stores hydratedCount=0 (no prior on turn 1).
   lifecycle.bindSession("s1", t1.threadId, t1.priorMessages.length);
   // finalMessages as the provider would return: just the 1 new message.
   lifecycle.endTurn(t1.threadId, "s1", [{ role: "user", content: "deploy is yeet.sh" }]);
 
   // Turn 2: reuse thread — provider returns hydrated tail PLUS new turn.
-  const t2 = lifecycle.beginTurn({ type: "session_start", trigger: "user", text: "what's the deploy?", thread_id: t1.threadId });
+  const t2 = await lifecycle.beginTurn({ type: "session_start", trigger: "user", text: "what's the deploy?", thread_id: t1.threadId });
   expect(t2.priorMessages).toEqual([{ role: "user", content: "deploy is yeet.sh" }]); // hydrated
   lifecycle.bindSession("s2", t2.threadId, t2.priorMessages.length); // hydratedCount=1
   // Provider re-attaches the hydrated tail + appends the new turn → finalMessages has 2 entries.
@@ -70,4 +80,35 @@ test("endTurn flushes only the DELTA (new messages this turn), not the hydrated 
     { role: "user", content: "deploy is yeet.sh" },
     { role: "user", content: "what's the deploy?" },
   ]);
+});
+
+// ---- MF-02 Step 3: injection-point tests ----
+
+test("a NEW thread is injected with the cross-thread distilled slice (injection-point)", async () => {
+  const { store, lifecycle } = freshTL();
+  // Thread A: state a fact, then distill it (simulating a prior dismiss).
+  const tA = store.createThread();
+  store.appendMessages(tA, [{ role: "user", content: "deploy is yeet.sh" }], "sa");
+  const result = await dumbTailProvider.distill(store, tA);
+  store.insertDistilledFacts(result.facts, "dumb-tail");
+  // Thread B: a fresh session_start with NO thread_id mints B and injects A's fact.
+  const begin = await lifecycle.beginTurn({ type: "session_start", trigger: "user", text: "hi" });
+  expect(begin.priorMessages).toContainEqual({ role: "user", content: "[remembered] deploy is yeet.sh" });
+});
+
+test("injected cross-thread slice is NOT re-persisted into the new thread (delta-flush guard)", async () => {
+  const { store, lifecycle } = freshTL();
+  // Thread A: state a fact, distill it.
+  const tA = store.createThread();
+  store.appendMessages(tA, [{ role: "user", content: "fact A" }], "sa");
+  const result = await dumbTailProvider.distill(store, tA);
+  store.insertDistilledFacts(result.facts, "dumb-tail");
+  // Thread B: beginTurn injects A's distilled fact into priorMessages.
+  const b = await lifecycle.beginTurn({ type: "session_start", trigger: "user", text: "hi" });
+  lifecycle.bindSession("sb", b.threadId, b.priorMessages.length);
+  // Provider re-attaches injected prefix + appends the user turn.
+  lifecycle.endTurn(b.threadId, "sb", [...b.priorMessages, { role: "user", content: "hi" }]);
+  // Only the delta ("hi") must be persisted — the injected slice is read-only context.
+  const persisted = store.readThreadTail(b.threadId, 50).map((m) => m.content);
+  expect(persisted).toEqual(["hi"]);
 });

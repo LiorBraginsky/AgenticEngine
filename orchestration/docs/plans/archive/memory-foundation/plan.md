@@ -1,3 +1,5 @@
+> 🗄️ ARCHIVED 2026-06-05 — shipped. Historical record; do not edit.
+
 # MF-01 — Durable Store + Thread/Session Model + Within-Thread Multi-Turn — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -1229,7 +1231,7 @@ ADR-0012 is accepted and the spec froze every load-bearing seam (thread↔sessio
 
 ---
 
-## Status: APPROVED — in implementation (Phase 2)
+## Status: shipped
 
 **Lior approved 2026-06-04 (plan-approval + freeze gate, PIPELINE §5.2).** Verdict: the adapter re-attach IS the `messages[]` seam ADR-0010 reserved (`provider.ts:5`); the reducer stays frozen (ADR-0010 decision 6 intact) → **no ADR needed**. Lior also directed the spec §3.1 prose be tightened ("provider consumes it unchanged" → "reducer-unchanged; adapter re-attaches via the reserved `messages[]` seam") — **done** in `orchestration/docs/specs/2026-06-04-memory-foundation.md` §3.1.
 

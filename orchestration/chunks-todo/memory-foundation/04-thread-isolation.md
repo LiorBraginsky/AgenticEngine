@@ -52,3 +52,5 @@ Frozen — DO NOT: re-plumb the provider/inject path; build a permissions system
 ## Notes / Open questions
 
 - **§7.1 runtime-coupling (grill F2):** part of the 03 → 04 → 05 data-flow chain on the shared daemon+store. Re-validate the reality check at integration; isolation rules read what 03's write-gate admitted.
+
+- **S4 carry-over from chunk-02 review (2026-06-05):** `WriteGate.forget` calls `dropDistilledFactsForThread(threadId)` which purges ALL thread-level `distilled_facts` (e.g. FixedMarker summary) when ANY single message in the thread is forgotten. Between the forget and the next distill/re-derive, `retrieve()` returns an empty cross-thread slice for that thread — a valid v0 degradation (re-distill restores it). When chunk-04 adds `scope`-tag enforcement, verify that this conservative purge behaviour is still acceptable under the new isolation rules, or add a more granular purge (e.g. only invalidate thread-level facts if the forgotten message was a source for them).

@@ -4,6 +4,7 @@ import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { MemoryStore } from "../store.js";
 import { WriteGate } from "../write-gate.js";
+import { RuleBasedScanner } from "../scanner/memory-scanner.js";
 import { DumbTailProvider } from "./dumb-tail-provider.js";
 
 function freshStore() {
@@ -37,7 +38,7 @@ test("DumbTailProvider.distill emits one fact per live tail message with message
 
 test("DumbTailProvider.distill skips a tombstoned message (F1)", async () => {
   const { store } = freshStore();
-  const gate = new WriteGate(store);
+  const gate = new WriteGate(store, new RuleBasedScanner());
   const t = store.createThread();
   const [mid] = store.appendMessages(t, [{ role: "user", content: "secret" }], "s1");
   gate.forget(mid!, { actor: "user", authored_by: "human" });
@@ -83,7 +84,7 @@ test("DumbTailProvider.retrieve returns persisted facts as '[remembered] ...' pr
 
 test("DumbTailProvider.retrieve skips a fact whose provenance message is tombstoned (defense-in-depth)", async () => {
   const { store } = freshStore();
-  const gate = new WriteGate(store);
+  const gate = new WriteGate(store, new RuleBasedScanner());
   const t = store.createThread();
   const [mid] = store.appendMessages(t, [{ role: "user", content: "secret" }], "s1");
   // Manually insert a distilled fact with the message id as provenance (as if distill ran before forget)

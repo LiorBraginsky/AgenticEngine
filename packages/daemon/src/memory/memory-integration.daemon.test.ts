@@ -1,6 +1,7 @@
 import { test, expect, afterAll, beforeAll } from "bun:test";
 import { MemoryStore } from "./store.js";
 import { WriteGate, REDACTION_MARKER } from "./write-gate.js";
+import { RuleBasedScanner } from "./scanner/memory-scanner.js";
 import { ConsolidationHook } from "./consolidation-hook.js";
 import { tmpdir } from "node:os";
 import { mkdtempSync, readFileSync } from "node:fs";
@@ -92,7 +93,7 @@ test("turn 2 with the minted thread_id hydrates turn-1's messages (within-thread
 
 test("forget hard-scrubs content on disk; message + tombstone rows remain; tail redacts", () => {
   const store = new MemoryStore({ dataDir }); // SAME on-disk DB the daemon wrote
-  const gate = new WriteGate(store);
+  const gate = new WriteGate(store, new RuleBasedScanner());
   const db = store.rawDb();
   const row = db.query("SELECT id, thread_id FROM messages WHERE content = 'deploy is yeet.sh' LIMIT 1").get() as { id: string; thread_id: string };
   gate.forget(row.id, { actor: "user", authored_by: "human" }, "test");
@@ -118,7 +119,7 @@ test("edit appends a correction; original message row is unchanged in place", ()
   // identical regardless of role. We target a user message that still has real content
   // (not yet redacted by the forget test above).
   const store = new MemoryStore({ dataDir });
-  const gate = new WriteGate(store);
+  const gate = new WriteGate(store, new RuleBasedScanner());
   const db = store.rawDb();
   // Pick a user message that has NOT been redacted (content != REDACTION_MARKER).
   const row = db.query(

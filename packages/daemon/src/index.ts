@@ -6,6 +6,7 @@ import { buildInjector } from "./providers/injector.js";
 import type { ProviderSessionState, ProviderInput } from "./providers/provider.js";
 import { MemoryStore } from "./memory/store.js";
 import { WriteGate } from "./memory/write-gate.js";
+import { RuleBasedScanner } from "./memory/scanner/memory-scanner.js";
 import { ThreadLifecycle } from "./memory/thread-lifecycle.js";
 import { ConsolidationHook } from "./memory/consolidation-hook.js";
 import { buildMemoryProvider } from "./memory/memory-provider-selector.js";
@@ -37,7 +38,8 @@ export function startDaemon(port: number = DAEMON_PORT) {
   const provider = buildInjector();
   const dataDir = Bun.env.AGENTIC_DATA_DIR ?? join(homedir(), ".agentic-engine");
   const store = new MemoryStore({ dataDir });
-  const gate = new WriteGate(store);
+  const scanner = new RuleBasedScanner();
+  const gate = new WriteGate(store, scanner);
   const memoryProvider = buildMemoryProvider();
   const hook = new ConsolidationHook(store);
   registerDistiller(hook, store, memoryProvider);

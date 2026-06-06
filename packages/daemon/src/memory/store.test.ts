@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { MemoryStore } from "./store.js";
 import { WriteGate } from "./write-gate.js";
+import { RuleBasedScanner } from "./scanner/memory-scanner.js";
 import { REDACTION_MARKER } from "./schema.js";
 
 function freshStore() {
@@ -130,7 +131,7 @@ test("readDistillationEvents returns rows for a thread ordered by created_at", (
 
 test("readThreadMessagesForDistill returns ids and redacts tombstoned content", () => {
   const { store } = freshStore();
-  const gate = new WriteGate(store);
+  const gate = new WriteGate(store, new RuleBasedScanner());
   const t = store.createThread();
   const [aliveId] = store.appendMessages(t, [{ role: "user", content: "alive message" }], "s1");
   const [deadId] = store.appendMessages(t, [{ role: "user", content: "secret to forget" }], "s2");

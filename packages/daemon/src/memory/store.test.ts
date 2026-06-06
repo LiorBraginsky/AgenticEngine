@@ -143,3 +143,41 @@ test("readThreadMessagesForDistill returns ids and redacts tombstoned content", 
   expect(dead!.content).toBe(REDACTION_MARKER);
   store.close();
 });
+
+// ---- MF-03 Task 2: quarantine marker + lookup, human-correction precedence, 5e distilled delete-guard ----
+
+test("recordQuarantine + isMessageQuarantined round-trips a quarantine marker", () => {
+  const { store } = freshStore();
+  const t = store.createThread();
+  const [mid] = store.appendMessages(t, [{ role: "user", content: "x" }], "s1");
+  expect(store.isMessageQuarantined(mid!)).toBe(false);
+  store.recordQuarantine({ target_id: mid!, rule: "injection-directive" });
+  expect(store.isMessageQuarantined(mid!)).toBe(true);
+  expect(store.readQuarantineMarkers().length).toBe(1);
+  store.close();
+});
+
+test("readThreadTail: a human correction wins over a later machine correction (5e precedence)", () => {
+  const { store } = freshStore();
+  const t = store.createThread();
+  const [mid] = store.appendMessages(t, [{ role: "user", content: "deploy is deploy.sh" }], "s1");
+  const db = store.rawDb();
+  // human correction first
+  db.query("INSERT INTO mutations (id, target_message_id, kind, actor, reason, replacement_content, authored_by, created_at) VALUES (?,?,?,?,?,?,?,?)")
+    .run(crypto.randomUUID(), mid!, "correction", "user", null, "deploy is yeet.sh", "human", Date.now());
+  // later machine correction tries to clobber
+  db.query("INSERT INTO mutations (id, target_message_id, kind, actor, reason, replacement_content, authored_by, created_at) VALUES (?,?,?,?,?,?,?,?)")
+    .run(crypto.randomUUID(), mid!, "correction", "agent", null, "deploy is robot.sh", "machine", Date.now() + 10);
+  expect(store.readThreadTail(t, 10)).toEqual([{ role: "user", content: "deploy is yeet.sh" }]);
+  store.close();
+});
+
+test("insertDistilledFacts refuses to drop a human-authored distilled fact on a machine rebuild (5e guard)", () => {
+  const { store } = freshStore();
+  // seed a human-authored distilled fact directly
+  store.rawDb().query("INSERT INTO distilled_facts (id, fact, provenance, scope, expiry, confidence, authored_by, derived_at, distiller_version) VALUES (?,?,?,?,?,?,?,?,?)")
+    .run(crypto.randomUUID(), "human pinned fact", "m-h", "cross-thread", null, 1, "human", Date.now(), "manual");
+  store.dropAllDistilledFacts(); // a machine re-derive drops the projection...
+  expect(store.readDistilledFacts(10).some((f) => f.fact === "human pinned fact")).toBe(true); // ...but the human fact survives
+  store.close();
+});

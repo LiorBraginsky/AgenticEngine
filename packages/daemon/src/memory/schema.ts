@@ -63,4 +63,12 @@ CREATE TABLE IF NOT EXISTS distillation_events (
   distiller_version TEXT,
   created_at        INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS quarantine_markers (
+  id           TEXT PRIMARY KEY,
+  target_id    TEXT NOT NULL,
+  rule         TEXT NOT NULL,
+  created_at   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_quarantine_target ON quarantine_markers(target_id);
 `;

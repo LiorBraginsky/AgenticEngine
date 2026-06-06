@@ -121,7 +121,7 @@ test("forget-survives-re-derive: tombstoned fact absent from rebuilt slice and r
   const gate = new WriteGate(store, new RuleBasedScanner());
   const hook = new ConsolidationHook(store);
   const dumbTail = new DumbTailProvider();
-  registerDistiller(hook, store, dumbTail);
+  registerDistiller(hook, store, dumbTail, new RuleBasedScanner());
 
   // 1. Create a thread, append a message, distill it
   const threadId = store.createThread();
@@ -160,7 +160,7 @@ test("forget-purges-live-slice: live distilled_facts row gone IMMEDIATELY after 
   const gate = new WriteGate(store, new RuleBasedScanner());
   const hook = new ConsolidationHook(store);
   const dumbTail = new DumbTailProvider();
-  registerDistiller(hook, store, dumbTail);
+  registerDistiller(hook, store, dumbTail, new RuleBasedScanner());
 
   // 1. Create thread, append message
   const threadId = store.createThread();
@@ -220,7 +220,7 @@ test("distillation-observable (5b): dismiss of empty thread writes distillation_
   const store = new MemoryStore({ dataDir: dir });
   const hook = new ConsolidationHook(store);
   const dumbTail = new DumbTailProvider();
-  registerDistiller(hook, store, dumbTail);
+  registerDistiller(hook, store, dumbTail, new RuleBasedScanner());
 
   // 1. Create an empty thread (no messages appended)
   const threadId = store.createThread();

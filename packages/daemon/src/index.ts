@@ -42,7 +42,7 @@ export function startDaemon(port: number = DAEMON_PORT) {
   const gate = new WriteGate(store, scanner);
   const memoryProvider = buildMemoryProvider();
   const hook = new ConsolidationHook(store);
-  registerDistiller(hook, store, memoryProvider);
+  registerDistiller(hook, store, memoryProvider, scanner);
   const lifecycle = new ThreadLifecycle(store, gate, memoryProvider);
 
   return Bun.serve<SocketData>({

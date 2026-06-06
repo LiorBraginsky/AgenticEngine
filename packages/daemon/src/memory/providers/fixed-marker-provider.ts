@@ -23,7 +23,7 @@ export class FixedMarkerProvider implements MemoryProvider {
    */
   async distill(store: MemoryStore, threadId: string): Promise<DistillResult> {
     const allMessages = store.readThreadMessagesForDistill(threadId);
-    const liveCount = allMessages.filter((m) => m.content !== REDACTION_MARKER).length;
+    const liveCount = allMessages.filter((m) => m.content !== REDACTION_MARKER && !store.isMessageQuarantined(m.id)).length;
 
     const fact = {
       fact: `thread:${threadId} has ${liveCount} live message${liveCount === 1 ? "" : "s"}`,

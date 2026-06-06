@@ -1,5 +1,7 @@
 # MF-04 — Thread-isolation logic (5f) via the `scope` tag — Implementation Plan
 
+> 🗄️ ARCHIVED 2026-06-06 — shipped in PR #26 (merge `d61fdde`). Historical record; do not edit.
+
 > **Feature:** memory-foundation · **Chunk:** `chunks-todo/memory-foundation/04-thread-isolation.md`
 > **Spec:** `specs/2026-06-04-memory-foundation.md` §3.3 (checkpoints) · **ADR:** `adr/0012` decision 5f
 > **Branch:** `chunk/mf-04-thread-isolation`

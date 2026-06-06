@@ -25,3 +25,6 @@ apps/overlay/src-tauri/gen/schemas
 .env
 .env.*
 !.env.example
+
+# Conveyor — ephemeral generated handoff briefs (PIPELINE §11; ledger IS tracked)
+orchestration/.conveyor/

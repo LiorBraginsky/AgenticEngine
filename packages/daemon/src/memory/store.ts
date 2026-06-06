@@ -198,6 +198,50 @@ export class MemoryStore {
     return row !== null;
   }
 
+  /**
+   * Append a fact-level tombstone to the mutations table (MF-05 T1.2, projection-tombstone).
+   * target_message_id accepts TEXT — message UUIDs AND thread-level provenance strings
+   * ("thread:<uuid>") are both valid. This is a strict superset of isMessageTombstoned.
+   *
+   * 5e guard: a machine-authored tombstone is refused if the targeted distilled fact
+   * is `authored_by:'human'`. Returns false if the operation was refused.
+   *
+   * NOTE: `mutations.target_message_id` has a REFERENCES messages(id) FK in the DDL.
+   * Thread-level provenance ("thread:<uuid>") is NOT a messages.id — SQLite's FK
+   * enforcement is OFF by default (PRAGMA foreign_keys = OFF), so this write succeeds
+   * without a schema migration. The FK is advisory in v0; this is the accepted trade-off
+   * per the projection-tombstone design (plan §62-71).
+   */
+  tombstoneFact(provenance: string, ctx: { actor: string; authored_by: "human" | "machine" }, reason?: string): boolean {
+    // 5e guard: refuse machine-tombstone of a human-authored distilled fact
+    if (ctx.authored_by === "machine") {
+      const factRow = this.db
+        .query("SELECT authored_by FROM distilled_facts WHERE provenance = ? AND authored_by = 'human' LIMIT 1")
+        .get(provenance) as { authored_by: string } | null;
+      if (factRow !== null) {
+        return false; // refused — human-authored fact survives machine tombstone
+      }
+    }
+    this.db
+      .query(
+        "INSERT INTO mutations (id, target_message_id, kind, actor, reason, replacement_content, authored_by, created_at) VALUES (?, ?, 'tombstone', ?, ?, NULL, ?, ?)",
+      )
+      .run(crypto.randomUUID(), provenance, ctx.actor, reason ?? null, ctx.authored_by, Date.now());
+    return true;
+  }
+
+  /**
+   * Returns true if a tombstone mutation exists for the given provenance string.
+   * Generalizes isMessageTombstoned: message-id UUIDs are a subset.
+   * Thread-level provenance ("thread:<uuid>") is also checked here (MF-05 T1.2).
+   */
+  isFactTombstoned(provenance: string): boolean {
+    const row = this.db
+      .query("SELECT 1 FROM mutations WHERE target_message_id = ? AND kind = 'tombstone'")
+      .get(provenance);
+    return row !== null;
+  }
+
   // ---- MF-03: quarantine markers (5d mechanism — distiller skip-filter) ----
 
   /** Record a minimal quarantine marker so the distiller can skip a flagged message
@@ -265,6 +309,42 @@ export class MemoryStore {
     return this.db
       .query("SELECT facts_produced, trigger, distiller_version FROM distillation_events WHERE thread_id = ? ORDER BY created_at ASC")
       .all(threadId) as DistillationEventRow[];
+  }
+
+  /**
+   * Full archive read for a thread — returns ALL messages, ordered by turn_index ASC.
+   * Honors tombstones (tombstoned rows surface as REDACTION_MARKER) and the same
+   * "latest HUMAN correction wins, else latest correction" COALESCE as readThreadTail.
+   * Used by Hatch.view (MF-05 T1.1) — additive SELECT only, no write-path change.
+   *
+   * IMPORTANT — same 5e caveat as readThreadTail: the COALESCE is NOT a second line of
+   * defense; the guarantee rests entirely on WriteGate being the SOLE mutations writer.
+   */
+  readThreadArchive(threadId: string): { id: string; role: string; content: string }[] {
+    const rows = this.db
+      .query(
+        `SELECT m.id AS id, m.role AS role, m.content AS content,
+                MAX(CASE WHEN x.kind = 'tombstone' THEN 1 ELSE 0 END) AS tombstoned,
+                COALESCE(
+                  (SELECT replacement_content FROM mutations
+                     WHERE target_message_id = m.id AND kind = 'correction' AND authored_by = 'human'
+                     ORDER BY created_at DESC LIMIT 1),
+                  (SELECT replacement_content FROM mutations
+                     WHERE target_message_id = m.id AND kind = 'correction'
+                     ORDER BY created_at DESC LIMIT 1)
+                ) AS correction
+         FROM messages m
+         LEFT JOIN mutations x ON x.target_message_id = m.id
+         WHERE m.thread_id = ?
+         GROUP BY m.id
+         ORDER BY m.turn_index ASC`,
+      )
+      .all(threadId) as TailRow[];
+    return rows.map((r) => ({
+      id: r.id,
+      role: r.role,
+      content: r.tombstoned ? REDACTION_MARKER : (r.correction ?? r.content),
+    }));
   }
 
   /**

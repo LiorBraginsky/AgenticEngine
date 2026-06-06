@@ -97,6 +97,33 @@ export class WriteGate {
   }
 
   /**
+   * forgetFact — forget a distilled fact by its provenance string (MF-05 T1.2).
+   * Dispatched by Hatch.forget when the target is not a message UUID.
+   *
+   * Three steps (additive, no re-plumb of write/inject path):
+   *   1. tombstoneFact in the store (appends a mutations row for the provenance)
+   *   2. dropDistilledFactsByProvenance (purge live slice — message-level provenance)
+   *   3. dropDistilledFactsForThread (purge live slice — thread-level provenance)
+   * Both drop calls are idempotent — only one will match depending on provenance shape.
+   *
+   * 5e guard: the store.tombstoneFact call refuses a machine tombstone of a
+   * human-authored fact and returns false; the live-slice purge is still applied
+   * (the projection is machine-authored by default; human facts survive per the
+   * authored_by != 'human' guard in dropDistilledFacts*).
+   */
+  forgetFact(provenance: string, ctx: WriteContext, reason?: string): void {
+    // Append the fact-level tombstone (5e-guarded inside tombstoneFact)
+    this.store.tombstoneFact(provenance, ctx, reason);
+    // Purge the live slice immediately (grill S2 — no-window between tombstone + purge)
+    this.store.dropDistilledFactsByProvenance(provenance);
+    // For thread-level provenance ("thread:<id>"), also purge via thread id
+    if (provenance.startsWith("thread:")) {
+      const threadId = provenance.slice("thread:".length);
+      this.store.dropDistilledFactsForThread(threadId);
+    }
+  }
+
+  /**
    * edit = appended correction record referencing the original (never in-place).
    * 5e: a machine edit of a human-authored entry is refused as a clobber —
    * appended as a competing, low-precedence machine note instead (MUTATION-AS-

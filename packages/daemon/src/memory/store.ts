@@ -97,7 +97,15 @@ export class MemoryStore {
 
   /** Tombstone-honoring within-thread tail (REDACT): tombstone ⇒ marker; correction ⇒ replacement.
    * MF-03 5e: "latest HUMAN correction wins, else latest correction" — a machine correction
-   * can never silently clobber a human's edited content. */
+   * can never silently clobber a human's edited content.
+   *
+   * IMPORTANT — this COALESCE is NOT a second line of defense for role='user' rows.
+   * When no human correction row exists, it falls through to "latest any correction",
+   * so any machine correction that reached the mutations table WOULD surface.
+   * The 5e guarantee for role='user' entries rests entirely on WriteGate.edit/forget
+   * being the SOLE mutations writer and its isHumanAuthored() check refusing machine
+   * writes. Any future code adding a second mutations writer MUST replicate that check
+   * or it silently reopens the 5e hole. Ref: MF-03 §5e, ADR-0012 decision 5e. */
   readThreadTail(threadId: string, limit: number): SessionMessage[] {
     const rows = this.db
       .query(
@@ -228,7 +236,13 @@ export class MemoryStore {
    * (redacts content to REDACTION_MARKER rather than omitting the row).
    * DumbTailProvider uses `id` for provenance and filters redacted rows itself.
    * MF-03 5e: same "latest HUMAN correction wins, else latest correction" precedence
-   * as readThreadTail — the distiller sees the same human-wins content the tail does. */
+   * as readThreadTail — the distiller sees the same human-wins content the tail does.
+   *
+   * IMPORTANT — same caveat as readThreadTail: this COALESCE is NOT a second line of
+   * defense for role='user' rows. The 5e guarantee depends entirely on WriteGate being
+   * the SOLE mutations writer and isHumanAuthored() refusing machine writes. Any future
+   * second writer MUST replicate that check or it silently reopens the 5e hole.
+   * Ref: MF-03 §5e, ADR-0012 decision 5e. */
   readThreadMessagesForDistill(threadId: string): MessageForDistillRow[] {
     const rows = this.db
       .query(

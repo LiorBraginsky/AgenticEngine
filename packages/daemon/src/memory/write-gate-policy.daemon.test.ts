@@ -206,7 +206,9 @@ test("DoD#3: every memory write still flows through the single WRITE-GATE — no
 
     // Rule 1: INSERT INTO messages lives ONLY in store.ts (the canonical sink).
     // Any other file with this SQL is a second write path — forbidden.
-    if (text.includes("INSERT INTO messages") && !f.endsWith("/store.ts")) {
+    // Regex is whitespace-tolerant and case-insensitive so extra spaces or mixed
+    // casing can't slip past the guard (mirrors the .appendMessages regex below).
+    if (/INSERT\s+INTO\s+messages/i.test(text) && !f.endsWith("/store.ts")) {
       throw new Error(`DoD#3 FAIL — second message-write path found in ${f}`);
     }
 

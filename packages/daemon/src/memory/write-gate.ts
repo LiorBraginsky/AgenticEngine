@@ -118,6 +118,13 @@ export class WriteGate {
    * 5e keys off role (not the authored_by scan context) because the Q1 fix
    * in ThreadLifecycle.endTurn now stamps per-message, but role is the durable
    * truth in the archive.
+   *
+   * THIS is the load-bearing 5e enforcement point. The COALESCE precedence in
+   * store.ts readThreadTail/readThreadMessagesForDistill is NOT a second line of
+   * defense — when no human correction row exists it falls through to any machine
+   * correction. The full 5e guarantee rests on this check being the SOLE gatekeeper
+   * for the mutations table. Any future mutations writer MUST replicate this guard
+   * or it silently reopens the 5e hole. Ref: MF-03 §5e, ADR-0012 decision 5e.
    */
   private isHumanAuthored(messageId: string): boolean {
     const db = this.store.rawDb();

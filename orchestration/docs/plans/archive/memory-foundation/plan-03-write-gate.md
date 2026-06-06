@@ -1,3 +1,5 @@
+> 🗄️ ARCHIVED 2026-06-06 — shipped. Historical record; do not edit.
+
 # MF-03 — Write-gate logic (5d security-scan + 5e no-silent-overwrite of human entries) — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -8,7 +10,7 @@
 
 **Tech Stack:** TypeScript on Bun; `bun:sqlite` (already in use since MF-01 — no new dependency); `bun test`; existing `eslint` strict + `tsc --noEmit`.
 
-**Status:** Done (ready for review)
+**Status:** shipped
 
 ---
 

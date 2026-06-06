@@ -182,3 +182,96 @@ test("insertDistilledFacts refuses to drop a human-authored distilled fact on a 
   expect(store.readDistilledFacts(10).some((f) => f.fact === "human pinned fact")).toBe(true); // ...but the human fact survives
   store.close();
 });
+
+// ---- MF-04 Task 1: readDistilledFactsForThread scope-filter SQL ----
+
+test("readDistilledFactsForThread: cross-thread facts are returned for ANY thread (DoD #2)", () => {
+  const { store } = freshStore();
+  const tA = store.createThread();
+  const tB = store.createThread();
+  const [midA] = store.appendMessages(tA, [{ role: "user", content: "cross msg" }], "s1");
+  store.insertDistilledFacts(
+    [{ fact: "cross-thread fact", provenance: midA!, scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" }],
+    "dumb-tail",
+  );
+  // admitted for both threads
+  const sliceA = store.readDistilledFactsForThread(tA, 10);
+  const sliceB = store.readDistilledFactsForThread(tB, 10);
+  expect(sliceA.some((f) => f.fact === "cross-thread fact")).toBe(true);
+  expect(sliceB.some((f) => f.fact === "cross-thread fact")).toBe(true);
+  store.close();
+});
+
+test("readDistilledFactsForThread: global-scope facts cross into any thread (DoD #2)", () => {
+  const { store } = freshStore();
+  const tA = store.createThread();
+  const tB = store.createThread();
+  const [midA] = store.appendMessages(tA, [{ role: "user", content: "global msg" }], "s1");
+  store.insertDistilledFacts(
+    [{ fact: "global note", provenance: midA!, scope: "global", expiry: null, confidence: 1, authored_by: "machine" }],
+    "dumb-tail",
+  );
+  const sliceB = store.readDistilledFactsForThread(tB, 10);
+  expect(sliceB.some((f) => f.fact === "global note")).toBe(true);
+  store.close();
+});
+
+test("readDistilledFactsForThread: thread-local message-provenance fact is hidden from other thread (DoD #1)", () => {
+  const { store } = freshStore();
+  const tA = store.createThread();
+  const tB = store.createThread();
+  const [midA] = store.appendMessages(tA, [{ role: "user", content: "private" }], "s1");
+  store.insertDistilledFacts(
+    [{ fact: "local-only fact", provenance: midA!, scope: "thread-local", expiry: null, confidence: 1, authored_by: "machine" }],
+    "dumb-tail",
+  );
+  // hidden from B
+  const sliceB = store.readDistilledFactsForThread(tB, 10);
+  expect(sliceB.some((f) => f.fact === "local-only fact")).toBe(false);
+  store.close();
+});
+
+test("readDistilledFactsForThread: thread-local message-provenance fact IS returned for its own origin thread (DoD #1)", () => {
+  const { store } = freshStore();
+  const tA = store.createThread();
+  store.createThread(); // tB unused but minted to prove isolation
+  const [midA] = store.appendMessages(tA, [{ role: "user", content: "private" }], "s1");
+  store.insertDistilledFacts(
+    [{ fact: "local-only fact", provenance: midA!, scope: "thread-local", expiry: null, confidence: 1, authored_by: "machine" }],
+    "dumb-tail",
+  );
+  // shown to own thread
+  const sliceA = store.readDistilledFactsForThread(tA, 10);
+  expect(sliceA.some((f) => f.fact === "local-only fact")).toBe(true);
+  store.close();
+});
+
+test("readDistilledFactsForThread: thread-level provenance ('thread:<id>') thread-local is hidden from B, shown to A", () => {
+  const { store } = freshStore();
+  const tA = store.createThread();
+  const tB = store.createThread();
+  store.insertDistilledFacts(
+    [{ fact: "thread-level local", provenance: `thread:${tA}`, scope: "thread-local", expiry: null, confidence: 0.5, authored_by: "machine" }],
+    "fixed-marker",
+  );
+  const sliceA = store.readDistilledFactsForThread(tA, 10);
+  const sliceB = store.readDistilledFactsForThread(tB, 10);
+  expect(sliceA.some((f) => f.fact === "thread-level local")).toBe(true);
+  expect(sliceB.some((f) => f.fact === "thread-level local")).toBe(false);
+  store.close();
+});
+
+test("readDistilledFactsForThread: NULL-scope fact is treated as cross-thread (defensive default)", () => {
+  const { store } = freshStore();
+  const tA = store.createThread();
+  const tB = store.createThread();
+  // Insert a row with NULL scope directly via rawDb
+  store.rawDb().query(
+    "INSERT INTO distilled_facts (id, fact, provenance, scope, expiry, confidence, authored_by, derived_at, distiller_version) VALUES (?,?,?,?,?,?,?,?,?)",
+  ).run(crypto.randomUUID(), "null-scope fact", "m-null", null, null, 1, "machine", Date.now(), "dumb-tail");
+  const sliceA = store.readDistilledFactsForThread(tA, 10);
+  const sliceB = store.readDistilledFactsForThread(tB, 10);
+  expect(sliceA.some((f) => f.fact === "null-scope fact")).toBe(true);
+  expect(sliceB.some((f) => f.fact === "null-scope fact")).toBe(true);
+  store.close();
+});

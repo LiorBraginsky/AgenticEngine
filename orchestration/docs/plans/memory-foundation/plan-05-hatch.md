@@ -7,7 +7,18 @@
 
 ## Status
 
-**Phase 2 — Implementation (Tranche 1 only).** Plan approved-by-default (conveyor §5.2: well-scoped, fits the decompose-blessed chunk). Tranche 2 is **escalated, not built** — see Gates.
+**Phase 3 — Tranche 1 verified-done + review-complete; Tranche 2 BLOCKED (escalated).** Plan approved-by-default (conveyor §5.2: well-scoped, fits the decompose-blessed chunk).
+
+**Tranche-1 verification (command-evidence, orchestrator-re-run — not worker assertion):**
+- `bun run typecheck` → exit 0 · `bun run lint:strict` → exit 0
+- `bun test packages/daemon` → **143 pass / 0 fail** (8 new hatch real-I/O tests + 4 fix-pass tests; no regression)
+- frozen `packages/protocol` → byte-unchanged vs `main` (`git diff --stat` empty)
+- **engine-reviewer: 0 Critical / 0 Major.** 2 Minor + 1 Nit all fixed in a follow-up pass (UUID-shape guard on `forgetFact`/`tombstoneFact` to enforce the seam invariant; a direct cross-thread `edit→distill→retrieve` test closing DoD #2's edit case; `HATCH_VIEW_FACT_CAP` named constant).
+- Proves DoD **#1, #2, #6** with real-I/O evidence. DoD **#3, #4, #5** are Tranche 2 (gated — NOT built).
+
+**Tranche 2 escalated, not built** — three gates (ADR-0013 acceptance · CM-01 missing prerequisite · route-closing live demo) → see Gates summary. The chunk is **NOT `done`** (behavioral DoD pending); chunk file stays `in-progress`, not archived.
+
+**Tranche-2 carry-forward (reviewer Minor 2):** before the gated HTTP route wires `Hatch.view`, decide whether `view` stays full-live-slice (current, memory-management semantics) or becomes thread-scoped/paginated.
 
 ---
 

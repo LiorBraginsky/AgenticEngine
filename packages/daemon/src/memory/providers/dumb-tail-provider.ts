@@ -31,6 +31,7 @@ export class DumbTailProvider implements MemoryProvider {
 
     const facts = tail
       .filter((m) => m.content !== REDACTION_MARKER)
+      .filter((m) => !store.isMessageQuarantined(m.id))
       .map((m) => ({
         fact: m.content,
         provenance: m.id,

@@ -4,6 +4,7 @@ import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { MemoryStore } from "../store.js";
 import { WriteGate } from "../write-gate.js";
+import { RuleBasedScanner } from "../scanner/memory-scanner.js";
 import { FixedMarkerProvider } from "./fixed-marker-provider.js";
 
 function freshStore() {
@@ -34,7 +35,7 @@ test("FixedMarkerProvider.distill emits exactly ONE fact with confidence=0.5 and
 
 test("FixedMarkerProvider.distill counts only non-tombstoned messages", async () => {
   const { store } = freshStore();
-  const gate = new WriteGate(store);
+  const gate = new WriteGate(store, new RuleBasedScanner());
   const t = store.createThread();
   store.appendMessages(t, [{ role: "user", content: "alive" }], "s1");
   const [deadId] = store.appendMessages(t, [{ role: "user", content: "forgotten" }], "s2");
@@ -84,7 +85,7 @@ test("FixedMarkerProvider.retrieve skips tombstoned-provenance facts (defense-in
   // This test confirms that after a forget(), the fact is gone from distilled_facts
   // (because the eager purge ran), so retrieve() correctly returns nothing.
   const { store } = freshStore();
-  const gate = new WriteGate(store);
+  const gate = new WriteGate(store, new RuleBasedScanner());
   const t = store.createThread();
   const [mid] = store.appendMessages(t, [{ role: "user", content: "secret" }], "s1");
   store.insertDistilledFacts(
@@ -104,7 +105,7 @@ test("S3: FixedMarkerProvider.retrieve returns thread-level facts even when a me
   // Invalidation for thread-level facts is via WriteGate.forget → dropDistilledFactsForThread.
   // This test confirms a thread-level fact survives even when an UNRELATED message is tombstoned.
   const { store } = freshStore();
-  const gate = new WriteGate(store);
+  const gate = new WriteGate(store, new RuleBasedScanner());
   const t = store.createThread();
   // Insert a thread-level FixedMarker fact.
   store.insertDistilledFacts(

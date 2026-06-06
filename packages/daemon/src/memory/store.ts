@@ -10,6 +10,12 @@ export interface MemoryStoreOptions {
   dataDir: string;
 }
 
+/** Minimal input to record a quarantine marker (MF-03 5d). */
+export interface QuarantineMarkerInput {
+  target_id: string;
+  rule: string;
+}
+
 interface TailRow {
   id: string;
   role: "user" | "assistant";
@@ -89,15 +95,30 @@ export class MemoryStore {
     return ids;
   }
 
-  /** Tombstone-honoring within-thread tail (REDACT): tombstone ⇒ marker; correction ⇒ replacement. */
+  /** Tombstone-honoring within-thread tail (REDACT): tombstone ⇒ marker; correction ⇒ replacement.
+   * MF-03 5e: "latest HUMAN correction wins, else latest correction" — a machine correction
+   * can never silently clobber a human's edited content.
+   *
+   * IMPORTANT — this COALESCE is NOT a second line of defense for role='user' rows.
+   * When no human correction row exists, it falls through to "latest any correction",
+   * so any machine correction that reached the mutations table WOULD surface.
+   * The 5e guarantee for role='user' entries rests entirely on WriteGate.edit/forget
+   * being the SOLE mutations writer and its isHumanAuthored() check refusing machine
+   * writes. Any future code adding a second mutations writer MUST replicate that check
+   * or it silently reopens the 5e hole. Ref: MF-03 §5e, ADR-0012 decision 5e. */
   readThreadTail(threadId: string, limit: number): SessionMessage[] {
     const rows = this.db
       .query(
         `SELECT m.id AS id, m.role AS role, m.content AS content,
                 MAX(CASE WHEN x.kind = 'tombstone' THEN 1 ELSE 0 END) AS tombstoned,
-                (SELECT replacement_content FROM mutations
-                   WHERE target_message_id = m.id AND kind = 'correction'
-                   ORDER BY created_at DESC LIMIT 1) AS correction
+                COALESCE(
+                  (SELECT replacement_content FROM mutations
+                     WHERE target_message_id = m.id AND kind = 'correction' AND authored_by = 'human'
+                     ORDER BY created_at DESC LIMIT 1),
+                  (SELECT replacement_content FROM mutations
+                     WHERE target_message_id = m.id AND kind = 'correction'
+                     ORDER BY created_at DESC LIMIT 1)
+                ) AS correction
          FROM messages m
          LEFT JOIN mutations x ON x.target_message_id = m.id
          WHERE m.thread_id = ?
@@ -144,22 +165,57 @@ export class MemoryStore {
     return row !== null;
   }
 
-  /** DELETE distilled_facts rows by exact provenance match; returns changed row count. */
+  // ---- MF-03: quarantine markers (5d mechanism — distiller skip-filter) ----
+
+  /** Record a minimal quarantine marker so the distiller can skip a flagged message
+   *  at distill time (a later thread-dismiss). The marker is the MECHANISM the
+   *  skip-filter needs for cross-time durability — not an MF-05 audit feed (Q2-minimal).
+   *  INSERT OR IGNORE makes repeat quarantines idempotent: the UNIQUE(target_id) constraint
+   *  in the DDL means a second scan of the same message/provenance is silently dropped,
+   *  preventing unbounded row growth on repeated dismiss cycles. */
+  recordQuarantine(e: QuarantineMarkerInput): void {
+    this.db
+      .query("INSERT OR IGNORE INTO quarantine_markers (id, target_id, rule, created_at) VALUES (?, ?, ?, ?)")
+      .run(crypto.randomUUID(), e.target_id, e.rule, Date.now());
+  }
+
+  /** Returns true if a quarantine marker exists for the given messageId.
+   *  Used by the distiller to skip quarantined messages, exactly as tombstoned ones are skipped. */
+  isMessageQuarantined(messageId: string): boolean {
+    const row = this.db
+      .query("SELECT 1 FROM quarantine_markers WHERE target_id = ? LIMIT 1")
+      .get(messageId);
+    return row !== null;
+  }
+
+  /** Returns all quarantine markers ordered by created_at ASC.
+   *  Minimal read — used by the DoD#1 assertion and nothing else in v0. */
+  readQuarantineMarkers(): { target_id: string; rule: string }[] {
+    return this.db
+      .query("SELECT target_id, rule FROM quarantine_markers ORDER BY created_at ASC")
+      .all() as { target_id: string; rule: string }[];
+  }
+
+  /** DELETE distilled_facts rows by exact provenance match; returns changed row count.
+   * MF-03 5e guard: never deletes a human-authored distilled fact. */
   dropDistilledFactsByProvenance(provenance: string): number {
-    const result = this.db.query("DELETE FROM distilled_facts WHERE provenance = ? RETURNING id").all(provenance);
+    const result = this.db.query("DELETE FROM distilled_facts WHERE provenance = ? AND authored_by != 'human' RETURNING id").all(provenance);
     return result.length;
   }
 
-  /** DELETE distilled_facts rows with provenance "thread:<threadId>"; returns changed count. */
+  /** DELETE distilled_facts rows with provenance "thread:<threadId>"; returns changed count.
+   * MF-03 5e guard: never deletes a human-authored distilled fact. */
   dropDistilledFactsForThread(threadId: string): number {
     const provenance = `thread:${threadId}`;
-    const result = this.db.query("DELETE FROM distilled_facts WHERE provenance = ? RETURNING id").all(provenance);
+    const result = this.db.query("DELETE FROM distilled_facts WHERE provenance = ? AND authored_by != 'human' RETURNING id").all(provenance);
     return result.length;
   }
 
-  /** DELETE all rows from distilled_facts (used for swap-proof test). */
+  /** DELETE all rows from distilled_facts (used for swap-proof test / machine rebuild).
+   * MF-03 5e guard: never deletes a human-authored distilled fact — human-pinned facts
+   * survive a full machine re-derive cycle. */
   dropAllDistilledFacts(): void {
-    this.db.query("DELETE FROM distilled_facts").run();
+    this.db.query("DELETE FROM distilled_facts WHERE authored_by != 'human'").run();
   }
 
   /** INSERT a distillation event row into distillation_events. */
@@ -182,15 +238,27 @@ export class MemoryStore {
    * Like readThreadTail but returns message `id` field and honors tombstones
    * (redacts content to REDACTION_MARKER rather than omitting the row).
    * DumbTailProvider uses `id` for provenance and filters redacted rows itself.
-   */
+   * MF-03 5e: same "latest HUMAN correction wins, else latest correction" precedence
+   * as readThreadTail — the distiller sees the same human-wins content the tail does.
+   *
+   * IMPORTANT — same caveat as readThreadTail: this COALESCE is NOT a second line of
+   * defense for role='user' rows. The 5e guarantee depends entirely on WriteGate being
+   * the SOLE mutations writer and isHumanAuthored() refusing machine writes. Any future
+   * second writer MUST replicate that check or it silently reopens the 5e hole.
+   * Ref: MF-03 §5e, ADR-0012 decision 5e. */
   readThreadMessagesForDistill(threadId: string): MessageForDistillRow[] {
     const rows = this.db
       .query(
         `SELECT m.id AS id, m.role AS role, m.content AS content,
                 MAX(CASE WHEN x.kind = 'tombstone' THEN 1 ELSE 0 END) AS tombstoned,
-                (SELECT replacement_content FROM mutations
-                   WHERE target_message_id = m.id AND kind = 'correction'
-                   ORDER BY created_at DESC LIMIT 1) AS correction
+                COALESCE(
+                  (SELECT replacement_content FROM mutations
+                     WHERE target_message_id = m.id AND kind = 'correction' AND authored_by = 'human'
+                     ORDER BY created_at DESC LIMIT 1),
+                  (SELECT replacement_content FROM mutations
+                     WHERE target_message_id = m.id AND kind = 'correction'
+                     ORDER BY created_at DESC LIMIT 1)
+                ) AS correction
          FROM messages m
          LEFT JOIN mutations x ON x.target_message_id = m.id
          WHERE m.thread_id = ?

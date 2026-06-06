@@ -1,6 +1,6 @@
 # Chunk 03: Write-gate logic — security-scan (5d) + no-silent-overwrite (5e)
 
-**Status:** todo
+**Status:** in-progress
 **Created:** 2026-06-04
 **Phase:** Conversation & Interaction Model · route part 1 (Memory foundation)
 **Estimated size:** ~1 day

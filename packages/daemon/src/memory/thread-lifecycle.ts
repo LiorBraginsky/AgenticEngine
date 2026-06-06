@@ -80,13 +80,16 @@ export class ThreadLifecycle {
   endTurn(threadId: string, sessionId: string, finalMessages: SessionMessage[]): void {
     const hydratedCount = this.sessionHydratedCount.get(sessionId) ?? 0;
     const delta = finalMessages.slice(hydratedCount);
-    if (delta.length > 0) {
-      // MF-01 stamps turn-level "machine" provenance as a placeholder.
-      // TODO (chunk 03, 5e): derive per-message human-authorship from `role` —
-      // `role === "user"` messages are human-authored; this stamp currently
-      // over-claims "machine" for them. 5e no-overwrite must key off `role`, not
-      // this authored_by stamp, until a per-message column is added.
-      this.gate.appendTurn(threadId, delta, sessionId, { actor: "agent", authored_by: "machine" });
+    // MF-03 (5e, Q1): per-message authorship derives from role — a user turn is
+    // human, an assistant turn is machine. appendTurn scans + stamps each message
+    // individually; this replaces the MF-01/02 blanket "machine" stamp that
+    // over-claimed for user turns. appendMessages assigns monotonic turn_index per
+    // call (store.ts:80), so per-message flushing preserves order.
+    for (const m of delta) {
+      this.gate.appendTurn(threadId, [m], sessionId, {
+        actor: m.role === "user" ? "user" : "agent",
+        authored_by: m.role === "user" ? "human" : "machine",
+      });
     }
     this.sessionToThread.delete(sessionId);
     this.sessionHydratedCount.delete(sessionId);

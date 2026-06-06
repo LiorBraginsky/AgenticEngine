@@ -10,6 +10,7 @@ import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { MemoryStore } from "./store.js";
 import { WriteGate } from "./write-gate.js";
+import { RuleBasedScanner } from "./scanner/memory-scanner.js";
 import { ConsolidationHook } from "./consolidation-hook.js";
 import { ThreadLifecycle } from "./thread-lifecycle.js";
 import { DumbTailProvider } from "./providers/dumb-tail-provider.js";
@@ -117,10 +118,10 @@ test("forget-survives-re-derive: tombstoned fact absent from rebuilt slice and r
   // Use a fresh isolated store (not the shared one) to avoid cross-test contamination
   const dir = mkdtempSync(join(tmpdir(), "mf02-5b-"));
   const store = new MemoryStore({ dataDir: dir });
-  const gate = new WriteGate(store);
+  const gate = new WriteGate(store, new RuleBasedScanner());
   const hook = new ConsolidationHook(store);
   const dumbTail = new DumbTailProvider();
-  registerDistiller(hook, store, dumbTail);
+  registerDistiller(hook, store, dumbTail, new RuleBasedScanner());
 
   // 1. Create a thread, append a message, distill it
   const threadId = store.createThread();
@@ -156,10 +157,10 @@ test("forget-survives-re-derive: tombstoned fact absent from rebuilt slice and r
 test("forget-purges-live-slice: live distilled_facts row gone IMMEDIATELY after forget (S2 no-window)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "mf02-5c-"));
   const store = new MemoryStore({ dataDir: dir });
-  const gate = new WriteGate(store);
+  const gate = new WriteGate(store, new RuleBasedScanner());
   const hook = new ConsolidationHook(store);
   const dumbTail = new DumbTailProvider();
-  registerDistiller(hook, store, dumbTail);
+  registerDistiller(hook, store, dumbTail, new RuleBasedScanner());
 
   // 1. Create thread, append message
   const threadId = store.createThread();
@@ -186,7 +187,7 @@ test("cross-thread: new thread beginTurn returns prior thread's distilled fact a
   // over the same on-disk store" — no WS needed for this assertion)
   const dir = mkdtempSync(join(tmpdir(), "mf02-5d-"));
   const store = new MemoryStore({ dataDir: dir });
-  const gate = new WriteGate(store);
+  const gate = new WriteGate(store, new RuleBasedScanner());
   const dumbTail = new DumbTailProvider();
   const lifecycle = new ThreadLifecycle(store, gate, dumbTail);
 
@@ -219,7 +220,7 @@ test("distillation-observable (5b): dismiss of empty thread writes distillation_
   const store = new MemoryStore({ dataDir: dir });
   const hook = new ConsolidationHook(store);
   const dumbTail = new DumbTailProvider();
-  registerDistiller(hook, store, dumbTail);
+  registerDistiller(hook, store, dumbTail, new RuleBasedScanner());
 
   // 1. Create an empty thread (no messages appended)
   const threadId = store.createThread();

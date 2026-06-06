@@ -6,19 +6,20 @@ import { MemoryStore } from "./store.js";
 import { WriteGate } from "./write-gate.js";
 import { ThreadLifecycle } from "./thread-lifecycle.js";
 import { DumbTailProvider } from "./providers/dumb-tail-provider.js";
+import { RuleBasedScanner } from "./scanner/memory-scanner.js";
 
 const dumbTailProvider = new DumbTailProvider();
 
 function fresh() {
   const dir = mkdtempSync(join(tmpdir(), "mf01-tl-"));
   const store = new MemoryStore({ dataDir: dir });
-  return { store, lifecycle: new ThreadLifecycle(store, new WriteGate(store)) };
+  return { store, lifecycle: new ThreadLifecycle(store, new WriteGate(store, new RuleBasedScanner())) };
 }
 
 function freshTL() {
   const dir = mkdtempSync(join(tmpdir(), "mf02-tl-"));
   const store = new MemoryStore({ dataDir: dir });
-  const lifecycle = new ThreadLifecycle(store, new WriteGate(store), dumbTailProvider);
+  const lifecycle = new ThreadLifecycle(store, new WriteGate(store, new RuleBasedScanner()), dumbTailProvider);
   return { store, lifecycle };
 }
 
@@ -111,4 +112,30 @@ test("injected cross-thread slice is NOT re-persisted into the new thread (delta
   // Only the delta ("hi") must be persisted — the injected slice is read-only context.
   const persisted = store.readThreadTail(b.threadId, 50).map((m) => m.content);
   expect(persisted).toEqual(["hi"]);
+});
+
+// ---- Task 3 Q1: role-derived authorship in endTurn ----
+
+test("Q1: endTurn stamps role=user messages as human-authored and role=assistant as machine-authored", async () => {
+  const { store, lifecycle } = fresh();
+  const t = store.createThread();
+  lifecycle.bindSession("sq1", t, 0);
+  lifecycle.endTurn(t, "sq1", [
+    { role: "user", content: "user turn" },
+    { role: "assistant", content: "assistant turn" },
+  ]);
+  // Confirm user message is NOT quarantined (clean content, human-authored)
+  const rows = store.rawDb().query("SELECT id, role FROM messages WHERE thread_id = ? ORDER BY turn_index ASC").all(t) as { id: string; role: string }[];
+  expect(rows).toHaveLength(2);
+  const userMsg = rows.find((r) => r.role === "user")!;
+  const assistantMsg = rows.find((r) => r.role === "assistant")!;
+  expect(store.isMessageQuarantined(userMsg.id)).toBe(false);
+  expect(store.isMessageQuarantined(assistantMsg.id)).toBe(false);
+  // Both messages must be stored (content correct)
+  const tail = store.readThreadTail(t, 10);
+  expect(tail).toEqual([
+    { role: "user", content: "user turn" },
+    { role: "assistant", content: "assistant turn" },
+  ]);
+  store.close();
 });

@@ -44,15 +44,10 @@ export class FixedMarkerProvider implements MemoryProvider {
    * distill() output differs in shape.
    */
   async retrieve(store: MemoryStore, forThreadId: string): Promise<SessionMessage[]> {
-    void forThreadId; // cross-thread retrieve reads ALL distilled_facts (v0 has no isolation)
-    const rows = store.readDistilledFacts(RETRIEVE_SLICE_N);
-    // S3: Do NOT call isMessageTombstoned(f.provenance) for FixedMarker facts.
-    // FixedMarker's provenance is "thread:<uuid>" — a thread-level ref, not a message UUID.
-    // isMessageTombstoned queries mutations WHERE target_message_id = ?, which will never
-    // match a "thread:xyz" string, making the filter a silent no-op.
-    // Invalidation for FixedMarker facts is handled eagerly by WriteGate.forget →
-    // dropDistilledFactsForThread. DumbTailProvider (message-level provenance) still
-    // does its own tombstone filtering in its own retrieve().
+    // MF-04 (5f): scope-filtered read (same contract as DumbTail's retrieve).
+    // FixedMarker provenance is "thread:<id>"; readDistilledFactsForThread resolves origin
+    // via the substr branch. No isMessageTombstoned (thread-level provenance never matches a UUID).
+    const rows = store.readDistilledFactsForThread(forThreadId, RETRIEVE_SLICE_N);
     return Promise.resolve(
       rows.map((f) => ({ role: "user" as const, content: `[remembered] ${f.fact}` })),
     );

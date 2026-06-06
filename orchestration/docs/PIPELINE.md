@@ -160,25 +160,52 @@ work is verified-done** (§6):
 - Set a chunk `Status: done` **and move it to `archive/<feature>/`** once verified-done.
 - Create, update, and (on ship) archive the plan file with its `SHIPPED` banner.
 - Commit per task, push the feature branch, open the PR (the autonomous-git workflow — see project `CLAUDE.md`).
+- **Auto-merge the PR** once ALL automated gates are green (§5.2) — merge is an *effect* of the
+  gates passing, not a decision. Preconditions + auto-revert-on-red live in project `CLAUDE.md`.
 
 These were previously done manually by Lior. **They are now the agents' job.** The single
-guard is §6: *never* flip to `done` / archive on a claimed-but-unverified result.
+guard is §6 (plus, for merge, the §5.2 preconditions): *never* flip to `done` / archive / merge
+on a claimed-but-unverified result.
 
-### 5.2 Judgment gates — these stay with LIOR (always ask)
+### 5.2 Judgment gates — these stay with LIOR (escalate only)
+
+**Governing principle (Lior, 2026-06-06):** escalate to Lior ONLY when the decision is one of —
+**(1)** a behavioral/demo judgment (does it actually work — the recurring scar, §6.1),
+**(2)** a change to north-star / roadmap / architecture (spec, ADR, frozen contract — the
+"super-important irreversibles"), or **(3)** a genuine blocker the agents cannot resolve from the
+docs or each other. **Everything else — including PR merge and routine plan approval — is
+automated.** A gate exists only where the decision is hard-to-reverse AND needs Lior's unique
+context (taste / north-star / behavioral judgment) that no automated check or agent can substitute.
 
 | Gate | What it decides | When |
 |------|-----------------|------|
-| **Spec sign-off** | is the design/research right? | `status: draft → accepted` |
-| **Plan approval** | is the implementation plan sound? | before orchestrator Phase 2 (implementation) |
-| **Freeze / stop-the-line** | may a frozen contract change? | any change to a frozen ADR / wire contract |
-| **Behavioral demo sign-off** | does it actually work on the machine? | before any behavioral DoD criterion → `done` (§6.1) |
+| **Behavioral demo sign-off** | does it actually work on the machine? | before any behavioral DoD criterion → `done` (§6.1) — non-negotiable |
+| **Spec sign-off** | is the design/research right? | `status: draft → accepted` (thick-design features only) |
 | **ADR acceptance** | is a decision binding? | `status: proposed → accepted` |
-| **PR merge** | does this land on `main`? | every PR — Lior is the sole merger |
+| **Freeze / stop-the-line** | may a frozen contract change? | any change to a frozen ADR / wire contract |
+| **north-star / roadmap change** | does the work imply the strategic premise must change? | an agent discovers a chunk conflicts with north-star/roadmap → STOP, escalate |
+
+**Downgraded from blanket gates to automated (2026-06-06 — see the conveyor pilot,
+`experiments/2026-06-06-conveyor-pilot.md`):**
+
+- **Plan approval** is no longer a blanket gate. The plan PROCEEDS autonomously; Jimmy/architect
+  escalate it to Lior ONLY via the **§7.2 citation test** — the plan cites a specific frozen conflict
+  (spec / ADR / frozen contract / north-star), introduces NEW scope, or is a genuine blocker. A
+  well-scoped plan that fits its decompose-blessed chunk gets no ping.
+- **PR merge** is no longer a gate — it is the **effect** of all applicable gates passing, not a
+  decision (10 PRs/day → 0 pings). Auto-merge fires when ALL automated preconditions are green:
+  CI (tests + `lint:strict` + typecheck), reviewer-clean (0 blockers), frozen surfaces byte-unchanged,
+  and — for a behavioral DoD — Lior's live demo already signed off. Any precondition red → no merge,
+  escalate. Branch protection enforces the preconditions; **auto-revert on post-merge red `main`**.
+  (Project `CLAUDE.md` carries the operational rule; force-push / amend / direct-push-to-`main` /
+  `--no-verify` remain NEVER.)
 
 > Rationale: the agents that implement chunks lack the context Lior (and the decomposer)
 > hold, and the agent that builds a thing has a conflict of interest in declaring it
 > correct. So **discovery flows up, decisions flow down** — agents surface and propose;
-> Lior (or the decompose/architect layer) decides. See §7.
+> Lior (or the decompose/architect layer) decides. See §7. The 2026-06-06 narrowing keeps this
+> for the *irreplaceable* decisions while removing Lior from reversible/checkable ones (merge,
+> routine plans). The replacement net for auto-merge is the green-precondition set above, NOT trust.
 
 ---
 
@@ -334,6 +361,78 @@ specs: none). Lior reviewed three options and chose **Option A — unify the con
 | `engine-reviewer` | branch diff, full files, ADRs | priority-sorted findings | flags contract/behavioral drift (§7.1) |
 | `adr-curator` | ADR template, existing ADRs | new ADR (`status: proposed`) | never changes ADR status without Lior (§5.2) |
 | `team-auditor` | `.claude/agents`, `.claude/skills`, this file | health report (read-only) | checks team alignment to this pipeline |
+
+---
+
+## 11. Autonomous execution triggers — the "conveyor" (axis A)
+
+> §5 governs **in-flight authority** (axis B — what an already-running agent decides). This
+> section governs **trigger autonomy** (axis A — who *starts* an agent). The conveyor automates
+> axis A: events start the right chat with no human in the launch path. It is in a **piloted
+> experiment** — see `experiments/2026-06-06-conveyor-pilot.md` for the metrics and the revert
+> switch. **Billing rail:** everything runs as **interactive** `claude` sessions (no `-p`) →
+> subscription; the metered Agent-SDK pool (from 2026-06-15) is triggered by the `-p`/SDK entry
+> point, NOT by subagent fan-out (memory `reference_claude_code_automation_billing`).
+
+### 11.1 The model — federated sessions, hub-and-spoke
+
+- **Federated (Topology Z), not one cockpit.** Each role is its own top-level chat (so each can
+  spawn its own subagents — the "subagent depth = 1" limit dissolves). This is Lior's existing
+  Jimmy-chat + orchestrator-chat pattern, automated.
+- **Only Jimmy listens.** Jimmy is the long-lived **conductor** (a `/loop` session). Worker chats
+  are **fire-and-complete**: launched with a rich brief, they run one chunk agentically to done or
+  to a gate, post their result, end the turn, and get killed (`tmux kill-session`). Workers never
+  subscribe to anything → no "unsubscribe" problem.
+- **Substrate = tmux.** Jimmy launches `tmux new-session -d "claude '<brief>'"`, monitors via the
+  ledger / `capture-pane`, retires via `tmux kill-session`.
+- **Cardinality:** Jimmy 1× per feature (refreshes when the feature folder archives); decompose-chat
+  1× per feature; orchestrator-chat 1× per chunk.
+- **Disk canonical, chat disposable.** The handoff brief is a pure function of disk (git + chunk
+  files + ledger), so any chat can be (re)launched losslessly. Prefer a fresh chat over compaction;
+  a worker that hits a gate dies and is replaced by a fresh continuation from disk — never resurrected.
+
+### 11.2 Trigger registry (event → chat → output → unattended behavior)
+
+| Event | Starts | Produces | If it hits a gate (unattended) |
+|-------|--------|----------|--------------------------------|
+| feature has `todo` chunks | orchestrator-chat (1×/chunk) | plan → code → PR | post `BLOCKED <gate>` → Jimmy → Lior; Jimmy relaunches a fresh continuation on the decision |
+| PR opened | reviewer (walk rung) | review comment | n/a (read-only) |
+| all gates green on a PR | — | **auto-merge** (effect, not decision; §5.2) | red gate → no merge, escalate |
+| PR merged + chunk verified-done | orchestrator | archive ritual (§4.4) | — |
+| feature folder drained | Jimmy | refresh self / pick next feature | — |
+| residual agent↔agent question (run rung) | localhost bus | routed message | judgment → Lior, transport → peer |
+
+### 11.3 Conductor charter — what Jimmy NEVER decides alone
+
+Jimmy is the **safety-critical gatekeeper** of what reaches Lior. Jimmy MUST escalate (never
+auto-decide) the §5.2 human gates:
+
+- **behavioral demo sign-off** (the recurring scar, §6.1),
+- **spec sign-off / ADR acceptance / freeze–stop-the-line** (north-star & frozen contracts),
+- a **north-star / roadmap conflict** discovered mid-work,
+- any **genuine blocker** not answerable from the docs.
+
+Jimmy MAY auto-act on: launching/retiring worker chats, routine plan-approval (escalate only via the
+**§7.2 citation test**), and **auto-merge — but ONLY on the all-green precondition set** (CI +
+reviewer-clean + frozen-surfaces-byte-unchanged + demo-if-behavioral; a red gate is a hard stop). The
+replacement net for Lior's removed per-PR eyes is the green-gate set, not trust (project `CLAUDE.md`).
+
+### 11.4 The ladder — build one rung at a time
+
+1. **crawl (current; piloting MF-04/MF-05):** `orchestration/bin/conveyor-next.sh` generates a
+   handoff brief from disk and tmux-launches a fresh orchestrator chat; every brief carries the
+   **self-serve rule** (read PIPELINE/ADR/spec yourself before escalating — kills the copy-paste that
+   was really doc-lookups). Auto-merge enforced by Jimmy via command-checks (`gh pr checks`, frozen
+   `git diff`) + a ledger digest; the GitHub-side net is walk.
+2. **walk:** PR auto-review trigger + the auto-merge **safety net** (branch protection requiring the
+   green gates + auto-revert on post-merge red `main`).
+3. **run:** localhost event-bus for the *residual* true agent↔agent transport, with explicit
+   judgment→Lior routing. Building the bus un-defers the concurrent-session model and is **ADR-worthy**
+   at that point; keep the dev-bus separate from the product daemon.
+
+**Anti-over-engineering:** do not build a higher rung until the pilot shows the lower one is
+insufficient. The pilot's first job is to measure how much copy-paste survives crawl — that number,
+not a hunch, decides whether the bus gets built.
 
 ---
 

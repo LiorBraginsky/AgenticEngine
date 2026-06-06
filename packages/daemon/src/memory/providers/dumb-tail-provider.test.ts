@@ -110,3 +110,46 @@ test("DumbTailProvider.distill skips a quarantined message (5d — never becomes
   expect(r.facts.length).toBe(0); // quarantined message yields no fact
   store.close();
 });
+
+// ── MF-04 Task 2: retrieve scope enforcement ──────────────────────────────
+
+test("MF-04: DumbTailProvider.retrieve drops thread-local fact from thread A when retrieving for thread B (DoD #1)", async () => {
+  const { store } = freshStore();
+  const tA = store.createThread();
+  const tB = store.createThread();
+  const [midA] = store.appendMessages(tA, [{ role: "user", content: "private A" }], "s1");
+  store.insertDistilledFacts(
+    [{ fact: "local-only fact", provenance: midA!, scope: "thread-local", expiry: null, confidence: 1, authored_by: "machine" }],
+    "dumb-tail",
+  );
+  const sliceB = await provider.retrieve(store, tB);
+  expect(sliceB.some((m) => m.content.includes("local-only fact"))).toBe(false);
+  store.close();
+});
+
+test("MF-04: DumbTailProvider.retrieve admits thread-local fact when retrieving for its OWN origin thread (DoD #1 completeness)", async () => {
+  const { store } = freshStore();
+  const tA = store.createThread();
+  const [midA] = store.appendMessages(tA, [{ role: "user", content: "private A" }], "s1");
+  store.insertDistilledFacts(
+    [{ fact: "local-only fact", provenance: midA!, scope: "thread-local", expiry: null, confidence: 1, authored_by: "machine" }],
+    "dumb-tail",
+  );
+  const sliceA = await provider.retrieve(store, tA);
+  expect(sliceA.some((m) => m.content.includes("local-only fact"))).toBe(true);
+  store.close();
+});
+
+test("MF-04: DumbTailProvider.retrieve admits global-scope fact for any thread (DoD #2)", async () => {
+  const { store } = freshStore();
+  const tA = store.createThread();
+  const tB = store.createThread();
+  const [midA] = store.appendMessages(tA, [{ role: "user", content: "global note" }], "s1");
+  store.insertDistilledFacts(
+    [{ fact: "global note", provenance: midA!, scope: "global", expiry: null, confidence: 1, authored_by: "machine" }],
+    "dumb-tail",
+  );
+  const sliceB = await provider.retrieve(store, tB);
+  expect(sliceB.some((m) => m.content.includes("global note"))).toBe(true);
+  store.close();
+});

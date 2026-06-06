@@ -1,6 +1,6 @@
 # Chunk 04: Thread-isolation logic (5f) — cross-thread bleed rules via the scope tag
 
-**Status:** todo
+**Status:** in-progress
 **Created:** 2026-06-04
 **Phase:** Conversation & Interaction Model · route part 1 (Memory foundation)
 **Estimated size:** ~1 day

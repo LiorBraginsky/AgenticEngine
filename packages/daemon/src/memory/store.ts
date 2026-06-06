@@ -157,6 +157,39 @@ export class MemoryStore {
       .all(limit) as DistilledFactRow[];
   }
 
+  /**
+   * MF-04 (5f, spec §3.3; ADR-0012 decision 5f). Scope-filtered projection read —
+   * the thread-isolation enforcement point. A fact is injectable into `forThreadId` iff:
+   *   scope IN ('cross-thread','global')                              -- shared facts cross
+   *   OR (scope = 'thread-local' AND originThread(fact) = forThreadId) -- private stays home
+   * originThread is derived from provenance with NO new column (frozen write-path):
+   *   - message-level provenance (a messages.id): JOIN messages → thread_id
+   *   - thread-level provenance ('thread:<id>'): substr after the prefix
+   * NULL/unknown scope defaults to cross-thread (the v0 reality; never throws).
+   * `readDistilledFacts` (all-rows) is intentionally kept for swap-proof / non-injection callers.
+   */
+  readDistilledFactsForThread(forThreadId: string, limit: number): DistilledFactRow[] {
+    return this.db
+      .query(
+        `SELECT df.fact AS fact, df.provenance AS provenance, df.scope AS scope,
+                df.expiry AS expiry, df.confidence AS confidence, df.authored_by AS authored_by
+         FROM distilled_facts df
+         LEFT JOIN messages m ON m.id = df.provenance
+         WHERE
+           COALESCE(df.scope, 'cross-thread') IN ('cross-thread', 'global')
+           OR (
+             df.scope = 'thread-local'
+             AND (
+               m.thread_id = ?
+               OR (df.provenance LIKE 'thread:%' AND substr(df.provenance, 8) = ?)
+             )
+           )
+         ORDER BY df.derived_at DESC
+         LIMIT ?`,
+      )
+      .all(forThreadId, forThreadId, limit) as DistilledFactRow[];
+  }
+
   /** Returns true if a tombstone mutation exists for the given messageId. */
   isMessageTombstoned(messageId: string): boolean {
     const row = this.db

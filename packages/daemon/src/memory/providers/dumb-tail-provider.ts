@@ -50,8 +50,9 @@ export class DumbTailProvider implements MemoryProvider {
    * whose provenance points at a now-tombstoned message (F1 backstop).
    */
   async retrieve(store: MemoryStore, forThreadId: string): Promise<SessionMessage[]> {
-    void forThreadId; // cross-thread retrieve reads ALL distilled_facts (v0 has no isolation)
-    const rows = store.readDistilledFacts(RETRIEVE_SLICE_N);
+    // MF-04 (5f): scope-filtered read — thread-local facts of OTHER threads are excluded;
+    // cross-thread/global cross. forThreadId is now load-bearing (was void in MF-02).
+    const rows = store.readDistilledFactsForThread(forThreadId, RETRIEVE_SLICE_N);
     const live = rows.filter((f) => !store.isMessageTombstoned(f.provenance));
     return Promise.resolve(
       live.map((f) => ({ role: "user" as const, content: `[remembered] ${f.fact}` })),

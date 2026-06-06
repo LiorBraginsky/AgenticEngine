@@ -5,7 +5,7 @@ import type { SessionMessage } from "../providers/provider.js";
 export interface DistilledFact {
   fact: string;
   provenance: string; // a messages.id (or a JSON ref) the fact was derived FROM
-  scope: "thread-local" | "cross-thread" | "global"; // stamped; ENFORCEMENT is chunk 04
+  scope: "thread-local" | "cross-thread" | "global"; // stamped at distill; ENFORCED by retrieve via readDistilledFactsForThread (MF-04 5f)
   expiry: number | null; // epoch ms or null
   confidence: number; // 0..1
   authored_by: "machine"; // v0 distiller is always machine-authored
@@ -39,6 +39,8 @@ export interface MemoryProvider {
    * Compose the bounded distilled slice to inject at a NEW thread's start.
    * Reads distilled_facts (the projection). MUST honor tombstones (F1).
    * Returns the slice as SessionMessage[] ready to prepend to messages[].
+   * MF-04 (5f): now enforces scope isolation — thread-local facts of OTHER threads
+   * are excluded; cross-thread/global facts cross. Uses readDistilledFactsForThread.
    */
   retrieve(store: MemoryStore, forThreadId: string): Promise<SessionMessage[]>;
 }

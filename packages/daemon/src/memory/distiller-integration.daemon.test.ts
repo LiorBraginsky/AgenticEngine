@@ -181,6 +181,7 @@ test("forget-purges-live-slice: live distilled_facts row gone IMMEDIATELY after 
 });
 
 // ─── Test 5.4: cross-thread continuity ────────────────────────────────────
+// NOTE: test 5.4 is the cross-thread baseline. The MF-04 isolation tests below MUST NOT break it.
 
 test("cross-thread: new thread beginTurn returns prior thread's distilled fact as priorMessages", async () => {
   // Store-level proof (per plan §Step5.4 note: "unit-level assertion on lifecycle.beginTurn
@@ -209,6 +210,63 @@ test("cross-thread: new thread beginTurn returns prior thread's distilled fact a
   lifecycle.endTurn(begin.threadId, "sb", [...begin.priorMessages, { role: "user", content: "hi" }]);
   const persistedInB = store.readThreadTail(begin.threadId, 50).map((m) => m.content);
   expect(persistedInB).toEqual(["hi"]); // injected slice NOT persisted — only delta
+
+  store.close();
+});
+
+// ─── MF-04 Test 5f isolation: thread-local stays home, cross-thread/global cross ──────────────
+
+test("5f isolation: thread-local does NOT cross into B; cross-thread + global DO (DoD #1 + #2)", async () => {
+  // Real on-disk SQLite, real store, real providers — only LLM is mocked (ADR-0010 decision-6).
+  const dir = mkdtempSync(join(tmpdir(), "mf04-5f-"));
+  const store = new MemoryStore({ dataDir: dir });
+  const dumbTail = new DumbTailProvider();
+
+  // Create thread A and append a real message (capture midA for message-level provenance)
+  const threadA = store.createThread();
+  const [midA] = store.appendMessages(threadA, [{ role: "user", content: "private msg" }], "sa");
+
+  // Insert three real rows via the real store — thread-local, cross-thread, global
+  store.insertDistilledFacts(
+    [
+      { fact: "local-only fact", provenance: midA!, scope: "thread-local", expiry: null, confidence: 1, authored_by: "machine" },
+      { fact: "deploy is yeet.sh", provenance: midA!, scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
+      { fact: "global note", provenance: midA!, scope: "global", expiry: null, confidence: 1, authored_by: "machine" },
+    ],
+    "dumb-tail",
+  );
+
+  // Create thread B (fresh thread, no messages)
+  const threadB = store.createThread();
+
+  // DoD #1: thread-local fact does NOT cross into B
+  const sliceB = await dumbTail.retrieve(store, threadB);
+  expect(sliceB.some((m) => m.content.includes("local-only fact"))).toBe(false);
+
+  // DoD #2: cross-thread + global DO cross into B
+  expect(sliceB.some((m) => m.content.includes("deploy is yeet.sh"))).toBe(true);
+  expect(sliceB.some((m) => m.content.includes("global note"))).toBe(true);
+
+  // Own-thread completeness: retrieve for A DOES include the thread-local fact
+  const sliceA = await dumbTail.retrieve(store, threadA);
+  expect(sliceA.some((m) => m.content.includes("local-only fact"))).toBe(true);
+
+  store.close();
+});
+
+test("5f boundary: no raw messages cross — only the distilled+tagged path carries (DoD #3)", async () => {
+  // Fresh thread A with messages but ZERO distilled_facts — retrieve for B must return []
+  const dir = mkdtempSync(join(tmpdir(), "mf04-raw-"));
+  const store = new MemoryStore({ dataDir: dir });
+  const dumbTail = new DumbTailProvider();
+
+  const threadA = store.createThread();
+  store.appendMessages(threadA, [{ role: "user", content: "undistilled secret" }], "sa");
+
+  const threadB = store.createThread();
+  const sliceB = await dumbTail.retrieve(store, threadB);
+  // The only cross-thread carrier is the distilled_facts projection, never raw messages
+  expect(sliceB).toEqual([]);
 
   store.close();
 });

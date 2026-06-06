@@ -42,6 +42,9 @@ export class Hatch {
     const messages = this.store.readThreadArchive(threadId);
     // All distilled facts (not scoped to a single thread — the hatch shows the full slice)
     const distilledFacts = this.store.readDistilledFacts(1000);
+    // T1.3 (5b): distillation_events returned VERBATIM — zero-count rows are NOT filtered.
+    // A row with facts_produced===0 is the observable proof of "deliberately retained nothing"
+    // vs "silently lost the thread" (spec §3.4, ADR-0012 5b).
     const distillationEvents = this.store.readDistillationEvents(threadId);
     return { messages, distilledFacts, distillationEvents };
   }

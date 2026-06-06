@@ -1,11 +1,13 @@
 # Chunk 04: Thread-isolation logic (5f) — cross-thread bleed rules via the scope tag
 
-**Status:** in-progress
+**Status:** done
 **Created:** 2026-06-04
 **Phase:** Conversation & Interaction Model · route part 1 (Memory foundation)
 **Estimated size:** ~1 day
 **Depends on:** 03 *(hard prerequisite is the 02 provider-port + scope tag; the **sequential** edge is 03 per spec §6 F2 data-flow — isolation reads what the write-gate admits, and disjoint files do not make them parallel-safe per §7.1)*
 **Spec:** `orchestration/docs/specs/2026-06-04-memory-foundation.md` (§3.3) · **ADR:** [[../../docs/adr/0012-conversation-and-memory-model]] (decision 5f)
+
+> 🗄️ ARCHIVED 2026-06-06 — done. Shipped in PR #26 (merge `d61fdde`); Jimmy-verified all-green via the conveyor (crawl rung, PIPELINE §11). Historical record; do not edit.
 
 ## Scope
 

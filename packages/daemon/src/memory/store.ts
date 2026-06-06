@@ -45,6 +45,17 @@ export interface MessageForDistillRow {
   content: string;
 }
 
+/**
+ * Returns true if `s` is UUID-shaped (the format used for messages.id).
+ * Used by WriteGate and MemoryStore to enforce the seam invariant:
+ * forgetFact / tombstoneFact must never receive a messages.id — callers
+ * must use forget() to tombstone+scrub a message (the two operations must
+ * always travel together).
+ */
+export function isMessageId(s: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
+}
+
 export class MemoryStore {
   private readonly db: Database;
   private readonly threadsDir: string;
@@ -213,6 +224,18 @@ export class MemoryStore {
    * per the projection-tombstone design (plan §62-71).
    */
   tombstoneFact(provenance: string, ctx: { actor: string; authored_by: "human" | "machine" }, reason?: string): boolean {
+    // Seam invariant: tombstoneFact is for distilled-fact provenances ONLY.
+    // If the caller passes a UUID-shaped string (a messages.id), they must use
+    // WriteGate.forget() instead — forget() performs BOTH the tombstone AND the
+    // content hard-scrub atomically. Accepting a UUID here would write a tombstone
+    // row keyed on a real messages.id WITHOUT scrubbing messages.content → the view
+    // says "forgotten" but plaintext remains on disk (security invariant breach).
+    if (isMessageId(provenance)) {
+      throw new Error(
+        `[MemoryStore] tombstoneFact received a UUID-shaped provenance ("${provenance}"). ` +
+        `Use forget() to tombstone+scrub a message; forgetFact is for distilled-fact provenances only (e.g. "thread:<uuid>").`,
+      );
+    }
     // 5e guard: refuse machine-tombstone of a human-authored distilled fact
     if (ctx.authored_by === "machine") {
       const factRow = this.db

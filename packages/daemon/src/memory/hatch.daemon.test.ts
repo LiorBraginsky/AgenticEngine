@@ -127,7 +127,7 @@ test("T1.2(c): Hatch.forget of a message id → tombstone + hard-scrub absent fr
   expect(slice.some((m) => m.content.includes("secret fact"))).toBe(false);
 });
 
-test("T1.2(b): Hatch.edit → authored_by:human correction reflected in thread tail", async () => {
+test("T1.2(b): Hatch.edit → authored_by:human correction reflected in within-thread tail", async () => {
   const hatch = new Hatch(store, gate);
 
   const threadId = store.createThread();
@@ -221,6 +221,72 @@ test("T1.2(d) regression: WriteGate.forget(messageId) still tombstones and purge
   const db = store.rawDb();
   const row = db.query("SELECT content FROM messages WHERE id = ?").get(mid!) as { content: string };
   expect(row.content).toBe(REDACTION_MARKER);
+});
+
+// ─── Fix-2: edit → distill → retrieve cross-thread (DoD #2 EDIT case) ───────
+//
+// DoD #2: "forgotten/edited item reflected in next thread's injection."
+// The forget case was proven via cross-thread retrieve (load-bearing test above).
+// This test closes the EDIT case honestly: seed thread A with a fact, edit it,
+// distill thread A, retrieve for a NEW thread B — assert the CORRECTED content
+// appears (not the original). Uses the real on-disk store + real provider; no mocks.
+
+test("Fix-2: Hatch.edit → distill → retrieve in new thread B reflects corrected content, not original", async () => {
+  const hatch = new Hatch(store, gate);
+  const hook = new ConsolidationHook(store);
+  const dumbTail = new DumbTailProvider();
+  registerDistiller(hook, store, dumbTail, new RuleBasedScanner());
+
+  // Thread A: seed with a fact
+  const threadA = store.createThread();
+  const [mid] = store.appendMessages(threadA, [{ role: "user", content: "original fact for cross-thread" }], "sA");
+
+  // Edit the message (human correction — authoritatively replaces original)
+  hatch.edit(mid!, "corrected fact for cross-thread", { actor: "user", authored_by: "human" });
+
+  // Distill thread A — distiller reads the corrected content via readThreadMessagesForDistill
+  await hook.dismiss(threadA);
+
+  // Thread B: retrieve injection slice — must see CORRECTED content, not original
+  const threadB = store.createThread();
+  const slice = await dumbTail.retrieve(store, threadB);
+
+  const contents = slice.map((m) => m.content).join(" ");
+  expect(contents).toContain("corrected fact for cross-thread");
+  expect(contents).not.toContain("original fact for cross-thread");
+});
+
+// ─── Fix-1: forgetFact seam guard — UUID provenance must throw ───────────────
+
+test("Fix-1: WriteGate.forgetFact throws if provenance is a UUID-shaped message id", () => {
+  // A UUID (messages.id shape) passed to forgetFact must throw — the caller should
+  // use WriteGate.forget instead. Passing a UUID here would write a tombstone row
+  // keyed on a real messages.id WITHOUT hard-scrubbing content → view-says-forgotten /
+  // disk-says-plaintext divergence (security invariant breach).
+  const uuid = crypto.randomUUID();
+  expect(() => gate.forgetFact(uuid, { actor: "user", authored_by: "human" })).toThrow(
+    /use forget\(\) to tombstone\+scrub a message/i,
+  );
+});
+
+test("Fix-1: WriteGate.forgetFact with UUID provenance does NOT write a mutations row", () => {
+  const uuid = crypto.randomUUID();
+  try {
+    gate.forgetFact(uuid, { actor: "user", authored_by: "human" });
+  } catch {
+    // expected — confirm no mutations row was written
+  }
+  const db = store.rawDb();
+  const row = db.query("SELECT id FROM mutations WHERE target_message_id = ?").get(uuid);
+  expect(row).toBeNull();
+});
+
+test("Fix-1: MemoryStore.tombstoneFact throws if provenance is a UUID-shaped message id", () => {
+  // Same invariant enforced at the store level so callers who bypass WriteGate also hit the guard.
+  const uuid = crypto.randomUUID();
+  expect(() => store.tombstoneFact(uuid, { actor: "user", authored_by: "human" })).toThrow(
+    /use forget\(\) to tombstone\+scrub a message/i,
+  );
 });
 
 // ─── T1.3: distillation_events — empty consolidation ─────────────────────────

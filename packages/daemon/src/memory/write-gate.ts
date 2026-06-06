@@ -1,4 +1,5 @@
 import type { MemoryStore } from "./store.js";
+import { isMessageId } from "./store.js";
 import type { SessionMessage } from "../providers/provider.js";
 import { REDACTION_MARKER } from "./schema.js";
 import type { MemoryScanner } from "./scanner/memory-scanner.js";
@@ -112,6 +113,17 @@ export class WriteGate {
    * authored_by != 'human' guard in dropDistilledFacts*).
    */
   forgetFact(provenance: string, ctx: WriteContext, reason?: string): void {
+    // Seam invariant: forgetFact is for distilled-fact provenances only.
+    // A UUID-shaped provenance is a messages.id — the caller must use forget() instead,
+    // which performs BOTH the tombstone AND the content hard-scrub atomically.
+    // Accepting a UUID here would tombstone without scrubbing → view-says-forgotten /
+    // disk-says-plaintext divergence (security invariant breach, #31 concern).
+    if (isMessageId(provenance)) {
+      throw new Error(
+        `[WriteGate] forgetFact received a UUID-shaped provenance ("${provenance}"). ` +
+        `Use forget() to tombstone+scrub a message; forgetFact is for distilled-fact provenances only (e.g. "thread:<uuid>").`,
+      );
+    }
     // Append the fact-level tombstone (5e-guarded inside tombstoneFact)
     this.store.tombstoneFact(provenance, ctx, reason);
     // Purge the live slice immediately (grill S2 — no-window between tombstone + purge)

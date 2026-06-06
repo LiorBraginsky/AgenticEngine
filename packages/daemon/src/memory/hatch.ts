@@ -12,7 +12,18 @@
  *   forget(target, ...)  → message-id  → existing WriteGate.forget
  *                          provenance  → WriteGate.forgetFact (projection-tombstone, T1.2)
  */
+
+/**
+ * Cap for the number of distilled facts returned by `view()`.
+ *
+ * `view` intentionally returns the FULL live projection slice (memory-management
+ * semantics) — this cap is a safety bound, not a UI pagination decision.
+ * Thread-scoping and pagination are Tranche-2 surface decisions; do NOT add
+ * per-thread filtering here without a Tranche-2 scope agreement.
+ */
+export const HATCH_VIEW_FACT_CAP = 1000;
 import type { MemoryStore, DistilledFactRow, DistillationEventRow } from "./store.js";
+import { isMessageId } from "./store.js";
 import type { WriteGate, WriteContext } from "./write-gate.js";
 
 export interface HatchViewResult {
@@ -40,8 +51,9 @@ export class Hatch {
    */
   async view(threadId: string): Promise<HatchViewResult> {
     const messages = this.store.readThreadArchive(threadId);
-    // All distilled facts (not scoped to a single thread — the hatch shows the full slice)
-    const distilledFacts = this.store.readDistilledFacts(1000);
+    // All distilled facts (not scoped to a single thread — the hatch shows the full slice).
+    // HATCH_VIEW_FACT_CAP is a safety bound; thread-scoping/pagination is Tranche 2.
+    const distilledFacts = this.store.readDistilledFacts(HATCH_VIEW_FACT_CAP);
     // T1.3 (5b): distillation_events returned VERBATIM — zero-count rows are NOT filtered.
     // A row with facts_produced===0 is the observable proof of "deliberately retained nothing"
     // vs "silently lost the thread" (spec §3.4, ADR-0012 5b).
@@ -75,10 +87,3 @@ export class Hatch {
   }
 }
 
-/**
- * Heuristic: a string that matches the standard UUID format is treated as a
- * messages.id; everything else is a distilled-fact provenance (e.g. "thread:<uuid>").
- */
-function isMessageId(s: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
-}

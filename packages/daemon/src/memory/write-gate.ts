@@ -48,6 +48,10 @@ export class WriteGate {
   ): string[] {
     const ids = this.store.appendMessages(threadId, messages, sessionId);
     messages.forEach((m, i) => {
+      // No `scope` is passed here — messages (turns) have no scope concept.
+      // The `scope-escalation` rule (machine write claiming global scope) is enforced
+      // at the distillation layer (distiller-registration.ts), where distilled_facts
+      // carry an explicit scope field. It cannot and should not fire at turn-append.
       const verdict = this.scanner.scan({ content: m.content, authored_by: ctx.authored_by });
       if (!verdict.ok) {
         this.store.recordQuarantine({ target_id: ids[i]!, rule: verdict.rule });
@@ -87,6 +91,9 @@ export class WriteGate {
     // Both message-level provenance (DumbTail shape) and thread-level provenance (FixedMarker shape).
     this.store.dropDistilledFactsByProvenance(messageId);
     this.store.dropDistilledFactsForThread(threadId);
+    // N1: any quarantine_markers row for this messageId is intentionally left — the tombstone
+    // already hard-redacts the content, making the quarantine marker harmless (a dead filter
+    // on a tombstoned message). Dropping it would require a new store method for ~zero benefit.
   }
 
   /**
@@ -100,6 +107,9 @@ export class WriteGate {
   edit(messageId: string, replacement: string, ctx: WriteContext, reason?: string): void {
     const db = this.store.rawDb();
     const now = Date.now();
+    // B1: validate existence BEFORE any INSERT — threadOf throws for unknown ids,
+    // preventing an orphaned mutations row with a dangling target_message_id FK.
+    const threadId = this.threadOf(messageId);
     // 5e guard: machine edit of human entry → no-op (human content survives
     // byte-intact). Q2-minimal: no competing row is written; the un-changed
     // original is the behavioral proof. A human edit is always applied.
@@ -109,7 +119,7 @@ export class WriteGate {
     db.query(
       "INSERT INTO mutations (id, target_message_id, kind, actor, reason, replacement_content, authored_by, created_at) VALUES (?, ?, 'correction', ?, ?, ?, ?, ?)",
     ).run(crypto.randomUUID(), messageId, ctx.actor, reason ?? null, replacement, ctx.authored_by, now);
-    this.store.mirrorEvent(this.threadOf(messageId), { event: "edit", target_message_id: messageId, replacement, actor: ctx.actor, created_at: now });
+    this.store.mirrorEvent(threadId, { event: "edit", target_message_id: messageId, replacement, actor: ctx.actor, created_at: now });
   }
 
   /**

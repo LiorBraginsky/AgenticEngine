@@ -164,5 +164,37 @@ test("5e: a MACHINE forget cannot scrub a human (role=user) entry; content byte-
   const row = store.rawDb().query("SELECT content FROM messages WHERE id = ?").get(mid!) as { content: string };
   expect(row.content).toBe("deploy is yeet.sh"); // NOT scrubbed — behavioral proof, no audit row
   expect(store.readThreadTail(t, 10)).toEqual([{ role: "user", content: "deploy is yeet.sh" }]);
+  // N2: zero tombstone rows written — machine-forget must not record any tombstone
+  const tombCount = (store.rawDb().query("SELECT COUNT(*) AS n FROM mutations WHERE kind='tombstone' AND target_message_id=?").get(mid!) as { n: number }).n;
+  expect(tombCount).toBe(0);
+  store.close();
+});
+
+// ---- B1: edit/forget on non-existent messageId must throw before any INSERT ----
+
+test("B1: edit() on a non-existent messageId throws AND leaves zero mutations rows", () => {
+  const { store, gate } = fresh();
+  expect(() => gate.edit("nonexistent-id", "new content", CTX)).toThrow("nonexistent-id");
+  const mutCount = (store.rawDb().query("SELECT COUNT(*) AS n FROM mutations").get() as { n: number }).n;
+  expect(mutCount).toBe(0);
+  store.close();
+});
+
+test("B1: edit() on a non-existent messageId with machine ctx also throws AND leaves zero mutations rows", () => {
+  const { store, gate } = fresh();
+  expect(() => gate.edit("nonexistent-id", "new content", MCTX)).toThrow("nonexistent-id");
+  const mutCount = (store.rawDb().query("SELECT COUNT(*) AS n FROM mutations").get() as { n: number }).n;
+  expect(mutCount).toBe(0);
+  store.close();
+});
+
+// ---- S2: quarantine markers are idempotent (INSERT OR IGNORE + UNIQUE target_id) ----
+
+test("S2: recording a quarantine marker twice for the same target stays at 1 row (idempotent)", () => {
+  const { store } = fresh();
+  store.recordQuarantine({ target_id: "msg-abc", rule: "injection-directive" });
+  store.recordQuarantine({ target_id: "msg-abc", rule: "injection-directive" }); // repeat
+  const rows = store.readQuarantineMarkers();
+  expect(rows.filter((r) => r.target_id === "msg-abc").length).toBe(1);
   store.close();
 });

@@ -24,7 +24,14 @@ export function registerDistiller(
     const clean = result.facts.filter((f) => {
       const v = scanner.scan({ content: f.fact, scope: f.scope, authored_by: f.authored_by });
       if (!v.ok) {
-        store.recordQuarantine({ target_id: f.provenance, rule: v.rule });
+        // Only record a quarantine marker when the provenance is a message UUID (not a
+        // thread-level "thread:<uuid>" ref). isMessageQuarantined queries by message UUID
+        // and can never match a thread-level provenance, making such a marker write-only.
+        // Thread-level facts are re-blocked deterministically on every dismiss by the
+        // scanner itself — no durable marker is needed for them.
+        if (f.provenance && !f.provenance.startsWith("thread:")) {
+          store.recordQuarantine({ target_id: f.provenance, rule: v.rule });
+        }
         return false;
       }
       return true;

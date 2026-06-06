@@ -158,6 +158,12 @@ test("DoD#2: a machine distill/edit+forget does NOT overwrite a human entry — 
   // Step 4: construct a WriteGate over the REAL on-disk store and attempt both
   // a machine edit AND a machine forget of the human turn.
   // Per 5e: both operations are no-ops when the target is human-authored.
+  // N3: a second MemoryStore is opened against the daemon's live SQLite file.
+  // WAL mode (set in store.ts) reduces SQLITE_BUSY risk; the operations are
+  // sequential (runTurn fully resolves before this store opens and gate calls
+  // are synchronous), so concurrent-write races are theoretical on this harness.
+  // Residual risk on a loaded CI runner is accepted — restructuring to avoid it
+  // would require a full test-architecture change that is out of scope for MF-03.
   const gate = new WriteGate(store, new RuleBasedScanner());
   gate.edit(messageId, "deploy is robot.sh", { actor: "agent", authored_by: "machine" }, "machine distill");
   gate.forget(messageId, { actor: "agent", authored_by: "machine" }, "machine distill");

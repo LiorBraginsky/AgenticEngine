@@ -169,10 +169,13 @@ export class MemoryStore {
 
   /** Record a minimal quarantine marker so the distiller can skip a flagged message
    *  at distill time (a later thread-dismiss). The marker is the MECHANISM the
-   *  skip-filter needs for cross-time durability — not an MF-05 audit feed (Q2-minimal). */
+   *  skip-filter needs for cross-time durability — not an MF-05 audit feed (Q2-minimal).
+   *  INSERT OR IGNORE makes repeat quarantines idempotent: the UNIQUE(target_id) constraint
+   *  in the DDL means a second scan of the same message/provenance is silently dropped,
+   *  preventing unbounded row growth on repeated dismiss cycles. */
   recordQuarantine(e: QuarantineMarkerInput): void {
     this.db
-      .query("INSERT INTO quarantine_markers (id, target_id, rule, created_at) VALUES (?, ?, ?, ?)")
+      .query("INSERT OR IGNORE INTO quarantine_markers (id, target_id, rule, created_at) VALUES (?, ?, ?, ?)")
       .run(crypto.randomUUID(), e.target_id, e.rule, Date.now());
   }
 

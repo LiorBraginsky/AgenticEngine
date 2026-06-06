@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS distillation_events (
 
 CREATE TABLE IF NOT EXISTS quarantine_markers (
   id           TEXT PRIMARY KEY,
-  target_id    TEXT NOT NULL,
+  target_id    TEXT NOT NULL UNIQUE,             -- one marker per target; INSERT OR IGNORE makes repeat quarantines idempotent
   rule         TEXT NOT NULL,
   created_at   INTEGER NOT NULL
 );

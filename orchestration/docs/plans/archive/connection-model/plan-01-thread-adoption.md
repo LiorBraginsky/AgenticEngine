@@ -1,3 +1,5 @@
+> 🗄️ ARCHIVED 2026-06-10 — shipped. Historical record; do not edit.
+
 # Connection Model Chunk 01 — Thread Continuation & Daemon Adoption — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. All paths absolute. cwd resets between bash calls — always use absolute paths.
@@ -12,7 +14,7 @@
 
 **Tech Stack:** TypeScript on Bun; `bun:sqlite`; Zod-frozen `@agentic/protocol`; `bun test` with real on-disk SQLite (`*.daemon.test.ts`) and DOM-free injected-factory seam tests.
 
-## Status: review-complete (engine-reviewer 2026-06-10: 0 blockers / 0 majors / 2 NIT both optional-cosmetic; §7.1 drift-check for chunks 02/03 clean — provisional dismiss block stays dormant)
+## Status: shipped (PR #33, merge e1431f4, 2026-06-10 — engine-reviewer 0 blockers / 0 majors / 2 NIT optional-cosmetic; §7.1 drift-check for chunks 02/03 clean; post-merge main re-verified green)
 
 ---
 

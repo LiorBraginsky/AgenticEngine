@@ -1,6 +1,6 @@
 # Chunk 1: Thread continuation through the real overlay (client-minted thread_id + daemon adoption)
 
-**Status:** todo
+**Status:** in-progress
 **Created:** 2026-06-10
 **Phase:** Conversation & Interaction Model · connection-model (demo-unblocking slice, 1 of 3)
 **Estimated size:** ~0.5–1 day

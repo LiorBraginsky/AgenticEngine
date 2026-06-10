@@ -137,3 +137,44 @@ test("ConnectionManager: handshake timer disarms on first matching tool_call (tu
   fake.fire("message", { data: JSON.stringify({ type: "session_end", session_id: "s", reason: "completed" }) });
   await expect(p).resolves.toEqual({ sessionId: "s", reason: "completed" });
 }, 5000);
+
+// ---------------------------------------------------------------------------
+// 2d — Mid-flight drop → local cancelled-equivalent, nothing on wire, no unhandled rejection
+// ---------------------------------------------------------------------------
+
+test("ConnectionManager: mid-flight socket drop settles the active turn as cancelled-equivalent, sends NOTHING on the wire", async () => {
+  const fake = makeFake();
+  const mgr = new ConnectionManager(() => fake.ws, {
+    // No-op reconnect scheduling so the test does not open a second socket.
+    setTimeoutFn: () => 0 as unknown as ReturnType<typeof setTimeout>,
+    clearTimeoutFn: () => {},
+  });
+  mgr.connect();
+  const p = mgr.runSession("hi", { handshakeTimeoutMs: 10_000 });
+  fake.fire("open");
+  const cid = (JSON.parse(fake.sent.at(-1)!) as { client_session_id: string }).client_session_id;
+  fake.fire("message", { data: JSON.stringify({ type: "session_ack", session_id: "s", client_session_id: cid }) });
+  const sentBeforeDrop = fake.sent.length; // only the session_start
+
+  // Socket drops mid-flight (before session_end).
+  fake.fire("close");
+
+  // The turn settles (resolves, not rejects) as cancelled — main.ts treats reason like a daemon cancel.
+  await expect(p).resolves.toEqual({ sessionId: "s", reason: "cancelled" });
+  // NOTHING was written to the wire on drop (the socket is gone).
+  expect(fake.sent.length).toBe(sentBeforeDrop);
+});
+
+test("ConnectionManager: mid-flight drop produces NO unhandled rejection", async () => {
+  const fake = makeFake();
+  const mgr = new ConnectionManager(() => fake.ws, {
+    setTimeoutFn: () => 0 as unknown as ReturnType<typeof setTimeout>,
+    clearTimeoutFn: () => {},
+  });
+  mgr.connect();
+  const p = mgr.runSession("hi", { handshakeTimeoutMs: 10_000 });
+  fake.fire("open");
+  fake.fire("close"); // drop before any ack — pendingByCid path
+  // Must resolve cancelled (confirmedSessionId unknown → empty string sessionId).
+  await expect(p).resolves.toEqual({ sessionId: "", reason: "cancelled" });
+});

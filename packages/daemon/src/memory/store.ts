@@ -409,6 +409,16 @@ export class MemoryStore {
     }));
   }
 
+  /**
+   * List all threads ordered by last_active_at DESC (T2.1a — additive SELECT only).
+   * Used by GET /memory/threads to populate the History page thread list.
+   */
+  listThreads(): { thread_id: string; title: string | null; last_active_at: number }[] {
+    return this.db
+      .query("SELECT thread_id, title, last_active_at FROM threads ORDER BY last_active_at DESC")
+      .all() as { thread_id: string; title: string | null; last_active_at: number }[];
+  }
+
   /** Raw helpers used by WriteGate (mutations) — kept here so all SQL lives in the store. */
   rawDb(): Database {
     return this.db;

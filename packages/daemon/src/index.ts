@@ -11,6 +11,8 @@ import { ThreadLifecycle } from "./memory/thread-lifecycle.js";
 import { ConsolidationHook } from "./memory/consolidation-hook.js";
 import { buildMemoryProvider } from "./memory/memory-provider-selector.js";
 import { registerDistiller } from "./memory/distiller-registration.js";
+import { Hatch } from "./memory/hatch.js";
+import { handleMemoryHttp } from "./memory/http-routes.js";
 
 export const DAEMON_HOST = "127.0.0.1"; // loopback only (ADR-0003 p.3)
 export const DAEMON_PORT = 7777;
@@ -40,15 +42,25 @@ export function startDaemon(port: number = DAEMON_PORT) {
   const store = new MemoryStore({ dataDir });
   const scanner = new RuleBasedScanner();
   const gate = new WriteGate(store, scanner);
+  const hatch = new Hatch(store, gate);
   const memoryProvider = buildMemoryProvider();
   const hook = new ConsolidationHook(store);
   registerDistiller(hook, store, memoryProvider, scanner);
   const lifecycle = new ThreadLifecycle(store, gate, memoryProvider);
 
+  const memoryDeps = { hatch, store };
+
   return Bun.serve<SocketData>({
     hostname: DAEMON_HOST,
     port,
     fetch(req, server) {
+      const url = new URL(req.url);
+      // Memory HTTP surface — BEFORE origin gate (ADR-0013 Option B: reads open on loopback).
+      // /history.html will 404 via handleMemoryHttp until T2.2a builds it — that's correct.
+      if (url.pathname.startsWith("/memory/") || url.pathname === "/history.html") {
+        return handleMemoryHttp(req, url, memoryDeps);
+      }
+      // ── unchanged below: WS upgrade path keeps the origin gate ──
       // Origin-allowlist gate BEFORE upgrade (interim CSWSH mitigation).
       if (!isOriginAllowed(req.headers.get("origin"))) {
         return new Response("Forbidden origin", { status: 403 });

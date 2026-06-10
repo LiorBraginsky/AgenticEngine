@@ -127,14 +127,25 @@ case "$MODE" in
   print)
     cat "$brief_file"
     echo
-    echo "── to launch a fresh orchestrator chat:"
-    echo "   tmux new-session -d -s '$session' \"claude \\\"\$(cat '$brief_file')\\\"\""
+    echo "── to launch this worker into the control room (board top, worker bottom):"
+    echo "   bash '$0' ${FEATURE} --launch    then:  tmux attach -t conveyor"
     ;;
   launch)
     command -v tmux   >/dev/null 2>&1 || { echo "tmux not installed" >&2; exit 1; }
     command -v claude >/dev/null 2>&1 || { echo "claude CLI not found" >&2; exit 1; }
-    tmux new-session -d -s "$session" "claude \"\$(cat '$brief_file')\""
-    echo "── launched tmux session '$session' (interactive claude → subscription)."
-    echo "   watch: tmux attach -t $session    |    kill: tmux kill-session -t $session"
+    # Control room (PIPELINE §11, Layout A): one `conveyor` session — board on top,
+    # worker below. One worker at a time in the shared tree (Finding #3).
+    BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
+    if ! tmux has-session -t conveyor 2>/dev/null; then
+      tmux new-session -d -s conveyor -n room "bash '$BIN_DIR/conveyor-status.sh' --watch 10"
+      tmux split-window -t conveyor:room -v "exec \"\${SHELL:-/bin/zsh}\""
+      tmux select-layout -t conveyor:room even-vertical
+    fi
+    # respawn the bottom (worker) pane with this worker — one worker at a time
+    tmux respawn-pane -k -t conveyor:room.1 "claude \"\$(cat '$brief_file')\""
+    tmux select-pane -t conveyor:room.1 -T "worker:${FEATURE}-${nn}" 2>/dev/null || true
+    echo "── launched ${FEATURE} chunk ${nn} in the control room (pane conveyor:room.1, subscription)."
+    echo "   see it:  tmux attach -t conveyor    (board top, worker bottom; Ctrl-b d = detach)"
+    echo "   or:      bash '$BIN_DIR/conveyor-room.sh'"
     ;;
 esac

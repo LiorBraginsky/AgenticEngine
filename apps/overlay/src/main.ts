@@ -14,8 +14,8 @@ import { LogicalPosition } from "@tauri-apps/api/dpi";
 import { currentMonitor } from "@tauri-apps/api/window";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import type { WebSocketFactory } from "./ws/types.js";
-import { runSession } from "./ws/session-client.js";
 import type { ToolCallContext } from "./ws/session-client.js";
+import { ConnectionManager } from "./ws/connection-manager.js";
 import type { ColorSwatch } from "@agentic/protocol";
 import { HideScheduler } from "./lifecycle/hide-scheduler.js";
 import { statusForEndReason } from "./lifecycle/session-end-reason.js";
@@ -33,6 +33,11 @@ const factory: WebSocketFactory = (url) => {
       s.addEventListener(t, (e) => cb({ data: (e as MessageEvent).data })),
   };
 };
+
+// CM-02: one persistent connection for the overlay's lifetime. Opened on activation
+// (module eval = overlay webview created). Close-on-dismiss is chunk 03 — NO teardown here.
+const connection = new ConnectionManager(factory);
+connection.connect();
 
 // ---------------------------------------------------------------------------
 // DOM references — guarded lookups (NIT: no unchecked casts)
@@ -229,7 +234,7 @@ input.addEventListener("keydown", (e: KeyboardEvent) => {
       currentThreadId = crypto.randomUUID();
     }
 
-    runSession(text, factory, {
+    connection.runSession(text, {
       threadId: currentThreadId,
       onToolCall,
       onShowText,

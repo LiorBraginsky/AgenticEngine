@@ -22,7 +22,7 @@ import type { Envelope, ColorPickerPrimitive, ColorSwatch } from "@agentic/proto
 import { decideRender, decideTextRender, buildToolResult, buildToolCancel } from "./tool-call-handler.js";
 import type { WebSocketFactory } from "./types.js";
 
-const WS_URL = "ws://127.0.0.1:7777";
+export const WS_URL = "ws://127.0.0.1:7777";
 
 /**
  * Default handshake timeout for real single-turn LLM latency.
@@ -37,7 +37,7 @@ const WS_URL = "ws://127.0.0.1:7777";
  * session_ack IMMEDIATELY on session_start, before the LLM call, then stream
  * content) is deferred — see known-gotchas #42 / #43.
  */
-const DEFAULT_HANDSHAKE_TIMEOUT_MS = 30_000;
+export const DEFAULT_HANDSHAKE_TIMEOUT_MS = 30_000;
 
 /**
  * The frozen session_start shape derived from the Envelope union.
@@ -289,6 +289,64 @@ export function runSession(
       fail(new Error("WebSocket closed before session_end received"));
     });
   });
+}
+
+/**
+ * Per-turn routing context held by the ConnectionManager's dispatcher (CM-02).
+ * Single-flight today; the dispatcher Map holds at most one (gotcha #45 unchanged).
+ */
+export interface SessionContext {
+  clientSessionId: string;
+  confirmedSessionId?: string;
+  options: RunSessionOptions;
+  settle: (result: SessionResult) => void;       // resolve the turn promise
+  failTurn: (err: Error) => void;                  // reject the turn promise
+  disarmTimeout: () => void;
+  send: (data: string) => void;                    // shared-socket write
+  settled: boolean;
+}
+
+/**
+ * Routes ONE parsed-and-validated inbound envelope into a SessionContext,
+ * reusing the SAME logic as runSession's message handler (decideRender /
+ * decideTextRender / buildToolResult / buildToolCancel). NEVER throws (gotcha #9).
+ * Unknown/non-matching frames are silently dropped.
+ */
+export function routeInbound(env: Envelope, ctx: SessionContext): void {
+  if (ctx.settled) return;
+
+  if (env.type === "session_ack") {
+    if (env.client_session_id === ctx.clientSessionId) {
+      ctx.confirmedSessionId = env.session_id;
+    }
+    return;
+  }
+  if (env.type === "tool_call") {
+    const decision = decideRender(env, ctx.confirmedSessionId);
+    if (decision.kind === "render") {
+      ctx.disarmTimeout();
+      const { session_id, call_id, picker } = decision;
+      ctx.options.onToolCall?.({
+        picker, sessionId: session_id, callId: call_id,
+        sendResult: (picked) => { if (!ctx.settled) ctx.send(JSON.stringify(buildToolResult(session_id, call_id, picked))); },
+        sendCancel: () => { if (!ctx.settled) ctx.send(JSON.stringify(buildToolCancel(session_id, call_id))); },
+      });
+      return;
+    }
+    const textDecision = decideTextRender(env, ctx.confirmedSessionId);
+    if (textDecision.kind === "render-text") {
+      ctx.disarmTimeout();
+      ctx.options.onShowText?.(textDecision.content);
+    }
+    return;
+  }
+  if (env.type === "session_end") {
+    if (ctx.confirmedSessionId !== undefined && env.session_id === ctx.confirmedSessionId) {
+      ctx.settle({ sessionId: env.session_id, reason: env.reason });
+    }
+    return;
+  }
+  // tool_result / tool_cancel / session_start inbound: not relevant to the overlay — ignore.
 }
 
 /**

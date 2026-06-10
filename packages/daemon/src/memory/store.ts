@@ -37,6 +37,7 @@ export interface DistillationEventRow {
   facts_produced: number;
   trigger: string;
   distiller_version: string;
+  created_at: number;
 }
 
 export interface MessageForDistillRow {
@@ -330,7 +331,7 @@ export class MemoryStore {
   /** SELECT distillation_events for a thread, ordered by created_at ASC. */
   readDistillationEvents(threadId: string): DistillationEventRow[] {
     return this.db
-      .query("SELECT facts_produced, trigger, distiller_version FROM distillation_events WHERE thread_id = ? ORDER BY created_at ASC")
+      .query("SELECT facts_produced, trigger, distiller_version, created_at FROM distillation_events WHERE thread_id = ? ORDER BY created_at ASC")
       .all(threadId) as DistillationEventRow[];
   }
 

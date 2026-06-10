@@ -12,7 +12,7 @@
 
 **Tech Stack:** TypeScript on Bun; `bun:sqlite`; Zod-frozen `@agentic/protocol`; `bun test` with real on-disk SQLite (`*.daemon.test.ts`) and DOM-free injected-factory seam tests.
 
-## Status: in-progress (Phase 2 — implementation)
+## Status: review-complete (engine-reviewer 2026-06-10: 0 blockers / 0 majors / 2 NIT both optional-cosmetic; §7.1 drift-check for chunks 02/03 clean — provisional dismiss block stays dormant)
 
 ---
 
@@ -409,7 +409,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ---
 
-### Task 3 — Overlay: track `currentThreadId`, mint on first submit, pass on every turn
+### Task 3 — Overlay: track `currentThreadId`, mint on first submit, pass on every turn ✅ DONE (commit `86b3f5a` — seam RED 2 fail → GREEN 17 pass; orchestrator independently re-verified: typecheck 0 / lint:strict 0 / bun test 259 pass 0 fail / frozen diffs empty)
 
 **Files:**
 - Modify: `apps/overlay/src/ws/session-client.ts:68-106,129-136`

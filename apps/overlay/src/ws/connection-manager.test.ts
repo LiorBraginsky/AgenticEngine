@@ -95,3 +95,45 @@ test("ConnectionManager: 3 turns reuse ONE socket — factory called exactly onc
   expect(factory).toHaveBeenCalledTimes(1); // ONE socket for all three turns
   expect(fake.closed).toBe(false);          // never closed between turns (close-on-dismiss is chunk 03)
 });
+
+// ---------------------------------------------------------------------------
+// 2c — Per-turn handshake timeout + HandshakeTimeoutError survives
+// ---------------------------------------------------------------------------
+
+test("ConnectionManager: per-turn handshake timeout fires HandshakeTimeoutError when daemon never replies", async () => {
+  const fake = makeFake();
+  const mgr = new ConnectionManager(() => fake.ws);
+  mgr.connect();
+  const p = mgr.runSession("hi", { handshakeTimeoutMs: 2000 });
+  fake.fire("open");
+  // No ack/tool_call ever — wait past the timeout via a real short timer.
+  let caught: unknown;
+  try { await p; } catch (e) { caught = e; }
+  expect(caught).toBeInstanceOf(Error);
+  expect((caught as Error).name).toBe("HandshakeTimeoutError");
+}, 5000);
+
+test("ConnectionManager: handshake timer disarms on first matching tool_call (turn stays alive past the timeout)", async () => {
+  const fake = makeFake();
+  const mgr = new ConnectionManager(() => fake.ws);
+  mgr.connect();
+  let ctxCaptured = false;
+  const p = mgr.runSession("hi", {
+    handshakeTimeoutMs: 200,
+    onToolCall: (ctx) => { ctxCaptured = true; /* user not acting yet */ void ctx; },
+  });
+  fake.fire("open");
+  const cid = (JSON.parse(fake.sent.at(-1)!) as { client_session_id: string }).client_session_id;
+  fake.fire("message", { data: JSON.stringify({ type: "session_ack", session_id: "s", client_session_id: cid }) });
+  fake.fire("message", { data: JSON.stringify({ type: "tool_call", session_id: "s", call_id: "c", payload: VALID_TOOL_CALL_PAYLOAD }) });
+  expect(ctxCaptured).toBe(true);
+  // Wait past the (now disarmed) 200ms timeout — the turn must NOT reject.
+  await new Promise((r) => setTimeout(r, 350));
+  let settled = false;
+  p.then(() => { settled = true; }, () => { settled = true; });
+  await Promise.resolve();
+  expect(settled).toBe(false); // still pending — timer was disarmed, no spurious rejection
+  // Complete it.
+  fake.fire("message", { data: JSON.stringify({ type: "session_end", session_id: "s", reason: "completed" }) });
+  await expect(p).resolves.toEqual({ sessionId: "s", reason: "completed" });
+}, 5000);

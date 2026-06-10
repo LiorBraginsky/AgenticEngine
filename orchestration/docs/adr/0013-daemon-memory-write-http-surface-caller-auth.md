@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-06-06
 deciders: [lior]
 tags: [adr, security, daemon, transport, memory, http, caller-auth]
@@ -9,13 +9,17 @@ tags: [adr, security, daemon, transport, memory, http, caller-auth]
 
 ## Status
 
-`proposed`
+`accepted` (Lior, 2026-06-10) — **Option B**.
 
-> This is a **decision package for Lior to accept/amend**. It is **not** accepted.
-> Status `proposed → accepted` is a Lior-only gate ([[../PIPELINE]] §5.2). The
-> recommended option is **(B)**; all three are presented so Lior can rule. The
-> daemon HTTP route (MF-05 Tranche 2, `T2.1`) **must not be built until this ADR
-> is accepted** — see [[../plans/memory-foundation/plan-05-hatch]] Gates.
+> Accepted per [[../PIPELINE]] §5.2 (Lior-only gate). Ruling: **Option B**
+> (read-open-on-loopback, write-requires-token). MF-05 Tranche 2 (`T2.1`, the
+> daemon HTTP write route) is now **unblocked** to build — token-gated on writes.
+>
+> **Acceptance rider (binding):** read-open-on-loopback is a *staged interim only*.
+> **Token-gating the read path (→ the Option A end-state) is a REQUIRED part of the
+> security-hardening pass (PR #18) and a pre-public-release gate** — it rides the
+> same known-gotcha #31 release gate. Read-disclosure of memory to local processes
+> is accepted ONLY for the single-user dev phase, never as the resting state.
 
 ## Context
 
@@ -197,14 +201,14 @@ durable across the projection, not just over `messages.id` targets.
 
 ### What we'll regret in 6 months (predict it now)
 
-> [TODO: Lior — your prediction. Candidate regrets: "the reads-open compromise
-> meant some local app slurped the whole super-chat and we wished we'd just
-> token-gated reads too (Option A) from day one"; or, the opposite, "we
-> over-rotated on a single-user local read surface and the dual-posture confusion
-> cost more than it saved — should have shipped C as honest interim parity and
-> done the whole token in the hardening pass"; or "the daemon HTTP route was the
-> camel's nose — six months later it's a sprawling admin API and ADR-0003's
-> WS-only intent is a fiction."]
+> **Prediction (Lior, 2026-06-10):** the likeliest regret is the **camel's nose** —
+> the daemon's first mutating HTTP route normalizes "just one more" endpoint, and
+> ADR-0003's WS-only intent quietly erodes into a sprawling daemon admin API.
+> Mitigation accepted now: every new daemon HTTP route MUST cite this ADR and justify
+> why it isn't WS; a **third** mutating route is the trigger to stop and design the
+> HTTP surface deliberately (rule of three), not accrete it. Lower-probability regret:
+> reads-open outlives the dev phase because the hardening pass slips — the binding
+> rider above exists precisely to prevent that.
 
 ## Alternatives Considered
 

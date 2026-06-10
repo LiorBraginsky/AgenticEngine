@@ -451,6 +451,39 @@ test("runSession fires onSessionStart once, immediately after session_start is s
 });
 
 // ---------------------------------------------------------------------------
+// Task 3 (CM-01): threadId option — buildSessionStart + runSession
+// ---------------------------------------------------------------------------
+test("buildSessionStart includes thread_id when supplied (continuation turn)", () => {
+  const tid = "11111111-2222-4333-8444-555555555555";
+  const { msg } = buildSessionStart("hello", tid);
+  expect(msg.thread_id).toBe(tid);
+  expect(parseEnvelope(msg).kind).toBe("ok"); // still a valid frozen-contract session_start
+});
+
+test("buildSessionStart omits thread_id when not supplied (first turn / new conversation)", () => {
+  const { msg } = buildSessionStart("hello");
+  expect(msg.thread_id).toBeUndefined();
+});
+
+test("runSession sends session_start carrying options.threadId (continuation turn over the wire)", () => {
+  const fake = makeFake();
+  const tid = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  void runSession("hi", () => fake.ws, { threadId: tid });
+  fake.fire("open", {});
+  const sent0 = JSON.parse(fake.sent[0]!) as { type: string; thread_id?: string };
+  expect(sent0.type).toBe("session_start");
+  expect(sent0.thread_id).toBe(tid);
+});
+
+test("runSession omits thread_id when options.threadId is absent (first turn mints client-side, daemon adopts)", () => {
+  const fake = makeFake();
+  void runSession("hi", () => fake.ws, {});
+  fake.fire("open", {});
+  const sent0 = JSON.parse(fake.sent[0]!) as { type: string; thread_id?: string };
+  expect(sent0.thread_id).toBeUndefined();
+});
+
+// ---------------------------------------------------------------------------
 // Fix 1 (review hardening): deterministic HandshakeTimeoutError wins race
 //
 // The timeout handler must set `settled = true` / `clearTimeout(timer)` BEFORE

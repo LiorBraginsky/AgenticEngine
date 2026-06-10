@@ -1,5 +1,6 @@
 import type { Envelope } from "@agentic/protocol";
 import type { MemoryStore } from "./store.js";
+import { isUuidShaped } from "./store.js";
 import type { WriteGate } from "./write-gate.js";
 import type { SessionMessage } from "../providers/provider.js";
 import type { MemoryProvider } from "./memory-provider.js";
@@ -46,11 +47,16 @@ export class ThreadLifecycle {
       const priorMessages = this.store.readThreadTail(requested, TAIL_LIMIT);
       return { threadId: requested, priorMessages };
     }
-    // No / unknown thread_id ⇒ mint a NEW thread.
-    // Inject the cross-thread distilled slice from prior threads (MF-02 injection-point).
-    // The slice is read-only context — endTurn's delta-flush excludes it from persistence
-    // because hydratedCount = slice.length, so only the turn's own messages are flushed.
-    const newThreadId = this.store.createThread();
+    // No / unknown thread_id ⇒ mint a NEW thread (MF-01 §3.1).
+    // CM-01 adoption (spec §3.3): an unknown-but-UUID-shaped thread_id is adopted
+    // as the new thread's id, so the overlay (which mints it client-side, since
+    // session_ack carries no thread_id) and the daemon agree on the durable id
+    // without any wire change. Non-UUID garbage is NOT adopted → fresh mint
+    // (gotcha #9: no garbage durable keys). Single write path through createThread.
+    const adoptId = requested && isUuidShaped(requested) ? requested : undefined;
+    const newThreadId = this.store.createThread(undefined, adoptId);
+    // Cross-thread distilled-slice injection (MF-02 injection-point) — fires on
+    // the adopted id identically, because it keys off the returned newThreadId.
     const priorMessages = this.memoryProvider
       ? await this.memoryProvider.retrieve(this.store, newThreadId)
       : [];

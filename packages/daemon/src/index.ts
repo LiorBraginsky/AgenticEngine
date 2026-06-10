@@ -13,6 +13,7 @@ import { buildMemoryProvider } from "./memory/memory-provider-selector.js";
 import { registerDistiller } from "./memory/distiller-registration.js";
 import { Hatch } from "./memory/hatch.js";
 import { handleMemoryHttp } from "./memory/http-routes.js";
+import { TokenStore } from "./memory/token-store.js";
 
 export const DAEMON_HOST = "127.0.0.1"; // loopback only (ADR-0003 p.3)
 export const DAEMON_PORT = 7777;
@@ -43,12 +44,13 @@ export function startDaemon(port: number = DAEMON_PORT) {
   const scanner = new RuleBasedScanner();
   const gate = new WriteGate(store, scanner);
   const hatch = new Hatch(store, gate);
+  const tokenStore = new TokenStore(dataDir);
   const memoryProvider = buildMemoryProvider();
   const hook = new ConsolidationHook(store);
   registerDistiller(hook, store, memoryProvider, scanner);
   const lifecycle = new ThreadLifecycle(store, gate, memoryProvider);
 
-  const memoryDeps = { hatch, store };
+  const memoryDeps = { hatch, store, tokenStore };
 
   return Bun.serve<SocketData>({
     hostname: DAEMON_HOST,

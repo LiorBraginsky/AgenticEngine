@@ -12,11 +12,13 @@
 
 import type { Hatch } from "./hatch.js";
 import type { MemoryStore } from "./store.js";
+import type { TokenStore } from "./token-store.js";
 
 export interface MemoryHttpDeps {
   hatch: Hatch;
   store: MemoryStore;
-  // tokenStore field added by T2.1b — not present yet
+  /** Added by T2.1b. Used by T2.1c write routes for bearer-token gating. */
+  tokenStore: TokenStore;
 }
 
 /**

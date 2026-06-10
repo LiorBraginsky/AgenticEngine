@@ -71,9 +71,10 @@ test("swap-proof: re-derive slice with FixedMarker over untouched archive; messa
   const threadRow = store.rawDb().query("SELECT thread_id FROM threads ORDER BY created_at ASC LIMIT 1").get() as { thread_id: string };
   const threadId = threadRow.thread_id;
 
-  // 3. Directly distill thread A via DumbTail (simulating the consolidation-hook dismiss path)
-  //    PROVISIONAL trigger fires only on same-WS thread-switch; each runTurn uses a fresh WS.
-  //    The store-level distill is the real-I/O proof that the archive is intact and distillable.
+  // 3. Directly distill thread A via DumbTail (simulating the consolidation-hook dismiss path).
+  //    CM-03 retired the provisional thread-switch trigger; dismiss now fires on close(ws)
+  //    (see dismiss-on-close.daemon.test.ts). This store-level distill is the real-I/O proof
+  //    that the archive is intact and distillable.
   const dumbTail = new DumbTailProvider();
   const distillResult = await dumbTail.distill(store, threadId);
   store.insertDistilledFacts(distillResult.facts, "dumb-tail");

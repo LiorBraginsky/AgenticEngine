@@ -20,6 +20,10 @@ type SocketData = {
   sessionIds: Set<string>;
   activeThreadId?: string;
   dismissedThreadIds?: Set<string>;
+  // CM-03: every durable thread this connection touched (one per session_start).
+  // close(ws) dismisses each not-yet-dismissed one. A single value (activeThreadId)
+  // is insufficient — a same-socket thread switch must dismiss BOTH on close (spec §3.2).
+  touchedThreadIds?: Set<string>;
 };
 
 function send(ws: { send(data: string): number }, msg: Envelope): void {
@@ -82,27 +86,12 @@ export function startDaemon(port: number = DAEMON_PORT) {
         let priorState: ProviderSessionState | undefined;
         let hydratedCount = 0;
         if (inbound.type === "session_start") {
-          // PROVISIONAL: thread-switch dismiss — superseded by connection-model CM-01 close(ws) path
-          // (spec: orchestration/docs/specs/2026-06-05-connection-model.md §3.2)
-          const prevThreadId = ws.data.activeThreadId;
-          const incomingThreadId = inbound.thread_id;
-          if (prevThreadId && prevThreadId !== incomingThreadId) {
-            if (!(ws.data.dismissedThreadIds?.has(prevThreadId))) {
-              // B1: dismiss errors must NOT crash the daemon or block the new session.
-              // Use finally so the Set is always updated — preventing retry-loops even
-              // on a partial/failed dismiss (we'd rather skip a re-distill than loop).
-              try {
-                await hook.dismiss(prevThreadId);
-              } catch (err) {
-                console.error("[daemon] dismiss error (non-fatal, thread:", prevThreadId, "):", err);
-              } finally {
-                (ws.data.dismissedThreadIds ??= new Set<string>()).add(prevThreadId);
-              }
-            }
-          }
           const begin = await lifecycle.beginTurn(inbound);
           turnThreadId = begin.threadId;
           ws.data.activeThreadId = turnThreadId;
+          // CM-03: remember this thread so close(ws) can dismiss every active thread
+          // on the connection (not just the last one).
+          if (turnThreadId) (ws.data.touchedThreadIds ??= new Set<string>()).add(turnThreadId);
           hydratedCount = begin.priorMessages.length;
           // Hydrate the thread tail into the messages[] seam (provider.ts:5).
           // phase:"done"/session_id:"" are don't-cares on start — every provider
@@ -146,12 +135,9 @@ export function startDaemon(port: number = DAEMON_PORT) {
 
         for (const out of result.outbound) send(ws, out);
       },
-      close(ws) {
-        // Leak-free cleanup: remove any sessions owned by this connection.
-        // S1: If the WS drops mid-turn (between session_start and phase==="done"),
-        // the accumulated messages[] would be lost without this flush.
-        // lifecycle.endTurn internally slices by hydratedCount so only the new-this-turn
-        // delta is persisted — the hydrated prefix is NOT re-written to the store.
+      async close(ws) {
+        // ── S1 partial-turn flush (UNCHANGED): persist any in-flight turn's delta
+        //    before dropping RAM, so the distiller (below) sees the final turn.
         for (const sid of ws.data.sessionIds) {
           const session = sessions.get(sid);
           const threadId = lifecycle.threadForSession(sid);
@@ -164,6 +150,23 @@ export function startDaemon(port: number = DAEMON_PORT) {
           }
           sessions.delete(sid);
           lifecycle.forgetSession(sid);
+        }
+
+        // ── CM-03: dismiss = close(ws). After the flush, consolidate EVERY active
+        //    (not-yet-dismissed) thread on this connection (spec §3.2; ADR-0014 d.2).
+        //    dismiss ⇒ persist + distill (ADR-0012): the thread is NOT deleted.
+        //    B1 discipline: each dismiss is non-fatal — log, never crash, never block
+        //    cleanup. finally always records the id so a partial/failed dismiss never
+        //    retry-loops (same discipline the retired provisional block used).
+        for (const threadId of ws.data.touchedThreadIds ?? []) {
+          if (ws.data.dismissedThreadIds?.has(threadId)) continue;
+          try {
+            await hook.dismiss(threadId);
+          } catch (err) {
+            console.error("[daemon] dismiss error on close (non-fatal, thread:", threadId, "):", err);
+          } finally {
+            (ws.data.dismissedThreadIds ??= new Set<string>()).add(threadId);
+          }
         }
       },
     },

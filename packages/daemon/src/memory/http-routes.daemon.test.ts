@@ -208,6 +208,46 @@ test("T2.1c-5: POST /memory/edit with bad body (missing replacement) → 400 bad
   expect(body.error).toBe("bad_body");
 });
 
+// ─── Guard: malformed percent-sequence in thread-id path → 400, not 500 ──────
+//
+// Route taken: direct call to handleMemoryHttp with a hand-built Request + URL
+// whose pathname contains "%ZZ" (a malformed percent-sequence).
+// Rationale: Bun/fetch passes "%ZZ" to the server unmodified (verified), so a
+// real-fetch variant through the daemon would also trigger the bug — but the
+// direct-call form avoids any chance the HTTP layer sanitises the path before
+// reaching our handler, making the test a pure unit-level proof of the guard.
+test("guard: GET /memory/thread/<malformed-%> → 400 bad_target_shape (not 500 URIError)", async () => {
+  const { handleMemoryHttp } = await import("./http-routes.js");
+  const { MemoryStore } = await import("./store.js");
+  const { TokenStore } = await import("./token-store.js");
+  const { Hatch } = await import("./hatch.js");
+  const { WriteGate } = await import("./write-gate.js");
+  const { RuleBasedScanner } = await import("./scanner/memory-scanner.js");
+  const { mkdtempSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { tmpdir } = await import("node:os");
+
+  const dir = mkdtempSync(join(tmpdir(), "mf05-malform-"));
+  const store = new MemoryStore({ dataDir: dir });
+  const tokenStore = new TokenStore(dir);
+  const gate = new WriteGate(store, new RuleBasedScanner());
+  const hatch = new Hatch(store, gate);
+  const deps = { hatch, store, tokenStore };
+
+  // Hand-build a URL whose pathname contains a malformed percent-sequence.
+  // The URL constructor preserves "%ZZ" as-is (it does not throw for it).
+  const malformedPath = "http://localhost/memory/thread/%ZZ";
+  const url = new URL(malformedPath);
+  const req = new Request(malformedPath, { method: "GET" });
+
+  const res = await handleMemoryHttp(req, url, deps);
+  expect(res.status).toBe(400);
+  const body = await res.json() as { error: string };
+  expect(body.error).toBe("bad_target_shape");
+
+  store.close();
+});
+
 // ─── T2.2a: GET /history.html — static History page ─────────────────────────
 
 // Test 9: GET /history.html → 200, content-type contains text/html, body contains

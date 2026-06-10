@@ -63,7 +63,13 @@ export async function handleMemoryHttp(
   // GET /memory/thread/:id
   const threadMatch = pathname.match(/^\/memory\/thread\/(.+)$/);
   if (threadMatch && req.method === "GET") {
-    const id = decodeURIComponent(threadMatch[1]!);
+    let id: string;
+    try {
+      id = decodeURIComponent(threadMatch[1]!);
+    } catch {
+      // Malformed percent-sequence in thread-id (e.g. "%ZZ") → reject before touching store.
+      return Response.json({ error: "bad_target_shape" }, { status: 400 });
+    }
     const result = await deps.hatch.view(id);
     return Response.json(result);
   }
@@ -174,6 +180,11 @@ async function parseBody(req: Request): Promise<ParseResult> {
  */
 function mapWriteError(err: unknown): Response {
   const msg = err instanceof Error ? err.message : String(err);
+  // NOTE: these regexes are coupled to the exact throw messages in write-gate.ts:
+  //   "not found"                           — thrown by WriteGate.threadOf
+  //   "use forget() to tombstone+scrub..."  — thrown by WriteGate.forgetFact UUID-guard
+  // If more throw sites are added, typed error codes (a discriminated Error subclass or
+  // an error-code enum) are the upgrade path — avoid multiplying regex fragments.
   if (/not found/i.test(msg)) {
     return Response.json({ error: "target_not_found" }, { status: 404 });
   }

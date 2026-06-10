@@ -104,7 +104,7 @@ test("S3: FixedMarkerProvider.retrieve returns thread-level facts even when a me
   // assertion holds because the keyspaces are disjoint: the fact's provenance is
   // "thread:<uuid>" while the tombstone written by gate.forget() is keyed on a
   // message-UUID. isFactTombstoned("thread:<uuid>") looks up a row that does not exist
-  // in the fact_tombstones table, so it returns false and the fact is NOT filtered out.
+  // in the `mutations` table (the tombstone keyspace), so it returns false and the fact is NOT filtered out.
   // This confirms that a thread-level fact correctly survives an unrelated message tombstone.
   const { store } = freshStore();
   const gate = new WriteGate(store, new RuleBasedScanner());

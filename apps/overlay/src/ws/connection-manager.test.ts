@@ -180,6 +180,88 @@ test("ConnectionManager: mid-flight drop produces NO unhandled rejection", async
 });
 
 // ---------------------------------------------------------------------------
+// Fix 1 — CONNECTING-window send throw: timer leak guard
+// ---------------------------------------------------------------------------
+
+test("ConnectionManager: if ws.send throws (CONNECTING-window race), runSession rejects and handshake timer is disarmed", async () => {
+  // Fake transport whose send() always throws (simulates CONNECTING-state InvalidStateError).
+  const sendError = new Error("InvalidStateError: WebSocket is in CONNECTING state");
+  sendError.name = "InvalidStateError";
+
+  const listeners: Record<string, ((ev: { data?: unknown }) => void)[]> = {};
+  const ws: WebSocketLike = {
+    send: () => { throw sendError; },
+    close: () => { (listeners["close"] ?? []).forEach((cb) => cb({})); },
+    addEventListener: (t, cb) => { (listeners[t] ??= []).push(cb as (ev: { data?: unknown }) => void); },
+  };
+  const fire = (t: string, ev: { data?: unknown } = {}) => (listeners[t] ?? []).forEach((cb) => cb(ev));
+
+  // Inject setTimeoutFn/clearTimeoutFn to track timer arm/disarm.
+  const timerHandles: ReturnType<typeof setTimeout>[] = [];
+  const clearedHandles: ReturnType<typeof setTimeout>[] = [];
+  let timerSeq = 0;
+
+  const mgr = new ConnectionManager(() => ws, {
+    setTimeoutFn: () => {
+      const handle = (++timerSeq) as unknown as ReturnType<typeof setTimeout>;
+      timerHandles.push(handle);
+      // Don't fire the callback — we just track that the timer was armed.
+      return handle;
+    },
+    clearTimeoutFn: (h) => { clearedHandles.push(h); },
+    random: () => 0,
+  });
+  mgr.connect();
+  // Simulate open event so ws is not undefined (the guard passes).
+  fire("open");
+
+  let caught: unknown;
+  try {
+    await mgr.runSession("hi", { handshakeTimeoutMs: 10_000 });
+  } catch (e) {
+    caught = e;
+  }
+
+  // runSession must reject (not hang).
+  expect(caught).toBeInstanceOf(Error);
+  // The handshake timer that was armed must have been cleared (no leak).
+  // The handshake timer is armed BEFORE send. After send throws → failTurn → disarmTimeout.
+  // The handshake timer handle must appear in clearedHandles.
+  expect(timerHandles.length).toBeGreaterThanOrEqual(1);
+  const handshakeHandle = timerHandles.at(-1)!; // last armed = handshake timer
+  expect(clearedHandles).toContain(handshakeHandle);
+});
+
+test("ConnectionManager: onSessionStart is NOT called when send throws in CONNECTING-window", async () => {
+  const sendError = new Error("InvalidStateError");
+  sendError.name = "InvalidStateError";
+
+  const listeners: Record<string, ((ev: { data?: unknown }) => void)[]> = {};
+  const ws: WebSocketLike = {
+    send: () => { throw sendError; },
+    close: () => {},
+    addEventListener: (t, cb) => { (listeners[t] ??= []).push(cb as (ev: { data?: unknown }) => void); },
+  };
+  const fire = (t: string, ev: { data?: unknown } = {}) => (listeners[t] ?? []).forEach((cb) => cb(ev));
+
+  let sessionStartCalled = false;
+  const mgr = new ConnectionManager(() => ws, {
+    setTimeoutFn: () => 0 as unknown as ReturnType<typeof setTimeout>,
+    clearTimeoutFn: () => {},
+    random: () => 0,
+  });
+  mgr.connect();
+  fire("open"); // ws is now set; send will throw
+
+  await mgr.runSession("hi", {
+    handshakeTimeoutMs: 10_000,
+    onSessionStart: () => { sessionStartCalled = true; },
+  }).catch(() => {});
+
+  expect(sessionStartCalled).toBe(false);
+});
+
+// ---------------------------------------------------------------------------
 // 2e — Reconnect schedule fires after drop (backoff wired)
 // ---------------------------------------------------------------------------
 

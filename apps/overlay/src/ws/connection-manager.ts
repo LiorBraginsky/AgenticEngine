@@ -61,6 +61,8 @@ export class ConnectionManager {
 
   private onSocketClose(): void {
     // Mid-flight drop: settle the active turn LOCALLY as cancelled (nothing on wire). D6.
+    // The pending Map holds ≤1 entry by the single-flight invariant (gotcha #45), so [0] is the
+    // one active confirmed turn — not a pick-first-of-many.
     const ctx = this.pendingByCid ?? [...this.pending.values()][0];
     if (ctx && !ctx.settled) {
       ctx.disarmTimeout();
@@ -119,7 +121,17 @@ export class ConnectionManager {
         ctx.failTurn(new Error("no connection"));
         return;
       }
-      this.ws.send(JSON.stringify(msg));
+      // Wrap send in try/catch: the socket may still be CONNECTING when runSession is called
+      // (rare race — ws is assigned in openSocket() before the "open" event fires). A send
+      // on a CONNECTING socket throws InvalidStateError synchronously inside this executor,
+      // AFTER the handshake timer is armed and BEFORE any disarm → timer leak + raw rejection.
+      // Funnelling through failTurn ensures the timer is disarmed via the existing path (option b).
+      try {
+        this.ws.send(JSON.stringify(msg));
+      } catch (sendErr) {
+        ctx.failTurn(sendErr instanceof Error ? sendErr : new Error(String(sendErr)));
+        return;
+      }
       options.onSessionStart?.();
     });
   }

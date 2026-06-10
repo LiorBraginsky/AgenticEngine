@@ -83,3 +83,33 @@ test("DoD — open socket → run a turn on thread T → close → status(T)=dis
   expect(events[0]!.trigger).toBe("dismiss");
   expect(statusOf(threadId)).toBe("dismissed");
 });
+
+test("DoD — two conversations on ONE connection (thread switch via new client-minted id) → close → BOTH dismissed", async () => {
+  const threadA = crypto.randomUUID();
+  const threadB = crypto.randomUUID();
+  const ws = await openSocket();
+  await turnOver(ws, "first conversation", threadA);
+  await turnOver(ws, "second conversation", threadB); // thread switch on the SAME socket
+  ws.close();
+
+  const eventsA = await waitForDistillationEvent(threadA);
+  const eventsB = await waitForDistillationEvent(threadB);
+  expect(eventsA.length).toBe(1);
+  expect(eventsB.length).toBe(1);
+  expect(statusOf(threadA)).toBe("dismissed");
+  expect(statusOf(threadB)).toBe("dismissed");
+});
+
+test("DoD — continuation still works through the persistent socket: session_start{thread_id} hydrates the tail (re-asserted post-retirement)", async () => {
+  const threadId = crypto.randomUUID();
+  const ws = await openSocket();
+  await turnOver(ws, "deploy is yeet.sh", threadId);
+  await turnOver(ws, "what is the deploy?", threadId); // continuation on the SAME thread, SAME socket
+  ws.close();
+
+  // Both turns coalesced into ONE thread, in order — hydration survived the provisional removal.
+  const db = new Database(join(dataDir, "memory.sqlite"));
+  const rows = db.query("SELECT content FROM messages WHERE thread_id = ? ORDER BY turn_index").all(threadId) as { content: string }[];
+  db.close();
+  expect(rows.map((r) => r.content)).toEqual(["deploy is yeet.sh", "what is the deploy?"]);
+});

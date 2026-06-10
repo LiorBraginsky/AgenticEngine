@@ -24,6 +24,7 @@ import type { Hatch } from "./hatch.js";
 import type { MemoryStore } from "./store.js";
 import type { TokenStore } from "./token-store.js";
 import type { WriteContext } from "./write-gate.js";
+import { HISTORY_HTML } from "./history-page.js";
 
 export interface MemoryHttpDeps {
   hatch: Hatch;
@@ -77,8 +78,14 @@ export async function handleMemoryHttp(
     return handleEdit(req, deps);
   }
 
-  // /history.html — T2.2a (not built yet)
-  // All other /memory/* paths or /history.html fall through to 404.
+  // GET /history.html — T2.2a (minimal static History page)
+  if (pathname === "/history.html" && req.method === "GET") {
+    return new Response(HISTORY_HTML, {
+      headers: { "content-type": "text/html; charset=utf-8" },
+    });
+  }
+
+  // All other /memory/* paths fall through to 404.
   return new Response("Not Found", { status: 404 });
 }
 

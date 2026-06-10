@@ -207,3 +207,21 @@ test("T2.1c-5: POST /memory/edit with bad body (missing replacement) → 400 bad
   const body = await res.json() as { error: string };
   expect(body.error).toBe("bad_body");
 });
+
+// ─── T2.2a: GET /history.html — static History page ─────────────────────────
+
+// Test 9: GET /history.html → 200, content-type contains text/html, body contains
+// "History" and "/memory/threads", body does NOT contain "localStorage".
+test("T2.2a-1: GET /history.html → 200 text/html, contains History + /memory/threads, no localStorage", async () => {
+  const res = await fetch(`http://127.0.0.1:${PORT}/history.html`);
+  expect(res.status).toBe(200);
+
+  const contentType = res.headers.get("content-type") ?? "";
+  expect(contentType).toContain("text/html");
+
+  const body = await res.text();
+  expect(body).toContain("History");
+  expect(body).toContain("/memory/threads");
+  // XSS/threat-model discipline: token must NEVER be persisted via web storage
+  expect(body).not.toContain("localStorage");
+});

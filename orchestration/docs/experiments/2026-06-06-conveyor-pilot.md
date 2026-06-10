@@ -124,6 +124,10 @@ Wall-clock та копі-пейст у baseline **не логувались** �
    §5.2-гейт Lior; мердж із proposed-ADR у диффі або «заморожує» неухвалене рішення,
    або лишає сироту в доках. → доданий у пре-мердж чек-лист Джиммі (перевірено на
    PR #28: ADR-0013 acceptance дочекались ДО мерджу T1 ✓).
+   *Follow-up (reviewer-флаг, 2026-06-10):* зараз це правило кодифіковане лише в
+   engine-orchestrator skill + тут — на pilot-review 2026-06-13 вирішити, чи внести його
+   в сам PIPELINE §5.2 precondition-set (щоб skill не був єдиним джерелом
+   merge-blocking правила; PIPELINE-правка = Lior-рівень, не Джиммі).
 
 **Дотичне (не у п'ятірці):** engine-orchestrator skill кодував СТАРУ гейт-модель
 (blanket plan-approval + «never merge yourself») — флаг від MF-04-воркера в ledger;

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { isOriginAllowed } from "./origin.js";
 import { buildInjector } from "./providers/injector.js";
-import type { ProviderSessionState, ProviderInput } from "./providers/provider.js";
+import type { AgentProvider, ProviderSessionState, ProviderInput } from "./providers/provider.js";
 import { MemoryStore } from "./memory/store.js";
 import { WriteGate } from "./memory/write-gate.js";
 import { RuleBasedScanner } from "./memory/scanner/memory-scanner.js";
@@ -14,6 +14,7 @@ import { registerDistiller } from "./memory/distiller-registration.js";
 import { Hatch } from "./memory/hatch.js";
 import { handleMemoryHttp } from "./memory/http-routes.js";
 import { TokenStore } from "./memory/token-store.js";
+import { stampProvenance } from "./memory/provenance-stamp.js";
 
 export const DAEMON_HOST = "127.0.0.1"; // loopback only (ADR-0003 p.3)
 export const DAEMON_PORT = 7777;
@@ -25,20 +26,37 @@ type SocketData = {
   dismissedThreadIds?: Set<string>;
 };
 
-function send(ws: { send(data: string): number }, msg: Envelope): void {
+function send(
+  ws: { send(data: string): number },
+  msg: Envelope,
+  port: number,
+  injectedMemory: boolean,
+): void {
+  // T2.3a: stamp the provenance line on show_text envelopes when this turn drew
+  // on cross-thread injected memory (new-thread branch, retrieve returned ≥1 message).
+  const out = injectedMemory ? stampProvenance(msg, port) : msg;
   // Outbound is validated against the frozen contract too (defence in depth).
-  const check = parseEnvelope(msg);
+  const check = parseEnvelope(out);
   if (check.kind !== "ok") {
     console.error("[daemon] refusing to send invalid outbound message", check);
     return;
   }
-  ws.send(JSON.stringify(msg));
+  ws.send(JSON.stringify(out));
 }
 
 const REDUCER_INPUT_TYPES = new Set(["session_start", "tool_result", "tool_cancel"]);
 
-export function startDaemon(port: number = DAEMON_PORT) {
-  const provider = buildInjector();
+/**
+ * Start the daemon on the given port.
+ *
+ * @param port    - TCP port (0 = OS-assigned ephemeral port). Defaults to DAEMON_PORT.
+ * @param provider - Optional AgentProvider override for testing. When omitted, the
+ *                   production provider is selected by the LLM_PROVIDER env var via
+ *                   buildInjector(). Tests inject a fake provider so they can drive
+ *                   show_text envelopes without a real LLM key or network call.
+ */
+export function startDaemon(port: number = DAEMON_PORT, provider?: AgentProvider) {
+  const activeProvider = provider ?? buildInjector();
   const dataDir = Bun.env.AGENTIC_DATA_DIR ?? join(homedir(), ".agentic-engine");
   const store = new MemoryStore({ dataDir });
   const scanner = new RuleBasedScanner();
@@ -52,7 +70,12 @@ export function startDaemon(port: number = DAEMON_PORT) {
 
   const memoryDeps = { hatch, store, tokenStore };
 
-  return Bun.serve<SocketData>({
+  // T2.3a: the websocket handler needs the actual bound port (which may differ from
+  // the requested `port` when port=0 is used for ephemeral test ports). Capture via
+  // a mutable ref that is set immediately after Bun.serve() returns.
+  let boundPort: number = port === 0 ? DAEMON_PORT : port;
+
+  const server = Bun.serve<SocketData>({
     hostname: DAEMON_HOST,
     port,
     fetch(req, server) {
@@ -95,6 +118,10 @@ export function startDaemon(port: number = DAEMON_PORT) {
         let turnThreadId: string | undefined;
         let priorState: ProviderSessionState | undefined;
         let hydratedCount = 0;
+        // T2.3a: true ONLY when the new-thread branch ran retrieve() AND returned ≥1
+        // prior message (cross-thread injected memory). Same-thread hydration
+        // (index.ts:114-117) must NOT set this — that is the user's own prior turns.
+        let injectedMemory = false;
         if (inbound.type === "session_start") {
           // PROVISIONAL: thread-switch dismiss — superseded by connection-model CM-01 close(ws) path
           // (spec: orchestration/docs/specs/2026-06-05-connection-model.md §3.2)
@@ -118,6 +145,16 @@ export function startDaemon(port: number = DAEMON_PORT) {
           turnThreadId = begin.threadId;
           ws.data.activeThreadId = turnThreadId;
           hydratedCount = begin.priorMessages.length;
+          // T2.3a: set injectedMemory iff this is the NEW-THREAD branch AND retrieve()
+          // returned ≥1 message. The NEW-THREAD branch is identified by the absence of
+          // a recognised inbound.thread_id (lifecycle.ts:45: threadExists check).
+          // Condition: no inbound.thread_id (or unknown) → new thread minted by lifecycle;
+          // AND priorMessages came from retrieve() (not readThreadTail).
+          // Proxy: inbound.thread_id absent/unknown → new thread = retrieve() path.
+          const isNewThread = !inbound.thread_id || !store.threadExists(inbound.thread_id);
+          if (isNewThread && begin.priorMessages.length > 0) {
+            injectedMemory = true;
+          }
           // Hydrate the thread tail into the messages[] seam (provider.ts:5).
           // phase:"done"/session_id:"" are don't-cares on start — every provider
           // reads only `.messages`; the mock adapter maps a session_start to a
@@ -130,7 +167,7 @@ export function startDaemon(port: number = DAEMON_PORT) {
           turnThreadId = lifecycle.threadForSession(inbound.session_id);
         }
 
-        const result = await provider.advance(priorState, inbound);
+        const result = await activeProvider.advance(priorState, inbound);
 
         if (!result.ok) {
           console.error("[daemon] provider typed error:", result.error);
@@ -158,7 +195,7 @@ export function startDaemon(port: number = DAEMON_PORT) {
           }
         }
 
-        for (const out of result.outbound) send(ws, out);
+        for (const out of result.outbound) send(ws, out, boundPort, injectedMemory);
       },
       close(ws) {
         // Leak-free cleanup: remove any sessions owned by this connection.
@@ -182,6 +219,10 @@ export function startDaemon(port: number = DAEMON_PORT) {
       },
     },
   });
+  // T2.3a: update boundPort to the actual OS-assigned port (matters when port=0).
+  // server.port is number | undefined per Bun types; port=0 always resolves to a real port.
+  if (server.port !== undefined) boundPort = server.port;
+  return server;
 }
 
 if (import.meta.main) {

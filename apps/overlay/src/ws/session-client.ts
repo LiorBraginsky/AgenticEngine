@@ -84,14 +84,30 @@ export interface RunSessionOptions {
    * so the suite stays fast.
    */
   handshakeTimeoutMs?: number;
+  /**
+   * CM-01 (spec §3.3): the durable thread to continue. The overlay mints this
+   * client-side (crypto.randomUUID, same posture as client_session_id) on the
+   * first submit of a conversation and passes it on every continuation turn;
+   * the daemon ADOPTS an unknown-but-UUID-shaped value as the new thread's id
+   * (session_ack carries no thread_id, so the client owns the mint). Absent ⇒
+   * a brand-new conversation (daemon mints, MF-01 §3.1).
+   * Designed as an option field (not a positional param) so chunk 02's
+   * persistent-socket refactor reuses runSession unchanged.
+   */
+  threadId?: string;
 }
 
 /**
  * Constructs a frozen-contract session_start envelope with a freshly minted
  * client_session_id for correlation. Uses web-standard crypto.randomUUID()
  * which is available in both Bun and WKWebView (ADR-0004 discipline).
+ *
+ * CM-01 (spec §3.3): optional `threadId` is spread onto the message only when
+ * present, so the no-thread_id frame stays byte-equivalent to the MF-01
+ * single-turn shape. The field already exists in the frozen contract
+ * (envelope.ts:39 — `session_start.thread_id: z.string().optional()`).
  */
-export function buildSessionStart(text: string): {
+export function buildSessionStart(text: string, threadId?: string): {
   msg: SessionStart;
   clientSessionId: string;
 } {
@@ -101,6 +117,10 @@ export function buildSessionStart(text: string): {
     trigger: "user",
     text,
     client_session_id: clientSessionId,
+    // CM-01: additive optional continuation handle (already in the frozen contract,
+    // envelope.ts:39). Only included when present so the no-thread_id frame stays
+    // byte-equivalent to the MF-01 single-turn shape.
+    ...(threadId ? { thread_id: threadId } : {}),
   };
   return { msg, clientSessionId };
 }
@@ -132,7 +152,7 @@ export function runSession(
   options: RunSessionOptions = {},
 ): Promise<SessionResult> {
   return new Promise<SessionResult>((resolve, reject) => {
-    const { msg, clientSessionId } = buildSessionStart(text);
+    const { msg, clientSessionId } = buildSessionStart(text, options.threadId);
     const ws = factory(WS_URL);
 
     // 6.3: single source of truth — one closure variable, read directly in

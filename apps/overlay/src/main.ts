@@ -177,6 +177,19 @@ void listen(EV_TEXT_DISMISS, () => {
 let inFlight = false;
 
 // ---------------------------------------------------------------------------
+// CM-01 (spec §3.3): the durable thread the overlay is continuing. Minted on
+// the first submit of a conversation (crypto.randomUUID — same client-mint
+// posture as client_session_id; session_ack carries no thread_id so the client
+// owns the id and the daemon ADOPTS it). Passed on EVERY subsequent session_start.
+//
+// DELIBERATE INTERIM WART (chunk 01): there is no reset here — the overlay
+// continues ONE ever-growing thread per app run (reset only by app restart).
+// The "new conversation" / reset-on-dismiss escape hatch arrives in chunk 03.
+// Do NOT add reset logic here (chunk-03 scope; PIPELINE §7.2).
+// ---------------------------------------------------------------------------
+let currentThreadId: string | undefined;
+
+// ---------------------------------------------------------------------------
 // Session-scoped hide timer (gotcha #33).
 // A monotonic token stamps each submit; the picker-teardown callback checks it
 // and no-ops if a newer session has already started. HideScheduler also
@@ -210,7 +223,14 @@ input.addEventListener("keydown", (e: KeyboardEvent) => {
     // Lock against re-submit (6.5a). Loader is shown via onSessionStart below.
     inFlight = true;
 
+    // CM-01: mint the thread id once, on the first submit of the app run; reuse
+    // it on every continuation turn. (No reset until chunk 03's dismiss.)
+    if (currentThreadId === undefined) {
+      currentThreadId = crypto.randomUUID();
+    }
+
     runSession(text, factory, {
+      threadId: currentThreadId,
       onToolCall,
       onShowText,
       onSessionStart: () => {

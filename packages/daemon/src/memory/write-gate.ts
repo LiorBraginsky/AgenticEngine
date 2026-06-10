@@ -1,4 +1,5 @@
 import type { MemoryStore } from "./store.js";
+import { isMessageId } from "./store.js";
 import type { SessionMessage } from "../providers/provider.js";
 import { REDACTION_MARKER } from "./schema.js";
 import type { MemoryScanner } from "./scanner/memory-scanner.js";
@@ -94,6 +95,44 @@ export class WriteGate {
     // N1: any quarantine_markers row for this messageId is intentionally left — the tombstone
     // already hard-redacts the content, making the quarantine marker harmless (a dead filter
     // on a tombstoned message). Dropping it would require a new store method for ~zero benefit.
+  }
+
+  /**
+   * forgetFact — forget a distilled fact by its provenance string (MF-05 T1.2).
+   * Dispatched by Hatch.forget when the target is not a message UUID.
+   *
+   * Three steps (additive, no re-plumb of write/inject path):
+   *   1. tombstoneFact in the store (appends a mutations row for the provenance)
+   *   2. dropDistilledFactsByProvenance (purge live slice — message-level provenance)
+   *   3. dropDistilledFactsForThread (purge live slice — thread-level provenance)
+   * Both drop calls are idempotent — only one will match depending on provenance shape.
+   *
+   * 5e guard: the store.tombstoneFact call refuses a machine tombstone of a
+   * human-authored fact and returns false; the live-slice purge is still applied
+   * (the projection is machine-authored by default; human facts survive per the
+   * authored_by != 'human' guard in dropDistilledFacts*).
+   */
+  forgetFact(provenance: string, ctx: WriteContext, reason?: string): void {
+    // Seam invariant: forgetFact is for distilled-fact provenances only.
+    // A UUID-shaped provenance is a messages.id — the caller must use forget() instead,
+    // which performs BOTH the tombstone AND the content hard-scrub atomically.
+    // Accepting a UUID here would tombstone without scrubbing → view-says-forgotten /
+    // disk-says-plaintext divergence (security invariant breach, #31 concern).
+    if (isMessageId(provenance)) {
+      throw new Error(
+        `[WriteGate] forgetFact received a UUID-shaped provenance ("${provenance}"). ` +
+        `Use forget() to tombstone+scrub a message; forgetFact is for distilled-fact provenances only (e.g. "thread:<uuid>").`,
+      );
+    }
+    // Append the fact-level tombstone (5e-guarded inside tombstoneFact)
+    this.store.tombstoneFact(provenance, ctx, reason);
+    // Purge the live slice immediately (grill S2 — no-window between tombstone + purge)
+    this.store.dropDistilledFactsByProvenance(provenance);
+    // For thread-level provenance ("thread:<id>"), also purge via thread id
+    if (provenance.startsWith("thread:")) {
+      const threadId = provenance.slice("thread:".length);
+      this.store.dropDistilledFactsForThread(threadId);
+    }
   }
 
   /**

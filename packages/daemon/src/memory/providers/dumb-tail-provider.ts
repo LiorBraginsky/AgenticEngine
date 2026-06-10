@@ -32,6 +32,10 @@ export class DumbTailProvider implements MemoryProvider {
     const facts = tail
       .filter((m) => m.content !== REDACTION_MARKER)
       .filter((m) => !store.isMessageQuarantined(m.id))
+      // MF-05 T1.2: projection-tombstone — skip facts whose provenance is tombstoned at the
+      // fact level (isFactTombstoned is a strict superset of isMessageTombstoned; both
+      // message-level and thread-level provenances are covered).
+      .filter((m) => !store.isFactTombstoned(m.id))
       .map((m) => ({
         fact: m.content,
         provenance: m.id,
@@ -53,7 +57,10 @@ export class DumbTailProvider implements MemoryProvider {
     // MF-04 (5f): scope-filtered read — thread-local facts of OTHER threads are excluded;
     // cross-thread/global cross. forThreadId is now load-bearing (was void in MF-02).
     const rows = store.readDistilledFactsForThread(forThreadId, RETRIEVE_SLICE_N);
-    const live = rows.filter((f) => !store.isMessageTombstoned(f.provenance));
+    // MF-05 T1.2: isFactTombstoned is a strict superset of isMessageTombstoned —
+    // covers both message-UUID provenances (DumbTail) and thread-level provenances
+    // (FixedMarker "thread:<id>"). No regression: message-UUID case is unchanged.
+    const live = rows.filter((f) => !store.isFactTombstoned(f.provenance));
     return Promise.resolve(
       live.map((f) => ({ role: "user" as const, content: `[remembered] ${f.fact}` })),
     );

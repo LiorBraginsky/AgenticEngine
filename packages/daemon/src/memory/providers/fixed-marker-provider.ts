@@ -25,9 +25,16 @@ export class FixedMarkerProvider implements MemoryProvider {
     const allMessages = store.readThreadMessagesForDistill(threadId);
     const liveCount = allMessages.filter((m) => m.content !== REDACTION_MARKER && !store.isMessageQuarantined(m.id)).length;
 
+    // MF-05 T1.2: projection-tombstone — if the thread-level provenance has been tombstoned
+    // by forgetFact, skip emitting the fact entirely (suppresses re-derive rebuild of a forgotten fact).
+    const threadProvenance = `thread:${threadId}`;
+    if (store.isFactTombstoned(threadProvenance)) {
+      return Promise.resolve({ threadId, facts: [] });
+    }
+
     const fact = {
       fact: `thread:${threadId} has ${liveCount} live message${liveCount === 1 ? "" : "s"}`,
-      provenance: `thread:${threadId}`,
+      provenance: threadProvenance,
       scope: "cross-thread" as const,
       expiry: null,
       confidence: 0.5,
@@ -46,10 +53,13 @@ export class FixedMarkerProvider implements MemoryProvider {
   async retrieve(store: MemoryStore, forThreadId: string): Promise<SessionMessage[]> {
     // MF-04 (5f): scope-filtered read (same contract as DumbTail's retrieve).
     // FixedMarker provenance is "thread:<id>"; readDistilledFactsForThread resolves origin
-    // via the substr branch. No isMessageTombstoned (thread-level provenance never matches a UUID).
+    // via the substr branch.
+    // MF-05 T1.2: filter out tombstoned provenances via isFactTombstoned (strict superset
+    // of isMessageTombstoned — covers "thread:<id>" provenances that the old filter missed).
     const rows = store.readDistilledFactsForThread(forThreadId, RETRIEVE_SLICE_N);
+    const live = rows.filter((f) => !store.isFactTombstoned(f.provenance));
     return Promise.resolve(
-      rows.map((f) => ({ role: "user" as const, content: `[remembered] ${f.fact}` })),
+      live.map((f) => ({ role: "user" as const, content: `[remembered] ${f.fact}` })),
     );
   }
 }

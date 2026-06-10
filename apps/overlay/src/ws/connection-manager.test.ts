@@ -178,3 +178,29 @@ test("ConnectionManager: mid-flight drop produces NO unhandled rejection", async
   // Must resolve cancelled (confirmedSessionId unknown → empty string sessionId).
   await expect(p).resolves.toEqual({ sessionId: "", reason: "cancelled" });
 });
+
+// ---------------------------------------------------------------------------
+// 2e — Reconnect schedule fires after drop (backoff wired)
+// ---------------------------------------------------------------------------
+
+test("ConnectionManager: after a drop it schedules a reconnect and reopens the socket (factory called again)", () => {
+  const fake1 = makeFake();
+  const fake2 = makeFake();
+  const fakes = [fake1, fake2];
+  let i = 0;
+  const factory = jest.fn(() => fakes[i++]!.ws);
+  let scheduled: (() => void) | undefined;
+  const mgr = new ConnectionManager(factory, {
+    setTimeoutFn: (cb) => { scheduled = cb; return 0 as unknown as ReturnType<typeof setTimeout>; },
+    clearTimeoutFn: () => {},
+    random: () => 0, // deterministic delay (value irrelevant — we invoke cb directly)
+  });
+  mgr.connect();
+  expect(factory).toHaveBeenCalledTimes(1);
+
+  fake1.fire("open");
+  fake1.fire("close");        // drop → schedules reconnect
+  expect(scheduled).toBeDefined();
+  scheduled!();               // fire the backoff timer
+  expect(factory).toHaveBeenCalledTimes(2); // reconnected on a fresh socket
+});

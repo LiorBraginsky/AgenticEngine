@@ -183,7 +183,9 @@ void listen(EV_TEXT_DISMISS, () => {
   try { connection.dismiss(); } catch { /* never throw out of the listener */ }
   currentThreadId = undefined;
   // Re-arm for the next conversation: dismiss() left the manager inactive (no reconnect),
-  // so construct a fresh one and open its socket on activation-equivalent.
+  // so construct a fresh one and open its socket on activation-equivalent. The prior
+  // manager is intentionally orphaned — active=false guarantees its trailing close
+  // event neither reconnects nor reopens; GC reclaims it once the socket closes.
   connection = new ConnectionManager(factory);
   connection.connect();
 });

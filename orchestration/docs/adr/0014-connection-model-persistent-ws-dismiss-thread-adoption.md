@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-06-10
 deciders: [lior]
 tags: [adr, connection, websocket, persistent, dismiss, threading, thread-id, inbound-push, amendment]
@@ -9,12 +9,21 @@ tags: [adr, connection, websocket, persistent, dismiss, threading, thread-id, in
 
 ## Status
 
-`proposed`
+`accepted` (Lior, 2026-06-12)
 
-> Awaiting Lior's `proposed → accepted` gate per [[../PIPELINE]] §5.2. **Non-merge-blocking:**
-> the accepted connection-model spec ([[../specs/2026-06-05-connection-model]]) is the build
-> authority; this ADR records the decision set for the record and is accepted asynchronously.
-> Chunk **CM-01** (thread-id adoption) builds against the spec now, regardless of this ADR's status.
+> Accepted per [[../PIPELINE]] §5.2 (Lior-only gate), **asynchronously after the build** — the four
+> decisions below already shipped on `main` via CM-01 (PR #33), CM-02 (PR #35), CM-03 (PR #36), built
+> against the accepted connection-model spec ([[../specs/2026-06-05-connection-model]]) per the
+> 2026-06-10 ruling that made this ADR non-merge-blocking. Acceptance here records the decision set
+> for the register and fills the regret prediction; the frozen 6-variant wire union is byte-unchanged
+> throughout (no freeze gate). This is the canonical doc-style-ADR async path now codified in
+> PIPELINE §5.2 (Finding #5).
+>
+> **Acceptance rider (Lior, 2026-06-12):** the regret prediction (decision (a) below) is **binding
+> direction** — the client-minted `thread_id` adoption is an under-guarded caller-auth surface, and
+> **gating thread writes the way ADR-0013 gated memory writes is folded into the security-hardening
+> pass** (the now-picked next feature). The thread-adoption validation (UUID-shape + unknown-only +
+> single write path) is the *interim* guard; the token/caller-auth gate is the end-state.
 
 ## Context
 
@@ -182,14 +191,23 @@ model is a **behavioral** change, not a wire change — so it is **not** a freez
 
 ### What we'll regret in 6 months (predict it now)
 
-> [TODO: Lior — write your prediction. Candidate regrets: (a) **client-minted thread-id was a
-> caller-auth hole we under-guarded** — once the daemon trusts a client-chosen durable key, a
-> crafted local client (the #31 CSWSH surface) can pre-seed a thread id and steer adoption, and we
-> wish we'd gated thread writes the way ADR-0013 gated memory writes; or (b) **persistent-socket
-> reconnect semantics were under-specified** — "in-flight treated as cancelled" turned out to drop
-> work users expected to survive a sleep/wake, and we should have defined resume rather than
-> cancel; or (c) **the rule-of-three concurrency cap was the wrong default** and either starved
-> legitimate background sessions or let too many run.]
+> **Prediction (Lior, 2026-06-12):** the likeliest regret is **(a) — client-minted `thread_id` was a
+> caller-auth hole we under-guarded.** Once the daemon trusts a client-chosen durable key, a crafted
+> local client (the #31 CSWSH surface — any browser tab against the always-on loopback daemon) can
+> pre-seed a `thread_id` and **steer adoption**: write into, or graft onto, a thread the user never
+> meant it to touch. UUID-shape + unknown-only + single-write-path keeps the *keyspace* clean but does
+> **not** authenticate the *caller* — exactly the gap ADR-0013 closed for memory writes with a token.
+> We'll wish we'd gated thread writes the same way from the start instead of bolting it on later.
+>
+> **Mitigation accepted now (binding):** thread-write caller-auth is **folded into the
+> security-hardening pass** (the picked next feature) — the per-install WS token (#31) that gates the
+> connection also gates thread adoption, closing this surface as part of the same pre-public-release
+> gate as ADR-0013's read-token rider. Until then the shape/unknown-only validation is the documented
+> *interim* guard, and no new daemon trust is extended to client ids beyond what CM-01..03 already ship.
+>
+> *(Regrets (b) reconnect-as-cancel and (c) rule-of-three cap are noted as live but lower-probability:
+> (b) revisits to "resume" if sleep/wake drops surface as a real complaint; (c) the cap is a one-line
+> architect-time constant, cheap to retune when concurrent/background sessions actually land — #45.)*
 
 ## Alternatives Considered
 
@@ -254,7 +272,8 @@ fresh daemon mint, no crash) keeps the durable keyspace clean at negligible cost
 - [[../known-gotchas]] #9 — no garbage durable keys (the UUID-shape gate on adoption); #45 —
   concurrent threads / background tasks (decision 4 is the early slice); #31 — CSWSH local-client
   surface (the threat model behind validating an adopted, client-chosen id).
-- [[../PIPELINE]] §5.2 — the Lior-only `proposed → accepted` gate this ADR awaits.
+- [[../PIPELINE]] §5.2 — the Lior-only `proposed → accepted` gate (satisfied 2026-06-12; doc-style
+  async path now codified there as Finding #5).
 - `orchestration/docs/plans/connection-model/plan-01-thread-adoption.md` — the architect's CM-01
   plan that prepared this decision set (its `## ADR worthy: yes` section is the curator's brief).
 - `apps/overlay/src/ws/session-client.ts`, `apps/overlay/src/main.ts`,
@@ -263,8 +282,9 @@ fresh daemon mint, no crash) keeps the durable keyspace clean at negligible cost
 
 ## Follow-up for Lior (NOT done by this ADR)
 
-- **Accept or amend** — rule `proposed → accepted` (PIPELINE §5.2). Non-blocking: CM-01 builds
-  against the spec regardless. The amendment space is Options A–C above (B = daemon-mints-on-ack,
-  C = no-validation adoption).
+- ✅ **Accepted** (Lior, 2026-06-12) — `proposed → accepted`, no amendment; regret (a) recorded with
+  a binding mitigation (thread-write caller-auth folded into the security-hardening pass). Options
+  A–C were not taken.
 - **Update [[../architecture]]** to reference this ADR for the connection lifetime + thread-id
-  authority — flagged as a follow-up, intentionally **not** edited here.
+  authority — still a follow-up, intentionally **not** edited here (backlog; natural companion to the
+  security-hardening pass that touches the same #31 surface).

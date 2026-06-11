@@ -162,6 +162,12 @@ work is verified-done** (§6):
 - Commit per task, push the feature branch, open the PR (the autonomous-git workflow — see project `CLAUDE.md`).
 - **Auto-merge the PR** once ALL automated gates are green (§5.2) — merge is an *effect* of the
   gates passing, not a decision. Preconditions + auto-revert-on-red live in project `CLAUDE.md`.
+  **Who *executes* the merge is rung-dependent (Finding #8, ratified 2026-06-12 — §11.4):** on the
+  **crawl** rung (no CI yet, shared tree) the worker posts `DONE — ready-to-merge` and does **not**
+  self-merge; the **conductor (Jimmy) executes the merge after an independent re-verification on a
+  clean checkout** — that re-verify *is* the net while CI is absent. From the **walk** rung up (CI +
+  branch protection live), the merge may fire unattended (worker- or CI-side) because the green-gate
+  set is enforced automatically. Either way merge stays an *effect* of green gates, never a judgment.
 
 These were previously done manually by Lior. **They are now the agents' job.** The single
 guard is §6 (plus, for merge, the §5.2 preconditions): *never* flip to `done` / archive / merge
@@ -199,6 +205,23 @@ context (taste / north-star / behavioral judgment) that no automated check or ag
   escalate. Branch protection enforces the preconditions; **auto-revert on post-merge red `main`**.
   (Project `CLAUDE.md` carries the operational rule; force-push / amend / direct-push-to-`main` /
   `--no-verify` remain NEVER.)
+
+**ADR carried inside a PR (Finding #5, ratified 2026-06-12).** A `status: proposed` ADR riding in a
+feature/work PR is, by default, an **escalate-before-merge** condition — merging an unaccepted ADR
+either freezes a decision Lior hasn't blessed or strands an orphan doc, so ADR acceptance is a §5.2
+gate, not an auto-merge side-effect. Two tiers:
+
+- **Doc-style / low-stakes ADR** (records a choice already implied by the work; reversible; touches no
+  security boundary, no new external surface, no frozen contract) **MAY merge** alongside its PR when
+  it carries an **"agent-authored during work" marker** and Jimmy posts a **3-line one-tap summary** to
+  Lior for **asynchronous acceptance** (`proposed → accepted` after the fact). The merge does not wait
+  on Lior; the summary lets him veto or amend without blocking the conveyor.
+- **Hard-to-reverse ADR** (security, a new surface/contract, or anything touching a frozen ADR/wire
+  contract) **STILL escalates before merge** — full §5.2 ADR-acceptance gate, no async shortcut.
+
+This resolves the pilot's "Finding #5 vs async-ADR-acceptance" coexistence (ADR-0014 rode in as
+`proposed` per a decomposer ruling): the async path is now *sanctioned but bounded* to doc-style ADRs.
+Jimmy applies the same tiering in his charter (§11.3).
 
 > Rationale: the agents that implement chunks lack the context Lior (and the decomposer)
 > hold, and the agent that builds a thing has a conflict of interest in declaring it
@@ -417,13 +440,26 @@ Jimmy MAY auto-act on: launching/retiring worker chats, routine plan-approval (e
 reviewer-clean + frozen-surfaces-byte-unchanged + demo-if-behavioral; a red gate is a hard stop). The
 replacement net for Lior's removed per-PR eyes is the green-gate set, not trust (project `CLAUDE.md`).
 
+**Agent-authored ADRs (Finding #5 tiering, §5.2).** When a PR carries a `status: proposed` ADR, Jimmy
+applies the §5.2 tiers: a **doc-style / low-stakes** ADR may ride in with an "agent-authored during
+work" marker + a **3-line one-tap summary** Jimmy posts to Lior for async acceptance; a
+**hard-to-reverse** ADR (security / new surface / frozen contract) is a **hard stop — escalate before
+merge.** When in doubt which tier, treat it as hard-to-reverse and escalate.
+
+**On crawl, Jimmy *executes* the merge** (worker posts `DONE — ready-to-merge`, never self-merges)
+after an independent clean-checkout re-verification — see §5.1 / §11.4.
+
 ### 11.4 The ladder — build one rung at a time
 
-1. **crawl (current; piloting MF-04/MF-05):** `orchestration/bin/conveyor-next.sh` generates a
-   handoff brief from disk and tmux-launches a fresh orchestrator chat; every brief carries the
-   **self-serve rule** (read PIPELINE/ADR/spec yourself before escalating — kills the copy-paste that
-   was really doc-lookups). Auto-merge enforced by Jimmy via command-checks (`gh pr checks`, frozen
-   `git diff`) + a ledger digest; the GitHub-side net is walk.
+1. **crawl (current — pilot RATIFIED 2026-06-12, keep + climb-as-harden):**
+   `orchestration/bin/conveyor-next.sh` generates a handoff brief from disk and tmux-launches a fresh
+   orchestrator chat; every brief carries the **self-serve rule** (read PIPELINE/ADR/spec yourself
+   before escalating — kills the copy-paste that was really doc-lookups). **Merge executor on this
+   rung = the conductor, not the worker (Finding #8, ratified):** the worker posts
+   `DONE — ready-to-merge`; Jimmy re-verifies on an **independent clean checkout** (typecheck +
+   `lint:strict` + tests + frozen `git diff` empty + reviewer-clean) and executes the merge. That
+   manual re-verify is the net **because there is no CI yet** — **CI is the precondition for unattended
+   / worker-side merge** (the walk rung). The GitHub-side net (branch protection + auto-revert) is walk.
 2. **walk:** PR auto-review trigger + the auto-merge **safety net** (branch protection requiring the
    green gates + auto-revert on post-merge red `main`).
 3. **run:** localhost event-bus for the *residual* true agent↔agent transport, with explicit

@@ -8,7 +8,7 @@
 > Це **експеримент із заслінкою**. Через ~тиждень (target **2026-06-13**, або після
 > мерджу обох пілотних чанків — що пізніше) — рішення: **тримати / докрутити / відкотити**.
 
-**Status:** active (pilot)
+**Status:** RATIFIED 2026-06-12 — KEEP + climb-as-harden (see `## Review` below)
 **Pattern spec:** PIPELINE.md §11 (Autonomous trigger registry + conductor charter) — *to be written*
 **Design record:** memory `project_pipeline_automation` (GRILLED + LOCKED 2026-06-06)
 
@@ -148,3 +148,54 @@ Wall-clock та копі-пейст у baseline **не логувались** �
 (blanket plan-approval + «never merge yourself») — флаг від MF-04-воркера в ledger;
 реконсильовано разом із findings (цей же PR). Мета-урок: звуження PIPELINE §5.2 має
 тягнути за собою прохід по skill-дефініціях — вони не оновлюються самі.
+
+---
+
+## Review (2026-06-12)
+
+> **Рішення: ТРИМАТИ + лізти драбиною (KEEP + climb-as-harden).** Усі три умови «тримати»
+> з §«Рішення на 2026-06-13» виконані: **0 bad-main**, Lior-дотики **суттєво < baseline**,
+> якість **не впала**. Шина (run-щабель) **ПАРКується** — релеї=0 на crawl її не виправдовують
+> (anti-over-engineering). Наступний щабель = **walk (CI + branch protection)**, бо єдина
+> крихкість crawl — ручна re-verify кондуктора як merge-net.
+
+**Скоуп фактично пройденого:** пілот переріс початкові MF-04/MF-05 — закрив **усю route part 1**:
+MF-04, MF-05 (T1+T2), CM-01, CM-02, CM-03 — 6 чанків, 309 тестів на main, один спільний 6-крок
+live-demo (§6.1) закрив MF-05 + CM-01..03.
+
+### Метрики — факт vs baseline vs ціль
+
+| Метрика | Baseline | Ціль | Факт (route 1) | Вердикт |
+|---|---|---|---|---|
+| **Bad-main events** | 0 | **0** (non-neg) | **0** на всі 6 чанків + усі пост-мердж re-tests | ✅ safety тримається |
+| **Копі-пейст релеї / чанк** | кілька | 0 | **0** (ledger: «relays=0» на кожному чанку — self-serve бриф працює) | ✅ ціль |
+| **Lior-дотики / чанк** | ~5–7 | ≤ 2 | MF-04=0; решта амортизовано ~1 (ADR-0013 accept · CM-first рішення · MF-05-split bless) + **демо ОДНЕ на 4 чанки** | ✅ значно нижче |
+| **Review-раунди / чанк** | 1–2 | ≤ 2 | 1–2 (CM-02: round1→round2; решта ≤1 blocker-раунд) | ✅ без регресу |
+| **Wall-clock start→merged** | не писалось | тренд | записувався в ledger per-PR (тренд є, baseline відсутній) | — тренд закладено |
+| **Conveyor рестарти/збої** | n/a | низько, ↓ | 3 збої, **0 втраченої роботи**: 529-смерть кондуктора (06-06), token-limit kill CM-03 (06-11), Lior-branch-switch на спільному дереві (Finding #6) — усі відновлені з диска | ✅ disk-canonical тримає |
+| **Rate-limit / cap удари** | n/a | жодного блокуючого | 529-і траплялись → back-off/пауза; **жодного блокуючого cap** | ✅ |
+
+### Диспозиція знахідок
+
+- **Finding #5** (proposed-ADR у feature-PR) → **КОДИФІКОВАНО** у PIPELINE §5.2 + §11.3 (цей docs-PR):
+  escalate-before-merge за замовчуванням; doc-style ADR → async (marker + 3-рядкове summary);
+  hard-to-reverse → завжди escalate. Знімає коегзистенцію «Finding #5 vs async-ADR».
+- **Finding #8** (§5.1↔§11.4 — хто виконує мердж на crawl) → **КОДИФІКОВАНО** у PIPELINE §5.1 + §11.4
+  (цей docs-PR): на crawl merge виконує кондуктор після незалежної re-verify на чистому checkout;
+  CI — передумова unattended/worker-side merge (walk).
+- **Findings #1–#4, #6, #7** — операційні уроки, вже втілені практикою/брифами/skill-дефами
+  (disk-canonical, sleep-while-worker, один воркер/дерево, анти-self-split, branch-assert перед комітом,
+  process-title liveness). Не потребують PIPELINE-правки.
+- **Чек-ліст білінгу** — `tmux kill-session` чистий ретир ✅ підтверджено (06-10); решта (метрований
+  пул не б'ється субагентами; detached = підписка) лишаються **PARTIAL до ≥2026-06-15** (пул ще не
+  існував під час пілоту — confound). **Re-confirm action item стоїть.**
+
+### Що далі (climb-as-harden)
+
+1. **walk-щабель — CI** (tests + `lint:strict` + typecheck у GitHub Actions) + branch protection +
+   auto-revert на червоний main. Це замінює ручну re-verify кондуктора автоматичним нетом і
+   **знімає єдину крихкість crawl**. Найвищий пріоритет харденінгу.
+2. **Re-confirm білінгового кордону ≥2026-06-15** ([[reference_claude_code_automation_billing]]).
+3. **worktree-ізоляція воркерів** (Finding #3 candidate) — лише якщо паралельні воркери стануть потрібні.
+4. **Шина (run) — ПАРКА.** Будувати лише якщо залишковий agent↔agent-транспорт це виправдає; релеї=0
+   зараз не виправдовують. Un-defer concurrent-session моделі + ADR — на той момент.

@@ -1,5 +1,7 @@
 import { test, expect, jest } from "bun:test";
+import { parseEnvelope } from "@agentic/protocol";
 import { ConnectionManager } from "./connection-manager.js";
+import type { ToolCallContext } from "./session-client.js";
 import type { WebSocketLike } from "./types.js";
 
 // Scriptable fake transport (mirrors session-client.test.ts makeFake).
@@ -347,4 +349,124 @@ test("ConnectionManager.dismiss(): an in-flight turn settles cancelled-equivalen
   fake.fire("open");
   mgr.dismiss(); // dismiss mid-flight — turn must settle, not hang or reject
   await expect(p).resolves.toEqual({ sessionId: "", reason: "cancelled" });
+});
+
+// ---------------------------------------------------------------------------
+// Migrated from session-client.test.ts (CM-03 carry-forward 1): unique assertions
+// of the retired free runSession, re-expressed against ConnectionManager. The
+// behaviors live in shared routeInbound/buildSessionStart code — these pin the
+// manager-path wire shapes so the coverage survives the runSession deletion.
+// ---------------------------------------------------------------------------
+
+test("ConnectionManager.runSession: onToolCall ctx carries sessionId/callId/picker, NO auto-cancel; session_start carries options.threadId (migrated)", async () => {
+  const fake = makeFake();
+  const mgr = new ConnectionManager(() => fake.ws);
+  mgr.connect();
+  const tid = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  let capturedCtx: ToolCallContext | undefined;
+  const p = mgr.runSession("hi", { threadId: tid, onToolCall: (ctx) => { capturedCtx = ctx; } });
+  fake.fire("open");
+  const sent0 = JSON.parse(fake.sent[0]!) as { type: string; thread_id?: string; client_session_id: string };
+  expect(sent0.type).toBe("session_start");
+  expect(sent0.thread_id).toBe(tid);
+  fake.fire("message", { data: JSON.stringify({ type: "session_ack", session_id: "srv-1", client_session_id: sent0.client_session_id }) });
+  fake.fire("message", { data: JSON.stringify({ type: "tool_call", session_id: "srv-1", call_id: "call-abc", payload: VALID_TOOL_CALL_PAYLOAD }) });
+  expect(fake.sent).toHaveLength(1); // NOT auto-cancel: only the session_start was written
+  expect(capturedCtx).toBeDefined();
+  expect(capturedCtx!.sessionId).toBe("srv-1");
+  expect(capturedCtx!.callId).toBe("call-abc");
+  expect(capturedCtx!.picker.question).toBe("Pick a color");
+  expect(capturedCtx!.picker.palette[0]!.label).toBe("Red");
+  fake.fire("message", { data: JSON.stringify({ type: "session_end", session_id: "srv-1", reason: "completed" }) });
+  await expect(p).resolves.toEqual({ sessionId: "srv-1", reason: "completed" });
+});
+
+test("ConnectionManager.runSession: ctx.sendResult writes a parse-valid tool_result with picked nested under payload.result (migrated)", async () => {
+  const fake = makeFake();
+  const mgr = new ConnectionManager(() => fake.ws);
+  mgr.connect();
+  let capturedCtx: ToolCallContext | undefined;
+  const p = mgr.runSession("hi", { onToolCall: (ctx) => { capturedCtx = ctx; } });
+  fake.fire("open");
+  const cid = (JSON.parse(fake.sent[0]!) as { client_session_id: string }).client_session_id;
+  fake.fire("message", { data: JSON.stringify({ type: "session_ack", session_id: "srv-1", client_session_id: cid }) });
+  fake.fire("message", { data: JSON.stringify({ type: "tool_call", session_id: "srv-1", call_id: "call-abc", payload: VALID_TOOL_CALL_PAYLOAD }) });
+
+  capturedCtx!.sendResult({ label: "Azure", hex: "#1E90FF" });
+  expect(fake.sent).toHaveLength(2);
+  expect(parseEnvelope(JSON.parse(fake.sent[1]!)).kind).toBe("ok"); // frozen-contract valid
+  const resultMsg = JSON.parse(fake.sent[1]!) as { type: string; session_id: string; call_id: string; payload: { result: { picked: { label: string } } } };
+  expect(resultMsg.type).toBe("tool_result");
+  expect(resultMsg.session_id).toBe("srv-1");
+  expect(resultMsg.call_id).toBe("call-abc");
+  expect(resultMsg.payload.result.picked.label).toBe("Azure");
+
+  fake.fire("message", { data: JSON.stringify({ type: "session_end", session_id: "srv-1", reason: "completed" }) });
+  await expect(p).resolves.toEqual({ sessionId: "srv-1", reason: "completed" });
+});
+
+test("ConnectionManager.runSession: ctx.sendCancel writes a parse-valid tool_cancel with matching call_id (migrated)", async () => {
+  const fake = makeFake();
+  const mgr = new ConnectionManager(() => fake.ws);
+  mgr.connect();
+  let capturedCtx: ToolCallContext | undefined;
+  const p = mgr.runSession("hi", { onToolCall: (ctx) => { capturedCtx = ctx; } });
+  fake.fire("open");
+  const cid = (JSON.parse(fake.sent[0]!) as { client_session_id: string }).client_session_id;
+  fake.fire("message", { data: JSON.stringify({ type: "session_ack", session_id: "srv-1", client_session_id: cid }) });
+  fake.fire("message", { data: JSON.stringify({ type: "tool_call", session_id: "srv-1", call_id: "call-abc", payload: VALID_TOOL_CALL_PAYLOAD }) });
+
+  capturedCtx!.sendCancel();
+  expect(fake.sent).toHaveLength(2);
+  expect(parseEnvelope(JSON.parse(fake.sent[1]!)).kind).toBe("ok"); // frozen-contract valid
+  const cancelMsg = JSON.parse(fake.sent[1]!) as { type: string; session_id: string; call_id: string };
+  expect(cancelMsg.type).toBe("tool_cancel");
+  expect(cancelMsg.session_id).toBe("srv-1");
+  expect(cancelMsg.call_id).toBe("call-abc");
+
+  fake.fire("message", { data: JSON.stringify({ type: "session_end", session_id: "srv-1", reason: "cancelled" }) });
+  await expect(p).resolves.toEqual({ sessionId: "srv-1", reason: "cancelled" });
+});
+
+test("ConnectionManager.runSession: garbage / unknown-type frames and unknown tools never throw; onToolCall NOT fired for unknown tool (migrated)", async () => {
+  const fake = makeFake();
+  const mgr = new ConnectionManager(() => fake.ws);
+  mgr.connect();
+  let callbackFired = false;
+  const p = mgr.runSession("hi", { onToolCall: () => { callbackFired = true; } });
+  fake.fire("open");
+  // Garbage and unknown-type frames are silently dropped (gotcha #9 discipline).
+  expect(() => fake.fire("message", { data: "not-json" })).not.toThrow();
+  expect(() => fake.fire("message", { data: JSON.stringify({ type: "telepathy" }) })).not.toThrow();
+  const cid = (JSON.parse(fake.sent[0]!) as { client_session_id: string }).client_session_id;
+  fake.fire("message", { data: JSON.stringify({ type: "session_ack", session_id: "srv-1", client_session_id: cid }) });
+  // Unknown tool — silently ignored, no callback, nothing extra on the wire.
+  expect(() => fake.fire("message", {
+    data: JSON.stringify({ type: "tool_call", session_id: "srv-1", call_id: "call-mystery", payload: { tool: "show_mystery", args: {} } }),
+  })).not.toThrow();
+  expect(callbackFired).toBe(false);
+  expect(fake.sent).toHaveLength(1);
+  fake.fire("message", { data: JSON.stringify({ type: "session_end", session_id: "srv-1", reason: "cancelled" }) });
+  await expect(p).resolves.toEqual({ sessionId: "srv-1", reason: "cancelled" });
+});
+
+test("ConnectionManager.runSession: onSessionStart fires once, right after session_start is sent, before any content (migrated)", async () => {
+  const fake = makeFake();
+  const mgr = new ConnectionManager(() => fake.ws);
+  mgr.connect();
+  const order: string[] = [];
+  const p = mgr.runSession("hi", {
+    onSessionStart: () => order.push("start"),
+    onShowText: () => order.push("text"),
+  });
+  fake.fire("open");
+  expect(order).toEqual(["start"]); // fired right after send, no content yet
+  const cid = (JSON.parse(fake.sent[0]!) as { client_session_id: string }).client_session_id;
+  fake.fire("message", { data: JSON.stringify({ type: "session_ack", session_id: "s3", client_session_id: cid }) });
+  fake.fire("message", {
+    data: JSON.stringify({ type: "tool_call", session_id: "s3", call_id: "c3", payload: { tool: "show_text", args: { text: { primitive: "text", content: "hello" } } } }),
+  });
+  fake.fire("message", { data: JSON.stringify({ type: "session_end", session_id: "s3", reason: "completed" }) });
+  await p;
+  expect(order).toEqual(["start", "text"]); // start never fires again
 });

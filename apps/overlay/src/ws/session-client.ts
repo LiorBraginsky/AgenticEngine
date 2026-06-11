@@ -7,20 +7,23 @@
  * session_ack / session_end / tool_call / tool_cancel all exist; confirmed in
  * packages/protocol/src/envelope.ts).
  *
- * 02b-ii onToolCall flow:
+ * 02b-ii onToolCall flow (now driven by ConnectionManager — CM-02/CM-03):
  *   session_start → session_ack → tool_call → onToolCall(ctx) → sendResult|sendCancel → session_end
  * On receiving a tool_call whose session_id matches the confirmed session,
- * the seam invokes the injected onToolCall callback with a ToolCallContext
+ * routeInbound invokes the injected onToolCall callback with a ToolCallContext
  * carrying the picker primitive and bound sendResult/sendCancel closures.
  * The renderer (not the seam) decides whether to call sendResult or sendCancel.
  * Unknown tools or unconfirmed sessions are silently ignored (gotcha #9).
- * Resolves on session_end of ANY reason.
+ * The turn settles on session_end of ANY reason.
+ *
+ * CM-03 (carry-forward 1): the free per-turn-socket runSession that used to live
+ * here was retired — ConnectionManager.runSession on the shared persistent socket
+ * is the ONE socket-lifetime contract. This module keeps the pure building blocks:
+ * buildSessionStart, routeInbound, SessionContext + the option/result types.
  */
 
-import { parseEnvelope } from "@agentic/protocol";
 import type { Envelope, ColorPickerPrimitive, ColorSwatch } from "@agentic/protocol";
 import { decideRender, decideTextRender, buildToolResult, buildToolCancel } from "./tool-call-handler.js";
-import type { WebSocketFactory } from "./types.js";
 
 export const WS_URL = "ws://127.0.0.1:7777";
 
@@ -126,172 +129,6 @@ export function buildSessionStart(text: string, threadId?: string): {
 }
 
 /**
- * Opens a WebSocket via the injected factory, sends a session_start, and
- * resolves with the daemon-minted { sessionId, reason } on session_end.
- *
- * onToolCall flow: on receiving a tool_call whose session_id matches the
- * confirmed session, the seam invokes options.onToolCall(ctx) where ctx carries
- * the picker primitive and bound sendResult/sendCancel closures.
- * The renderer drives the result or cancel; the seam writes to the socket.
- * Unknown tools or unconfirmed sessions are silently ignored (no throw).
- * runSession resolves on session_end of ANY reason.
- *
- * Correlation: strictly via the echoed client_session_id in session_ack.
- * A session_ack with a non-matching client_session_id is silently ignored.
- *
- * Rejects on: transport error, close-before-end, or the internal timeout.
- * Never throws on unknown/invalid frames (gotcha #9 discipline).
- *
- * 6.2 (MAJOR fix): ws.close() is called in finish() before resolve so no
- * socket leaks on the success path. Post-settle close/fail are no-ops against
- * the already-settled promise (existing design).
- */
-export function runSession(
-  text: string,
-  factory: WebSocketFactory,
-  options: RunSessionOptions = {},
-): Promise<SessionResult> {
-  return new Promise<SessionResult>((resolve, reject) => {
-    const { msg, clientSessionId } = buildSessionStart(text, options.threadId);
-    const ws = factory(WS_URL);
-
-    // 6.3: single source of truth — one closure variable, read directly in
-    // handleInbound. The old double-guard (snapshot param + closure var) is removed.
-    let confirmedSessionId: string | undefined;
-    let settled = false;
-
-    const timeoutMs = options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
-    const timer = setTimeout(() => {
-      // Mirror what fail() does: set settled + clearTimeout BEFORE ws.close() so
-      // the synchronous "close" event that ws.close() may fire cannot reach fail()
-      // first and overwrite the rejection with a generic "WebSocket closed…" error.
-      // Without this, the HandshakeTimeoutError only wins the race by WebSocket
-      // spec luck (close dispatched asynchronously) — not deterministically.
-      settled = true;
-      clearTimeout(timer);
-      ws.close();
-      // Use a distinguishable error name so callers can classify timeout vs
-      // transport error without string-matching (main.ts timeout-card discriminator).
-      const err = new Error(`runSession timed out after ${timeoutMs}ms`);
-      err.name = "HandshakeTimeoutError";
-      reject(err);
-    }, timeoutMs);
-
-    // 6.2: close the socket before resolving to prevent the socket leak (MAJOR fix).
-    function finish(result: SessionResult) {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      ws.close();
-      resolve(result);
-    }
-
-    function fail(err: Error) {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      ws.close(); // NIT-1: idempotent close — mirrors finish(); safe on already-closing/closed socket
-      reject(err);
-    }
-
-    ws.addEventListener("open", () => {
-      ws.send(JSON.stringify(msg));
-      // Fire the frontend-only in-flight signal immediately after sending session_start.
-      // This is NOT a wire event — it allows main.ts to show the thinking loader
-      // before any server response arrives.
-      options.onSessionStart?.();
-    });
-
-    ws.addEventListener("message", (ev) => {
-      const result = parseEnvelope(tryParse(ev.data));
-
-      if (result.kind === "unknown") {
-        console.warn("[session-client] unknown envelope type ignored:", result.type);
-        return;
-      }
-      if (result.kind === "invalid") {
-        console.warn("[session-client] invalid envelope ignored:", result.error.message);
-        return;
-      }
-
-      const envelope = result.message;
-
-      if (envelope.type === "session_ack") {
-        // 6.3: correlate strictly by echoed client_session_id; read confirmedSessionId directly.
-        if (envelope.client_session_id === clientSessionId) {
-          confirmedSessionId = envelope.session_id;
-        } else {
-          console.warn(
-            "[session-client] session_ack client_session_id mismatch — ignored",
-            { expected: clientSessionId, got: envelope.client_session_id },
-          );
-        }
-        return;
-      }
-
-      if (envelope.type === "tool_call") {
-        const decision = decideRender(envelope, confirmedSessionId);
-        if (decision.kind === "render") {
-          // Disarm the transport-handshake timeout: the handshake (connect →
-          // session_ack → tool_call) completed successfully. From here the
-          // session is user-driven with no auto-timeout — the picker persists
-          // until the user picks a swatch or clicks ×.
-          //
-          // Session-leak note (v0 acceptable): if the user never acts and
-          // exits the app, the daemon retains a parked awaiting_pick session.
-          // The only valid exits in v0 are user pick (→ tool_result) or ×
-          // (→ tool_cancel). A post-handoff idle timeout is intentionally
-          // omitted — do not add one without a product decision.
-          clearTimeout(timer);
-          const { session_id, call_id, picker } = decision;
-          options.onToolCall?.({
-            picker,
-            sessionId: session_id,
-            callId: call_id,
-            sendResult: (picked) => { if (!settled) ws.send(JSON.stringify(buildToolResult(session_id, call_id, picked))); },
-            sendCancel: () => { if (!settled) ws.send(JSON.stringify(buildToolCancel(session_id, call_id))); },
-          });
-        }
-        // Display-only branch: show_text tool_call.
-        // Additive — color-picker branch above is byte-unchanged.
-        const textDecision = decideTextRender(envelope, confirmedSessionId);
-        if (textDecision.kind === "render-text") {
-          // Disarm the handshake timeout (mirroring the color-picker branch).
-          // The session completes when the daemon emits session_end{completed}
-          // right after this tool_call — do NOT settle the promise here.
-          clearTimeout(timer);
-          options.onShowText?.(textDecision.content);
-          return;
-        }
-
-        // unknown tool / unconfirmed session ⇒ ignore (graceful, no throw)
-        return;
-      }
-
-      if (envelope.type === "session_end") {
-        // Resolve on session_end of any reason.
-        if (confirmedSessionId !== undefined && envelope.session_id === confirmedSessionId) {
-          finish({ sessionId: envelope.session_id, reason: envelope.reason });
-        }
-        return;
-      }
-
-      // All other envelope types (tool_result, session_start) are not relevant — ignore.
-    });
-
-    ws.addEventListener("error", () => {
-      fail(new Error("WebSocket transport error"));
-    });
-
-    ws.addEventListener("close", () => {
-      // Only reject on unexpected close (before we've resolved).
-      // If already settled, fail() is a no-op (settled guard).
-      fail(new Error("WebSocket closed before session_end received"));
-    });
-  });
-}
-
-/**
  * Per-turn routing context held by the ConnectionManager's dispatcher (CM-02).
  * Single-flight today; the dispatcher Map holds at most one (gotcha #45 unchanged).
  */
@@ -347,19 +184,4 @@ export function routeInbound(env: Envelope, ctx: SessionContext): void {
     return;
   }
   // tool_result / tool_cancel / session_start inbound: not relevant to the overlay — ignore.
-}
-
-/**
- * Parses a raw frame value into a plain object.
- * Returns the value as-is if not a string, or the raw string if JSON.parse fails.
- * NEVER throws — the caller's parseEnvelope handles non-object gracefully.
- */
-function tryParse(raw: unknown): unknown {
-  if (typeof raw !== "string") return raw;
-  try {
-    return JSON.parse(raw);
-  } catch {
-    console.warn("[session-client] non-JSON frame ignored");
-    return raw;
-  }
 }

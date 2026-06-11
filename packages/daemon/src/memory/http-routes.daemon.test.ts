@@ -308,3 +308,15 @@ test("T2.2a-1: GET /history.html → 200 text/html, contains History + /memory/t
   // XSS/threat-model discipline: token must NEVER be persisted via web storage
   expect(body).not.toContain("localStorage");
 });
+
+// Test 10: GET /history.html — page must not use native browser dialogs.
+// Regression: browser dialog-suppression ("don't show again") causes confirm()/prompt()
+// to return false/null immediately, silently no-op'ing forget/edit actions.
+test("T2.2a-2: GET /history.html — no native browser dialogs (confirm/prompt/alert)", async () => {
+  const res = await fetch(`http://127.0.0.1:${PORT}/history.html`);
+  const body = await res.text();
+  // None of the three native dialog calls may appear in the page script
+  expect(body).not.toContain("confirm(");
+  expect(body).not.toContain("prompt(");
+  expect(body).not.toContain("alert(");
+});

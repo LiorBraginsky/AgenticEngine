@@ -87,6 +87,38 @@ export const HISTORY_HTML = `<!DOCTYPE html>
     .btn-forget:hover { background: #fff0f0; }
     .btn-edit { border-color: #70a0e0; color: #2060b0; }
     .btn-edit:hover { background: #f0f4ff; }
+    .btn-danger { border-color: #c03030; color: #c03030; background: #fff0f0; }
+    .btn-danger:hover { background: #ffe0e0; }
+    .btn-cancel { border-color: #999; color: #555; }
+    .btn-cancel:hover { background: #f0f0f0; }
+    .btn-save { border-color: #2a7a2a; color: #2a7a2a; }
+    .btn-save:hover { background: #f0fff0; }
+    .inline-confirm { display: inline; margin-left: 4px; }
+    .inline-hint { font-size: 12px; color: #c03030; margin-left: 6px; }
+    .inline-unlock-hint {
+      display: inline-block;
+      font-size: 12px;
+      color: #a06000;
+      background: #fffbe6;
+      border: 1px solid #f0d060;
+      border-radius: 4px;
+      padding: 2px 8px;
+      margin-left: 6px;
+    }
+    .inline-editor {
+      margin-top: 6px;
+    }
+    .inline-editor textarea {
+      width: 100%;
+      min-height: 60px;
+      font-family: system-ui, -apple-system, sans-serif;
+      font-size: 13px;
+      padding: 5px 8px;
+      border: 1px solid #70a0e0;
+      border-radius: 4px;
+      resize: vertical;
+    }
+    .inline-editor-actions { margin-top: 4px; }
     .unlock-panel { background: #fffbe6; border-color: #f0d060; }
     .unlock-hint { font-size: 12px; color: #888; margin-top: 6px; }
     .token-input {
@@ -292,16 +324,16 @@ export const HISTORY_HTML = `<!DOCTYPE html>
         var forgetBtn = document.createElement("button");
         forgetBtn.className = "btn btn-forget";
         forgetBtn.textContent = "Forget";
-        forgetBtn.addEventListener("click", (function (msgId) {
-          return function () { doForget(msgId, threadId); };
-        })(m.id));
+        forgetBtn.addEventListener("click", (function (msgId, btn) {
+          return function () { doForget(msgId, threadId, btn); };
+        })(m.id, forgetBtn));
 
         var editBtn = document.createElement("button");
         editBtn.className = "btn btn-edit";
         editBtn.textContent = "Edit";
-        editBtn.addEventListener("click", (function (msgId, curContent) {
-          return function () { doEdit(msgId, curContent, threadId); };
-        })(m.id, m.content));
+        editBtn.addEventListener("click", (function (msgId, curContent, btn, r) {
+          return function () { doEdit(msgId, curContent, threadId, btn, r); };
+        })(m.id, m.content, editBtn, row));
 
         actions.appendChild(forgetBtn);
         actions.appendChild(editBtn);
@@ -342,9 +374,9 @@ export const HISTORY_HTML = `<!DOCTYPE html>
         forgetBtn.className = "btn btn-forget";
         forgetBtn.textContent = "Forget fact";
         // Per-fact forget uses the provenance value as the target
-        forgetBtn.addEventListener("click", (function (provenance) {
-          return function () { doForget(provenance, _currentThreadId); };
-        })(f.provenance));
+        forgetBtn.addEventListener("click", (function (provenance, btn) {
+          return function () { doForget(provenance, _currentThreadId, btn); };
+        })(f.provenance, forgetBtn));
 
         row.appendChild(factEl);
         row.appendChild(metaEl);
@@ -391,53 +423,165 @@ export const HISTORY_HTML = `<!DOCTYPE html>
     }
 
     // ── Write actions ─────────────────────────────────────────────────────────────
-    function doForget(target, threadId) {
+
+    // doForget: two-step inline confirm.
+    // First click arms the button (danger style + "Confirm forget?" label + Cancel).
+    // Second click (or timeout) executes or resets.
+    function doForget(target, threadId, forgetBtn) {
       if (!_authToken) {
-        alert("Unlock writes first (paste your auth token above).");
+        showUnlockHint(forgetBtn);
         return;
       }
-      if (!confirm("Forget \\\"" + target + "\\\"? This cannot be undone.")) return;
-      fetch("/memory/forget", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": "Bearer " + _authToken,
-        },
-        body: JSON.stringify({ target: target, reason: "hatch-forget" }),
-      }).then(function (r) {
-        if (r.status === 204) {
-          loadThread(threadId);
-        } else if (r.status === 403) {
-          setStatus("403 — unlock first or bad token.", false);
-        } else {
-          setStatus("Error: " + r.status, false);
-        }
+      // Already in armed state — execute
+      if (forgetBtn.dataset.armed === "1") return;
+
+      // Arm: replace button label + style, add Cancel
+      forgetBtn.dataset.armed = "1";
+      forgetBtn.textContent = "Confirm forget?";
+      forgetBtn.className = "btn btn-danger";
+
+      var cancelBtn = document.createElement("button");
+      cancelBtn.className = "btn btn-cancel inline-confirm";
+      cancelBtn.textContent = "Cancel";
+
+      var hint = document.createElement("span");
+      hint.className = "inline-hint";
+      hint.textContent = "Cannot be undone";
+
+      var parent = forgetBtn.parentNode;
+      parent.insertBefore(cancelBtn, forgetBtn.nextSibling);
+      parent.insertBefore(hint, cancelBtn.nextSibling);
+
+      var resetForget = function () {
+        forgetBtn.dataset.armed = "";
+        forgetBtn.textContent = "Forget";
+        forgetBtn.className = "btn btn-forget";
+        if (cancelBtn.parentNode) cancelBtn.parentNode.removeChild(cancelBtn);
+        if (hint.parentNode) hint.parentNode.removeChild(hint);
+        clearTimeout(timer);
+      };
+
+      cancelBtn.addEventListener("click", resetForget);
+
+      // Auto-reset after 5 s if user does nothing
+      var timer = setTimeout(resetForget, 5000);
+
+      forgetBtn.addEventListener("click", function executeForget() {
+        forgetBtn.removeEventListener("click", executeForget);
+        clearTimeout(timer);
+        if (cancelBtn.parentNode) cancelBtn.parentNode.removeChild(cancelBtn);
+        if (hint.parentNode) hint.parentNode.removeChild(hint);
+        forgetBtn.disabled = true;
+        forgetBtn.textContent = "Forgetting…";
+
+        fetch("/memory/forget", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + _authToken,
+          },
+          body: JSON.stringify({ target: target, reason: "hatch-forget" }),
+        }).then(function (r) {
+          if (r.status === 204) {
+            loadThread(threadId);
+          } else if (r.status === 403) {
+            setStatus("403 — unlock first or bad token.", false);
+            resetForget();
+          } else {
+            setStatus("Error: " + r.status, false);
+            resetForget();
+          }
+        });
+      }, { once: true });
+    }
+
+    // doEdit: inline textarea editor.
+    // Clicking Edit reveals a textarea pre-filled with current content + Save/Cancel.
+    function doEdit(msgId, currentContent, threadId, editBtn, row) {
+      if (!_authToken) {
+        showUnlockHint(editBtn);
+        return;
+      }
+      // If editor already open for this row, ignore
+      if (row.querySelector(".inline-editor")) return;
+
+      editBtn.disabled = true;
+
+      var editorDiv = document.createElement("div");
+      editorDiv.className = "inline-editor";
+
+      var ta = document.createElement("textarea");
+      ta.textContent = currentContent || "";
+
+      var actionsDiv = document.createElement("div");
+      actionsDiv.className = "inline-editor-actions";
+
+      var saveBtn = document.createElement("button");
+      saveBtn.className = "btn btn-save";
+      saveBtn.textContent = "Save";
+
+      var cancelBtn = document.createElement("button");
+      cancelBtn.className = "btn btn-cancel";
+      cancelBtn.style.marginLeft = "6px";
+      cancelBtn.textContent = "Cancel";
+
+      actionsDiv.appendChild(saveBtn);
+      actionsDiv.appendChild(cancelBtn);
+      editorDiv.appendChild(ta);
+      editorDiv.appendChild(actionsDiv);
+      row.appendChild(editorDiv);
+      ta.focus();
+
+      var closeEditor = function () {
+        editBtn.disabled = false;
+        if (editorDiv.parentNode) editorDiv.parentNode.removeChild(editorDiv);
+      };
+
+      cancelBtn.addEventListener("click", closeEditor);
+
+      saveBtn.addEventListener("click", function () {
+        var replacement = ta.value;
+        saveBtn.disabled = true;
+        saveBtn.textContent = "Saving…";
+
+        fetch("/memory/edit", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + _authToken,
+          },
+          body: JSON.stringify({ target: msgId, replacement: replacement, reason: "hatch-edit" }),
+        }).then(function (r) {
+          if (r.status === 204) {
+            loadThread(threadId);
+          } else if (r.status === 403) {
+            setStatus("403 — unlock first or bad token.", false);
+            closeEditor();
+          } else {
+            setStatus("Error: " + r.status, false);
+            closeEditor();
+          }
+        });
       });
     }
 
-    function doEdit(msgId, currentContent, threadId) {
-      if (!_authToken) {
-        alert("Unlock writes first (paste your auth token above).");
-        return;
+    // showUnlockHint: non-blocking inline message when writes are locked.
+    // Highlights the unlock section + shows a transient message near the button.
+    function showUnlockHint(nearBtn) {
+      var unlockSection = document.getElementById("unlock-section");
+      if (unlockSection) {
+        unlockSection.style.outline = "2px solid #f0c040";
+        setTimeout(function () { unlockSection.style.outline = ""; }, 2000);
       }
-      var replacement = prompt("Edit message content:", currentContent);
-      if (replacement === null) return; // cancelled
-      fetch("/memory/edit", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": "Bearer " + _authToken,
-        },
-        body: JSON.stringify({ target: msgId, replacement: replacement, reason: "hatch-edit" }),
-      }).then(function (r) {
-        if (r.status === 204) {
-          loadThread(threadId);
-        } else if (r.status === 403) {
-          setStatus("403 — unlock first or bad token.", false);
-        } else {
-          setStatus("Error: " + r.status, false);
-        }
-      });
+      // Avoid duplicate hints
+      if (nearBtn.nextSibling && nearBtn.nextSibling.className === "inline-unlock-hint") return;
+      var hintEl = document.createElement("span");
+      hintEl.className = "inline-unlock-hint";
+      hintEl.textContent = "Unlock writes first — paste your auth token above";
+      nearBtn.parentNode.insertBefore(hintEl, nearBtn.nextSibling);
+      setTimeout(function () {
+        if (hintEl.parentNode) hintEl.parentNode.removeChild(hintEl);
+      }, 3000);
     }
 
     // ── Back button ───────────────────────────────────────────────────────────────

@@ -1,41 +1,86 @@
-# Security hardening pass — ⚖️ LIGHT-DIRECT DRAFT (process experiment)
-
-> **These two chunks are a deliberate "before" snapshot. DO NOT execute as-is. DO NOT silently overwrite them.**
+# Security hardening pass — post-ceremony decomposition (+ process-experiment CONCLUSION)
 
 ## What this is
 
-The near-term **security hardening pass** (roadmap → "Conversation & Interaction Model" §security): un-defer the **per-install WS token** (ADR-0003 p.5 — only the *timing* was deferred) and move secrets into the **OS Keychain**. Closes known-gotchas **#31** (CSWSH exposure window) and **#38** (`.env` doesn't reach the prod launchd daemon).
+The pre-public-release **security hardening pass**: un-defer the **per-install token**
+(ADR-0003 p.5), move the **cloud secret to the OS Keychain** (#38), **token-gate the
+`/memory/*` read path** (ADR-0013 binding rider), and **caller-auth thread writes/adoption**
+(ADR-0014 regret-(a) binding rider). Spec: [[../../docs/specs/2026-06-12-security-hardening]]
+(`status: draft` — **Lior §5.2 sign-off pending**; decompose PR stays open until accepted).
 
-## Why it's a "light-direct" draft, not a normal decompose
+Design seams were resolved on the **conveyor dev-bus** (q#001–q#003,
+`orchestration/.conveyor/bus/`), then the decomposition was adversarially grilled by a fresh
+engine-reviewer subagent (1 BLOCKER + 3 MAJOR folded — see PR description).
 
-Unlike `memory-foundation` (thick design, 4 open seams → spec-first + brainstorm + grill), this pass is **thin and already-decided** (ADR-0003 p.5 + `architecture.md` Keychain). So it was written **light-direct**: the author's first-pass chunk files, **without** a spec, **without** `superpowers:brainstorming` (no Lior seam-resolution), and **without** `grill-with-docs` (no adversarial fresh-eyes pass).
-
-**This is an experiment (Lior, 2026-06-04):** after the memory-foundation chunks are built, come back and run the **full ceremony** on this same pass, then **compare** the result against this draft — to learn whether brainstorm + grill *materially* change a thin, already-decided decomposition, or whether light-direct was sufficient. For that comparison to be honest, **this draft must be preserved as the "before."**
-
-## Revisit protocol (the experiment)
-
-**Trigger:** AFTER the memory-foundation chunks (MF-01…MF-05) are built/merged.
-
-Then:
-1. Run `superpowers:brainstorming` to resolve the **`## Open / assumptions (un-brainstormed)`** sections in each chunk (the seams the author guessed at).
-2. Run standalone `grill-with-docs` adversarially against the resulting decomposition.
-3. **Diff** the post-ceremony chunks against this draft (keep this draft as the baseline — e.g. copy to `…/_light-direct-baseline/` before overwriting, or compare via git history).
-4. **Conclude:** did the ceremony change scope, ordering, seams, or DoD? Was the delta worth the process cost? (Feeds the standing "is the ceremony worth it for thin features" question — relates to `feedback_orchestrate_chunks_from_jimmy`.)
-
-## Already trimmed from scope (so the orchestrator doesn't redo or over-reach)
-
-- **127.0.0.1-only binding is already DONE** — `packages/daemon/src/index.ts:6` (`DAEMON_HOST = "127.0.0.1"`, used as `Bun.serve` `hostname`). NOT pending work.
-- **"Untrusted-by-default plugin/MCP supply chain" is OUT (premature)** — plugins/MCP don't exist yet (Phase 5). That hardening belongs with the plugin system, not this near-term pass.
-
-## Sequencing note (why this matters more now)
-
-The **#31 token chains with the memory-poisoning surface** that `memory-foundation` introduces — ADR-0012 decision 5 (line 52): *"a crafted non-browser client that can reach the daemon could plant a distilled 'fact' that then re-injects forever."* Building memory without closing #31 creates exactly the attack surface the transparency hatch was designed to mitigate. So closing #31 (chunk 02) is a **natural companion to memory-foundation**, not merely an optional parallel.
+**Roadmap reconciliation (bus q#001):** the roadmap's "all secrets in the OS Keychain" is read as
+"all **cloud/off-machine** secrets" — the per-install token is local-only and stays in its 0600
+file (`TokenStore`, shipped MF-05), which ADR-0003 p.5's "file-system-permission-protected"
+letter sanctions. Doc-reconciliation, not a roadmap change.
 
 ## Chunks
 
-| # | Title | Status | Closes |
-|---|-------|--------|--------|
-| 01 | Secrets → OS Keychain (+ prod launchd key-loading) | postponed | #38 |
-| 02 | Per-install WS token (connection-level, additive) | postponed | #31 (executes ADR-0003 p.5) |
+| # | Title | Status | Closes | Depends on |
+|---|-------|--------|--------|------------|
+| 01 | API key → macOS Keychain (+ env-isolated prod proof) | todo | #38 | none (∥ 02/03) |
+| 02 | Per-install WS token via subprotocol + thread-adoption auth + timing-safe verify | todo | #31 + ADR-0014 rider | none |
+| 03 | Token-gate `/memory/*` reads + history paste-extend | todo | ADR-0013 rider | 02 (§7.1 runtime coupling: shared `verify` + `index.ts` fetch handler) |
 
-02 depends on 01 (the token needs a secure home = Keychain).
+Already done / explicitly deferred: 127.0.0.1-binding (shipped, `index.ts:19`); launchd
+packaging, pairing/per-device tokens, rate-limiting, rotation UI, plugin/MCP supply chain,
+web-admin wiring — all recorded with WHY in spec §5.
+
+---
+
+## ⚗️ Process-experiment CONCLUSION (2026-06-12) — ceremony vs light-direct, the verdict
+
+**The experiment (Lior, 2026-06-04):** write this "thin, already-decided" pass light-direct
+(no spec/brainstorm/grill), then later run the full ceremony and diff — does ceremony materially
+change a thin decomposition? Baseline = commit `b7d1839`, preserved byte-identical in
+[`_light-direct-baseline/`](_light-direct-baseline/).
+
+### The diff (draft → post-ceremony)
+
+| Axis | Light-direct draft (Jun 5) | Post-ceremony (Jun 12) |
+|------|---------------------------|------------------------|
+| Chunks | 2 | **3** (+ a spec) |
+| Dependency | 02 **depends on** 01 ("token needs a Keychain home") | **inverted**: 01 ∥ 02 parallelizable; NEW dep 03→02 (runtime coupling) |
+| Token home | implicit: Keychain (chunk 01 provides it) | **0600 file, NOT Keychain** (q#001 — TokenStore already shipped in MF-05; Keychain = cloud secrets only) |
+| WS transport | OPEN ("needs real thought") | **decided: subprotocol** (q#002 — conductor OVERRIDE of the decomposer's query-param rec) |
+| Origin allowlist | OPEN (replace vs complement) | **decided: augment** (layer 2) |
+| Launchd | DoD demanded "prod launchd daemon loads key" | **descoped**: repo has NO launchd surface at all — the draft's DoD silently smuggled in a packaging feature (q#003-L2; L3 = Lior's demo option) |
+| New scope | — (predates both) | ADR-0013 read-token rider (chunk 03) + ADR-0014 thread-auth rider (in 02) |
+| Spec | none | **yes** (conductor-ordered: multi-surface auth model = PIPELINE §3 territory) |
+| Buildability traps | none recorded | grill found the overlay reality (factory signature, reconnect re-present, stale forbidding comment, Rust fs gap, memory-smoke.ts, env-i PATH) |
+
+### Verdict — was the ceremony worth it? **YES for this pass — with an honest split of credit.**
+
+1. **~Half the delta is world-change, not ceremony.** Between Jun 5 and Jun 12, MF-05 shipped the
+   TokenStore and TWO binding ADR riders landed on this pass (0013 read-token, 0014 thread-auth).
+   ANY re-decompose — even light-direct — would have grown the scope. The experiment's premise
+   ("thin, already-decided") partially dissolved before the ceremony ran.
+2. **But the ceremony caught what a light-direct re-draft likely would NOT:** (a) the
+   **dependency inversion** (the draft's 02→01 rested on a premise the shipped code already
+   falsified — found by reading the repo, forced by brainstorm seam #1); (b) the **launchd
+   packaging smuggle** hidden in a DoD line (found by checking that no plist exists); (c) the
+   **transport override** — the conductor reversed the decomposer's own recommendation on
+   security-posture grounds, exactly the "ask up, don't self-decide" value the bus exists for;
+   (d) the **grill's BLOCKER** — the draft (and the first post-ceremony cut!) mis-located the
+   overlay's WS client and missed that reconnect would silently never re-present the token.
+3. **Cost:** 3 bus round-trips (overnight, zero Lior interrupts) + 1 grill subagent + 1 fable
+   decompose session. For a **security** pass, (b)+(c)+(d) alone justify it.
+
+**Standing-question feed (the "is ceremony worth it for thin features" question):** the useful
+discriminator is NOT "thin vs thick" but **"has the world moved since the draft?"** — if ≥1
+ADR/rider/shipped-chunk has touched the feature's surfaces since the light-direct draft was
+written, re-run the ceremony (the draft's premises are suspect); if genuinely nothing moved, a
+light-direct draft + a grill-only pass (skip brainstorm) is likely sufficient. Security-touching
+features: always ceremony — the override in (c) shows recommendation-quality differs at the
+conductor tier.
+
+### Experiment hygiene
+
+- The "before" is preserved byte-identical: [`_light-direct-baseline/`](_light-direct-baseline/)
+  (+ git history at `b7d1839`).
+- This README replaced the draft's framing; the draft README is in git history (`b7d1839`).
+- Bus transcripts: `orchestration/.conveyor/bus/q|a/001-003*` (q#002-2a carries the flagged
+  conductor override for Lior's AM review).

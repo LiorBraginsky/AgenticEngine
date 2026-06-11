@@ -1,3 +1,5 @@
+> 🗄️ ARCHIVED 2026-06-11 — shipped. Historical record; do not edit.
+
 # Plan — MF-05 (5a): Transparency hatch — view/edit/forget + provenance affordance + route-closing demo
 
 **Chunk:** `orchestration/chunks-todo/memory-foundation/05-hatch-view-edit-forget.md`
@@ -5,8 +7,7 @@
 **Spec:** `orchestration/docs/specs/2026-06-04-memory-foundation.md` §3.3/§3.4/§3.5/§4.1/§4.2/§7
 **ADRs in scope:** 0012 (5a, 5b-surface, decision 3), 0005 (closed-set), 0003 (daemon WS — Tranche-2 boundary)
 
-## Status
-
+## Status: SHIPPED
 **Phase 3 — Tranche 2 MECHANICAL VERIFIED-DONE + review-complete → `BLOCKED: live-demo` (2026-06-10).** Branch `chunk/mf-05-hatch-tranche2` (7 commits, 49707ee..c427506). Tranche 1 was MERGED as PR #28 (7049383); ADR-0013 accepted Option B (ca30317).
 
 **Tranche-2 verification (command-evidence, orchestrator-re-run — not worker assertion):**

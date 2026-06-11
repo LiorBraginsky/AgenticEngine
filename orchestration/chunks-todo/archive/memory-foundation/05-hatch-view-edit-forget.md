@@ -1,6 +1,8 @@
+> 🗄️ ARCHIVED 2026-06-11 — done. Historical record; do not edit.
+
 # Chunk 05: Transparency hatch (5a) — view/edit/forget + provenance affordance + route-closing demo
 
-**Status:** in-progress
+**Status:** done
 **Created:** 2026-06-04
 **Phase:** Conversation & Interaction Model · route part 1 (Memory foundation)
 **Estimated size:** ~1 day

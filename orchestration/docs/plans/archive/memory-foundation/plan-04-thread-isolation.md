@@ -1,3 +1,5 @@
+> 🗄️ ARCHIVED 2026-06-11 — shipped. Historical record; do not edit.
+
 # MF-04 — Thread-isolation logic (5f) via the `scope` tag — Implementation Plan
 
 > 🗄️ ARCHIVED 2026-06-06 — shipped in PR #26 (merge `d61fdde`). Historical record; do not edit.
@@ -368,4 +370,4 @@ keep-it-`cross-thread` v0 stance are the architect's §7 latitude, not a load-be
    verified against the real test and adopted **Position B** (distiller stays all-`cross-thread`; 5f =
    enforcement only). No frozen artifact edited; in-scope design choice (spec §7).
 
-## Status: Done (planning) → executing
+## Status: SHIPPED — Done (planning) → executing

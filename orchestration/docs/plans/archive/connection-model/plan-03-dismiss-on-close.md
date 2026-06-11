@@ -1,3 +1,5 @@
+> 🗄️ ARCHIVED 2026-06-11 — shipped. Historical record; do not edit.
+
 # Connection Model CM-03: dismiss = close(ws) → consolidate; retire the provisional trigger — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Project discipline is TDD (superpowers:test-driven-development) — every implementation step is preceded by a failing test that you run and watch fail first.
@@ -10,7 +12,7 @@
 
 ---
 
-## Status: tasks complete — review-complete (PR #36, ready-to-merge). Task 1 (8e2703e, 7deaad1) · Task 2 (9ddf991) · Task 3 (23eb248) · Task 4 (0fbabb3) · review fixups (08cdea7). Gates: typecheck 0 / lint:strict 0 / bun test 275 pass 0 fail (main 278: +11/−14 — deleted runSession tests were manager-suite duplicates or per-turn-socket-contract assertions) / frozen surfaces diff empty / engine-reviewer round 1: 0 blockers, 2 MINOR doc comments applied, 2 NIT no-action. Task 4 audit drift vs plan expectation: 5 unique assertion sets found (NOT zero) → migrated into connection-manager.test.ts. Merge withheld per crawl-rung conductor override (§11.4 — Jimmy re-verifies on clean checkout). Chunk stays in-progress pending the JOINT 6-step demo (Lior-gated).
+## Status: SHIPPED — tasks complete — review-complete (PR #36, ready-to-merge). Task 1 (8e2703e, 7deaad1) · Task 2 (9ddf991) · Task 3 (23eb248) · Task 4 (0fbabb3) · review fixups (08cdea7). Gates: typecheck 0 / lint:strict 0 / bun test 275 pass 0 fail (main 278: +11/−14 — deleted runSession tests were manager-suite duplicates or per-turn-socket-contract assertions) / frozen surfaces diff empty / engine-reviewer round 1: 0 blockers, 2 MINOR doc comments applied, 2 NIT no-action. Task 4 audit drift vs plan expectation: 5 unique assertion sets found (NOT zero) → migrated into connection-manager.test.ts. Merge withheld per crawl-rung conductor override (§11.4 — Jimmy re-verifies on clean checkout). Chunk stays in-progress pending the JOINT 6-step demo (Lior-gated).
 
 ---
 

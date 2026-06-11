@@ -34,9 +34,10 @@ const factory: WebSocketFactory = (url) => {
   };
 };
 
-// CM-02: one persistent connection for the overlay's lifetime. Opened on activation
-// (module eval = overlay webview created). Close-on-dismiss is chunk 03 — NO teardown here.
-const connection = new ConnectionManager(factory);
+// CM-02: one persistent connection for the overlay's lifetime. Opened on activation.
+// CM-03: a voluntary dismiss (EV_TEXT_DISMISS) closes this socket and re-creates a fresh
+// manager for the next conversation — hence `let`, reassigned in the dismiss handler.
+let connection = new ConnectionManager(factory);
 connection.connect();
 
 // ---------------------------------------------------------------------------
@@ -168,12 +169,25 @@ void listen(EV_CANCEL, () => {
 });
 
 // Text card dismiss — fired by widget.ts on × click or Escape (when mode=text).
-// Hides the widget and clears the render kind so no stale state remains.
+// CM-03: this is the user-visible "dismiss the conversation" affordance. It hides the
+// widget AND deliberately closes the persistent socket (=> daemon close(ws) consolidates
+// the thread) AND resets currentThreadId so the NEXT summon is a NEW conversation drawing
+// on the distilled slice (spec §3.2/§3.3). Voluntary: dismiss() does NOT reconnect.
+// A fresh manager is created+connected so the next submit has a live socket.
 void listen(EV_TEXT_DISMISS, () => {
   if (lastRenderKind !== "text") return;
   hideWidgetWindow().catch(() => {/* ignore */});
   lastRenderKind = undefined;
   input.value = "";
+  // CM-03 dismiss = close + reset (the voluntary side of the drop/dismiss asymmetry).
+  try { connection.dismiss(); } catch { /* never throw out of the listener */ }
+  currentThreadId = undefined;
+  // Re-arm for the next conversation: dismiss() left the manager inactive (no reconnect),
+  // so construct a fresh one and open its socket on activation-equivalent. The prior
+  // manager is intentionally orphaned — active=false guarantees its trailing close
+  // event neither reconnects nor reopens; GC reclaims it once the socket closes.
+  connection = new ConnectionManager(factory);
+  connection.connect();
 });
 
 // ---------------------------------------------------------------------------
@@ -187,10 +201,10 @@ let inFlight = false;
 // posture as client_session_id; session_ack carries no thread_id so the client
 // owns the id and the daemon ADOPTS it). Passed on EVERY subsequent session_start.
 //
-// DELIBERATE INTERIM WART (chunk 01): there is no reset here — the overlay
-// continues ONE ever-growing thread per app run (reset only by app restart).
-// The "new conversation" / reset-on-dismiss escape hatch arrives in chunk 03.
-// Do NOT add reset logic here (chunk-03 scope; PIPELINE §7.2).
+// CM-03 closed the chunk-01 interim wart: a voluntary dismiss (EV_TEXT_DISMISS
+// handler above) resets this to undefined, so the next submit mints a fresh id —
+// "new conversation" drawing on the distilled slice. Hide gestures (Escape/blur)
+// do NOT reset — re-summon continues the same thread.
 // ---------------------------------------------------------------------------
 let currentThreadId: string | undefined;
 

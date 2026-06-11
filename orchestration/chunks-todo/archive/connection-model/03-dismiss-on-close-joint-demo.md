@@ -1,6 +1,8 @@
+> 🗄️ ARCHIVED 2026-06-11 — done. Historical record; do not edit.
+
 # Chunk 3: dismiss = close(ws) → consolidate; retire the provisional trigger; joint-demo gate
 
-**Status:** in-progress
+**Status:** done
 **Created:** 2026-06-10
 **Phase:** Conversation & Interaction Model · connection-model (demo-unblocking slice, 3 of 3)
 **Estimated size:** ~0.5–1 day

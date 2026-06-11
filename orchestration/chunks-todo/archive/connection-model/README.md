@@ -1,3 +1,5 @@
+> 🗄️ ARCHIVED 2026-06-11 — shipped. Historical record; do not edit.
+
 # connection-model — demo-unblocking slice (chunks 01–03)
 
 > Decomposed 2026-06-10 by the conveyor decompose-chat from the ACCEPTED spec

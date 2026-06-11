@@ -1,6 +1,8 @@
+> 🗄️ ARCHIVED 2026-06-11 — done. Historical record; do not edit.
+
 # Chunk 2: Persistent WS connection (overlay) + reconnect
 
-**Status:** in-progress
+**Status:** done
 **Created:** 2026-06-10
 **Phase:** Conversation & Interaction Model · connection-model (demo-unblocking slice, 2 of 3)
 **Estimated size:** ~1 day

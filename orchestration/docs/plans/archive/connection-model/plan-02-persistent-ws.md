@@ -1,3 +1,5 @@
+> 🗄️ ARCHIVED 2026-06-11 — shipped. Historical record; do not edit.
+
 # Persistent WS Connection (overlay) + Reconnect — CM-02 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Project discipline is TDD (superpowers:test-driven-development) — every implementation step is preceded by a failing test.
@@ -10,7 +12,7 @@
 
 ---
 
-## Status: review-complete — all 6 tasks built; engine-reviewer round 1: 0 BLOCKER / 0 MAJOR / 2 MINOR / 2 NIT; both MINORs + NIT#4 fixed in 8f17adb; round 2 (focused re-review): 0/0/0/0. Awaiting conductor merge (crawl-rung override 2026-06-10).
+## Status: SHIPPED — review-complete — all 6 tasks built; engine-reviewer round 1: 0 BLOCKER / 0 MAJOR / 2 MINOR / 2 NIT; both MINORs + NIT#4 fixed in 8f17adb; round 2 (focused re-review): 0/0/0/0. Awaiting conductor merge (crawl-rung override 2026-06-10).
 
 ---
 

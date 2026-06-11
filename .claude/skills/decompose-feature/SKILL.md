@@ -7,6 +7,17 @@ description: Decompose a feature or roadmap phase into atomic PR-sized chunks. U
 
 You are helping Lior decompose a strategic-level feature (or roadmap phase) into atomic, PR-sized chunks. Each chunk must be independently briefable to `engine-orchestrator` for execution.
 
+## Model (conveyor launch)
+
+Decomposition is **open-ended structural reasoning** that shapes the entire downstream build — the
+highest-leverage single reasoning task in the pipeline, and it runs only **once per feature**. So in
+the conveyor, launch the decompose session on a **frontier model: `claude --model fable`**, with
+**fallback to `--model opus`** if Fable is unavailable (after the 2026-06-22 promo, or on error).
+This skill cannot set its own model — the launcher (the conveyor conductor) pins it via `--model`;
+this note records the intent. Everything else stays opus/sonnet per the agent-def pins. *(Promo
+experiment: if Fable's cuts aren't visibly sharper than Opus, drop back to opus — decompose is
+1×/feature so the cost either way is small. See memory `reference_claude_code_automation_billing`.)*
+
 ## When to invoke
 
 - Slash command `/decompose-feature <feature-or-phase-name>`

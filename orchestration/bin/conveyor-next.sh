@@ -109,7 +109,7 @@ ONLY what the docs do not answer (§5.2 / §7.2 citation test).
 
 ## Report contract (last action before you end your turn)
 Append ONE line to ${LEDGER#"$REPO_ROOT"/} and post the same to Jimmy:
-  - DONE    ${FEATURE} ${nn} — <PR#> — <one-line what shipped>
+  - DONE    ${FEATURE} ${nn} — <PR#> — <one-line what shipped> · tok=<your total token spend this run, digits only>
   - BLOCKED ${FEATURE} ${nn} — <gate> — <what Jimmy must route to Lior>
 Then stop. Do NOT pick up the next chunk — Jimmy launches it.
 EOF
@@ -141,10 +141,16 @@ case "$MODE" in
       tmux split-window -t conveyor:room -v "exec \"\${SHELL:-/bin/zsh}\""
       tmux select-layout -t conveyor:room even-vertical
     fi
-    # respawn the bottom (worker) pane with this worker — one worker at a time
-    tmux respawn-pane -k -t conveyor:room.1 "claude \"\$(cat '$brief_file')\""
+    # respawn the bottom (worker) pane with this worker — one worker at a time.
+    # Model: pin the orchestrator session DELIBERATELY (default opus = the decision layer)
+    # so it does NOT inherit the CLI default (e.g. fable). Override via CONVEYOR_MODEL.
+    # Subagents keep their own agent-def model: (architect opus, worker sonnet, reviewer opus).
+    CONVEYOR_MODEL="${CONVEYOR_MODEL:-opus}"
+    tmux respawn-pane -k -t conveyor:room.1 "claude --model $CONVEYOR_MODEL \"\$(cat '$brief_file')\""
     tmux select-pane -t conveyor:room.1 -T "worker:${FEATURE}-${nn}" 2>/dev/null || true
-    echo "── launched ${FEATURE} chunk ${nn} in the control room (pane conveyor:room.1, subscription)."
+    # launch counter (board STATS · workers-run) — ephemeral, gitignored
+    printf '%s %s %s model=%s\n' "$(date '+%F %T')" "$FEATURE" "$nn" "$CONVEYOR_MODEL" >> "$BRIEF_DIR/../launches.log"
+    echo "── launched ${FEATURE} chunk ${nn} in the control room (pane conveyor:room.1, model=$CONVEYOR_MODEL, subscription)."
     echo "   see it:  tmux attach -t conveyor    (board top, worker bottom; Ctrl-b d = detach)"
     echo "   or:      bash '$BIN_DIR/conveyor-room.sh'"
     ;;

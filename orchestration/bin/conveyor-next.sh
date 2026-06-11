@@ -141,10 +141,14 @@ case "$MODE" in
       tmux split-window -t conveyor:room -v "exec \"\${SHELL:-/bin/zsh}\""
       tmux select-layout -t conveyor:room even-vertical
     fi
-    # respawn the bottom (worker) pane with this worker — one worker at a time
-    tmux respawn-pane -k -t conveyor:room.1 "claude \"\$(cat '$brief_file')\""
+    # respawn the bottom (worker) pane with this worker — one worker at a time.
+    # Model: pin the orchestrator session DELIBERATELY (default opus = the decision layer)
+    # so it does NOT inherit the CLI default (e.g. fable). Override via CONVEYOR_MODEL.
+    # Subagents keep their own agent-def model: (architect opus, worker sonnet, reviewer opus).
+    CONVEYOR_MODEL="${CONVEYOR_MODEL:-opus}"
+    tmux respawn-pane -k -t conveyor:room.1 "claude --model $CONVEYOR_MODEL \"\$(cat '$brief_file')\""
     tmux select-pane -t conveyor:room.1 -T "worker:${FEATURE}-${nn}" 2>/dev/null || true
-    echo "── launched ${FEATURE} chunk ${nn} in the control room (pane conveyor:room.1, subscription)."
+    echo "── launched ${FEATURE} chunk ${nn} in the control room (pane conveyor:room.1, model=$CONVEYOR_MODEL, subscription)."
     echo "   see it:  tmux attach -t conveyor    (board top, worker bottom; Ctrl-b d = detach)"
     echo "   or:      bash '$BIN_DIR/conveyor-room.sh'"
     ;;

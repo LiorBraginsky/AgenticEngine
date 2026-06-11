@@ -57,6 +57,17 @@ export function isMessageId(s: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
 }
 
+/**
+ * Returns true if `s` is UUID-shaped — the validation gate for client-minted
+ * thread-id adoption (CM-01, spec §3.3). A non-UUID-shaped thread_id is NOT
+ * adopted (gotcha #9 discipline: no garbage durable keys). Same regex as
+ * isMessageId; named distinctly so the thread-adoption intent is explicit and
+ * not coupled to the messages.id seam invariant.
+ */
+export function isUuidShaped(s: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
+}
+
 export class MemoryStore {
   private readonly db: Database;
   private readonly threadsDir: string;
@@ -70,8 +81,17 @@ export class MemoryStore {
     this.db.exec(SCHEMA_DDL);
   }
 
-  createThread(title?: string): string {
-    const id = crypto.randomUUID();
+  /**
+   * Mint a new durable thread. `adoptId` (CM-01, spec §3.3): when the overlay
+   * supplied a client-minted, UUID-shaped, unknown thread_id, the caller passes
+   * it here so the new thread is created WITH that id (the daemon "adopts" it).
+   * Absent ⇒ the daemon mints a fresh UUID (MF-01 degenerate path, unchanged).
+   * This is still the ONE thread-write path — no second INSERT.
+   * The caller (ThreadLifecycle) is responsible for the UUID-shape + uniqueness
+   * check (isUuidShaped + !threadExists) BEFORE adopting; this method trusts it.
+   */
+  createThread(title?: string, adoptId?: string): string {
+    const id = adoptId ?? crypto.randomUUID();
     const now = Date.now();
     this.db
       .query(

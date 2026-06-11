@@ -34,7 +34,14 @@ beforeAll(async () => {
 
 afterAll(() => server.stop(true));
 
-/** Drive ONE full mock turn (session_start → tool_result → session_end). */
+/** Drive ONE full mock turn (session_start → tool_result → session_end).
+ *
+ * CM-03 NOTE: the ws.close() below now fires the PRODUCTION dismiss path
+ * (close(ws) → hook.dismiss → distill + insertDistillationEvent) against this
+ * suite's shared on-disk DB, racing any manual distill the test then performs.
+ * Assertions in tests 5.1–5.3 therefore deliberately avoid count/exclusivity
+ * on distilled_facts — do NOT tighten them (e.g. toHaveLength) without
+ * accounting for the production dismiss's own writes. */
 function runTurn(text: string, threadId?: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(`ws://127.0.0.1:${PORT}`, { headers: { Origin: ORIGIN } });
@@ -71,9 +78,10 @@ test("swap-proof: re-derive slice with FixedMarker over untouched archive; messa
   const threadRow = store.rawDb().query("SELECT thread_id FROM threads ORDER BY created_at ASC LIMIT 1").get() as { thread_id: string };
   const threadId = threadRow.thread_id;
 
-  // 3. Directly distill thread A via DumbTail (simulating the consolidation-hook dismiss path)
-  //    PROVISIONAL trigger fires only on same-WS thread-switch; each runTurn uses a fresh WS.
-  //    The store-level distill is the real-I/O proof that the archive is intact and distillable.
+  // 3. Directly distill thread A via DumbTail (simulating the consolidation-hook dismiss path).
+  //    CM-03 retired the provisional thread-switch trigger; dismiss now fires on close(ws)
+  //    (see dismiss-on-close.daemon.test.ts). This store-level distill is the real-I/O proof
+  //    that the archive is intact and distillable.
   const dumbTail = new DumbTailProvider();
   const distillResult = await dumbTail.distill(store, threadId);
   store.insertDistilledFacts(distillResult.facts, "dumb-tail");

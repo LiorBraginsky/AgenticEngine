@@ -19,12 +19,18 @@
  *      → show_text content MUST contain "/history.html"
  *   B. SAME-thread turn (thread_id of an existing thread sent):
  *      → show_text content must NOT contain "/history.html"
+ *   C. PERSISTENT SOCKET — two sequential turns on ONE socket:
+ *      turn 1: no thread_id → new-thread → injectedMemory=true → show_text contains /history.html
+ *      turn 2: same socket + minted thread_id → same-thread hydration → injectedMemory=false (local
+ *              variable reset) → show_text does NOT contain /history.html.
+ *      This proves injectedMemory cannot leak across turns multiplexed on one persistent socket.
  */
 
 import { test, expect, beforeAll, afterAll } from "bun:test";
 import { tmpdir } from "node:os";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
+import { Database } from "bun:sqlite";
 import { MemoryStore } from "./store.js";
 import type { AgentProvider } from "../providers/provider.js";
 
@@ -164,4 +170,91 @@ test("T2.3a-B: same-thread turn (thread_id sent) → show_text does NOT contain 
   const content = findShowTextContent(envelopes);
   expect(content).toBeDefined();
   expect(content).not.toContain("/history.html");
+});
+
+// ─── C. PERSISTENT SOCKET — two sequential turns on ONE socket ─────────────
+//
+// Verifies the injectedMemory-per-message local invariant: the variable is
+// declared INSIDE the message handler so it resets to false on EVERY invocation.
+// Turn 1 (new-thread) sets injectedMemory=true → show_text stamped.
+// Turn 2 (same-thread continuation on the SAME socket, injectedMemory resets to
+// false → same-thread hydration path → NOT stamped).
+//
+// "drive one Anthropic turn on an already-open socket"
+// The Anthropic fake provider emits: session_ack → tool_call{show_text} → session_end
+// (no tool_result needed — show_text is display-only).
+function turnOnSocket(
+  ws: WebSocket,
+  text: string,
+  threadId?: string,
+): Promise<Array<{ type: string; [key: string]: unknown }>> {
+  return new Promise((resolve, reject) => {
+    const cid = crypto.randomUUID();
+    const envelopes: Array<{ type: string; [key: string]: unknown }> = [];
+    let mySid: string | undefined;
+    const onMsg = (e: MessageEvent) => {
+      const m = JSON.parse(e.data as string) as { type: string; [key: string]: unknown };
+      envelopes.push(m);
+      if (m.type === "session_ack" && m.client_session_id === cid) {
+        mySid = m.session_id as string;
+        return;
+      }
+      if (m.type === "session_end" && m.session_id === mySid) {
+        ws.removeEventListener("message", onMsg);
+        resolve(envelopes);
+      }
+    };
+    ws.addEventListener("message", onMsg);
+    ws.send(
+      JSON.stringify({
+        type: "session_start",
+        trigger: "user",
+        text,
+        client_session_id: cid,
+        ...(threadId ? { thread_id: threadId } : {}),
+      }),
+    );
+    setTimeout(() => reject(new Error("turn timeout")), 5000);
+  });
+}
+
+/** Read the most recently created thread_id from the DB (used to discover the id minted on turn 1). */
+function newestThreadId(): string {
+  const db = new Database(join(dataDir, "memory.sqlite"));
+  const row = db
+    .query("SELECT thread_id FROM threads ORDER BY created_at DESC LIMIT 1")
+    .get() as { thread_id: string } | null;
+  db.close();
+  if (!row) throw new Error("no threads in DB");
+  return row.thread_id;
+}
+
+test("T2.3a-C: persistent socket — turn 1 (new-thread) stamped; turn 2 (same-thread) NOT stamped — injectedMemory does not leak across turns", async () => {
+  // Open ONE socket and keep it open for both turns.
+  const ws = await new Promise<WebSocket>((resolve, reject) => {
+    const sock = new WebSocket(`ws://127.0.0.1:${PORT}`, { headers: { Origin: ORIGIN } });
+    sock.addEventListener("open", () => resolve(sock));
+    sock.addEventListener("error", () => reject(new Error("ws error")));
+    setTimeout(() => reject(new Error("open timeout")), 3000);
+  });
+
+  try {
+    // Turn 1: no thread_id → new thread minted → retrieve() injects seeded fact → stamped.
+    const turn1Envelopes = await turnOnSocket(ws, "What do you know?");
+    const turn1Content = findShowTextContent(turn1Envelopes);
+    expect(turn1Content).toBeDefined();
+    expect(turn1Content).toContain("/history.html");
+
+    // Discover the thread minted during turn 1 so we can pass it on turn 2.
+    const mintedThreadId = newestThreadId();
+
+    // Turn 2: same socket, passing the minted thread_id → same-thread hydration (readThreadTail).
+    // injectedMemory is a local variable in the message handler — resets to false on this invocation.
+    const turn2Envelopes = await turnOnSocket(ws, "Tell me more.", mintedThreadId);
+    const turn2Content = findShowTextContent(turn2Envelopes);
+    expect(turn2Content).toBeDefined();
+    expect(turn2Content).not.toContain("/history.html");
+  } finally {
+    ws.close();
+  }
 });

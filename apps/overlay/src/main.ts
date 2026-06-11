@@ -14,8 +14,8 @@ import { LogicalPosition } from "@tauri-apps/api/dpi";
 import { currentMonitor } from "@tauri-apps/api/window";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import type { WebSocketFactory } from "./ws/types.js";
-import { runSession } from "./ws/session-client.js";
 import type { ToolCallContext } from "./ws/session-client.js";
+import { ConnectionManager } from "./ws/connection-manager.js";
 import type { ColorSwatch } from "@agentic/protocol";
 import { HideScheduler } from "./lifecycle/hide-scheduler.js";
 import { statusForEndReason } from "./lifecycle/session-end-reason.js";
@@ -33,6 +33,12 @@ const factory: WebSocketFactory = (url) => {
       s.addEventListener(t, (e) => cb({ data: (e as MessageEvent).data })),
   };
 };
+
+// CM-02: one persistent connection for the overlay's lifetime. Opened on activation.
+// CM-03: a voluntary dismiss (EV_TEXT_DISMISS) closes this socket and re-creates a fresh
+// manager for the next conversation — hence `let`, reassigned in the dismiss handler.
+let connection = new ConnectionManager(factory);
+connection.connect();
 
 // ---------------------------------------------------------------------------
 // DOM references — guarded lookups (NIT: no unchecked casts)
@@ -163,18 +169,44 @@ void listen(EV_CANCEL, () => {
 });
 
 // Text card dismiss — fired by widget.ts on × click or Escape (when mode=text).
-// Hides the widget and clears the render kind so no stale state remains.
+// CM-03: this is the user-visible "dismiss the conversation" affordance. It hides the
+// widget AND deliberately closes the persistent socket (=> daemon close(ws) consolidates
+// the thread) AND resets currentThreadId so the NEXT summon is a NEW conversation drawing
+// on the distilled slice (spec §3.2/§3.3). Voluntary: dismiss() does NOT reconnect.
+// A fresh manager is created+connected so the next submit has a live socket.
 void listen(EV_TEXT_DISMISS, () => {
   if (lastRenderKind !== "text") return;
   hideWidgetWindow().catch(() => {/* ignore */});
   lastRenderKind = undefined;
   input.value = "";
+  // CM-03 dismiss = close + reset (the voluntary side of the drop/dismiss asymmetry).
+  try { connection.dismiss(); } catch { /* never throw out of the listener */ }
+  currentThreadId = undefined;
+  // Re-arm for the next conversation: dismiss() left the manager inactive (no reconnect),
+  // so construct a fresh one and open its socket on activation-equivalent. The prior
+  // manager is intentionally orphaned — active=false guarantees its trailing close
+  // event neither reconnects nor reopens; GC reclaims it once the socket closes.
+  connection = new ConnectionManager(factory);
+  connection.connect();
 });
 
 // ---------------------------------------------------------------------------
 // In-flight guard — prevents double-Enter opening a second session (6.5a)
 // ---------------------------------------------------------------------------
 let inFlight = false;
+
+// ---------------------------------------------------------------------------
+// CM-01 (spec §3.3): the durable thread the overlay is continuing. Minted on
+// the first submit of a conversation (crypto.randomUUID — same client-mint
+// posture as client_session_id; session_ack carries no thread_id so the client
+// owns the id and the daemon ADOPTS it). Passed on EVERY subsequent session_start.
+//
+// CM-03 closed the chunk-01 interim wart: a voluntary dismiss (EV_TEXT_DISMISS
+// handler above) resets this to undefined, so the next submit mints a fresh id —
+// "new conversation" drawing on the distilled slice. Hide gestures (Escape/blur)
+// do NOT reset — re-summon continues the same thread.
+// ---------------------------------------------------------------------------
+let currentThreadId: string | undefined;
 
 // ---------------------------------------------------------------------------
 // Session-scoped hide timer (gotcha #33).
@@ -210,7 +242,14 @@ input.addEventListener("keydown", (e: KeyboardEvent) => {
     // Lock against re-submit (6.5a). Loader is shown via onSessionStart below.
     inFlight = true;
 
-    runSession(text, factory, {
+    // CM-01: mint the thread id once, on the first submit of the app run; reuse
+    // it on every continuation turn. (No reset until chunk 03's dismiss.)
+    if (currentThreadId === undefined) {
+      currentThreadId = crypto.randomUUID();
+    }
+
+    connection.runSession(text, {
+      threadId: currentThreadId,
       onToolCall,
       onShowText,
       onSessionStart: () => {

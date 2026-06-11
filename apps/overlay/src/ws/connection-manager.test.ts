@@ -286,3 +286,65 @@ test("ConnectionManager: after a drop it schedules a reconnect and reopens the s
   scheduled!();               // fire the backoff timer
   expect(factory).toHaveBeenCalledTimes(2); // reconnected on a fresh socket
 });
+
+// ---------------------------------------------------------------------------
+// CM-03 — voluntary dismiss() vs involuntary drop asymmetry
+// ---------------------------------------------------------------------------
+
+test("ConnectionManager.dismiss(): closes the socket and does NOT reconnect (voluntary)", () => {
+  const fake1 = makeFake();
+  const fake2 = makeFake();
+  const fakes = [fake1, fake2];
+  let i = 0;
+  const factory = jest.fn(() => fakes[i++]!.ws);
+  let scheduled: (() => void) | undefined;
+  const mgr = new ConnectionManager(factory, {
+    setTimeoutFn: (cb) => { scheduled = cb; return 0 as unknown as ReturnType<typeof setTimeout>; },
+    clearTimeoutFn: () => {},
+    random: () => 0,
+  });
+  mgr.connect();
+  expect(factory).toHaveBeenCalledTimes(1);
+
+  fake1.fire("open");
+  mgr.dismiss();                 // VOLUNTARY close
+  expect(fake1.closed).toBe(true);
+  // No reconnect was scheduled (active=false before the close event fired).
+  expect(scheduled).toBeUndefined();
+  // Even if a stray timer were invoked, it must not reopen.
+  scheduled?.();
+  expect(factory).toHaveBeenCalledTimes(1);
+});
+
+test("ConnectionManager: an INVOLUNTARY drop still reconnects (asymmetry holds)", () => {
+  const fake1 = makeFake();
+  const fake2 = makeFake();
+  const fakes = [fake1, fake2];
+  let i = 0;
+  const factory = jest.fn(() => fakes[i++]!.ws);
+  let scheduled: (() => void) | undefined;
+  const mgr = new ConnectionManager(factory, {
+    setTimeoutFn: (cb) => { scheduled = cb; return 0 as unknown as ReturnType<typeof setTimeout>; },
+    clearTimeoutFn: () => {},
+    random: () => 0,
+  });
+  mgr.connect();
+  fake1.fire("open");
+  fake1.fire("close");           // INVOLUNTARY drop (active still true)
+  expect(scheduled).toBeDefined();
+  scheduled!();
+  expect(factory).toHaveBeenCalledTimes(2); // reconnected
+});
+
+test("ConnectionManager.dismiss(): an in-flight turn settles cancelled-equivalent (no unhandled rejection)", async () => {
+  const fake = makeFake();
+  const mgr = new ConnectionManager(() => fake.ws, {
+    setTimeoutFn: () => 0 as unknown as ReturnType<typeof setTimeout>,
+    clearTimeoutFn: () => {},
+  });
+  mgr.connect();
+  const p = mgr.runSession("hi", { handshakeTimeoutMs: 10_000 });
+  fake.fire("open");
+  mgr.dismiss(); // dismiss mid-flight — turn must settle, not hang or reject
+  await expect(p).resolves.toEqual({ sessionId: "", reason: "cancelled" });
+});

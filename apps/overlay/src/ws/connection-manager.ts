@@ -79,6 +79,24 @@ export class ConnectionManager {
     this.setTimeoutFn(() => { if (this.active && !this.ws) this.openSocket(); }, delay);
   }
 
+  /**
+   * Voluntary dismiss (CM-03): close the socket and do NOT reconnect. Sets active=false
+   * BEFORE ws.close() so the shared onSocketClose() handler — which reconnects only while
+   * active — settles any in-flight turn locally (cancelled-equivalent) and stays down.
+   * The caller (main.ts) owns currentThreadId reset and any fresh-manager re-creation;
+   * this method only severs the connection. Contrast: an involuntary drop fires close while
+   * active is still true → reconnect (the load-bearing asymmetry, spec §3.1/§3.2).
+   */
+  dismiss(): void {
+    this.active = false;
+    this.ws?.close();
+  }
+
+  /**
+   * Single-flight INVARIANT (cross-file): callers must not start a new turn while one is
+   * in flight. main.ts enforces this via its `inFlight` guard; the dispatcher Map therefore
+   * holds at most ONE SessionContext (gotcha #45 unchanged).
+   */
   runSession(text: string, options: RunSessionOptions = {}): Promise<SessionResult> {
     return new Promise<SessionResult>((resolve, reject) => {
       const { msg, clientSessionId } = buildSessionStart(text, options.threadId);

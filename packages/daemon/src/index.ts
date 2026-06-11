@@ -135,6 +135,12 @@ export function startDaemon(port: number = DAEMON_PORT, provider?: AgentProvider
         // (index.ts:114-117) must NOT set this — that is the user's own prior turns.
         let injectedMemory = false;
         if (inbound.type === "session_start") {
+          // CM-01 fix: capture the new-thread fact BEFORE beginTurn runs, because
+          // beginTurn adopts an unknown-but-UUID-shaped client-minted thread_id by
+          // calling store.createThread(undefined, adoptId) — after that, threadExists
+          // returns true for the same id, making a post-beginTurn check always false
+          // for the real overlay (which always sends a client-minted UUID on turn 1).
+          const wasKnownThread = !!inbound.thread_id && store.threadExists(inbound.thread_id);
           const begin = await lifecycle.beginTurn(inbound);
           turnThreadId = begin.threadId;
           ws.data.activeThreadId = turnThreadId;
@@ -143,12 +149,10 @@ export function startDaemon(port: number = DAEMON_PORT, provider?: AgentProvider
           if (turnThreadId) (ws.data.touchedThreadIds ??= new Set<string>()).add(turnThreadId);
           hydratedCount = begin.priorMessages.length;
           // T2.3a: set injectedMemory iff this is the NEW-THREAD branch AND retrieve()
-          // returned ≥1 message. The NEW-THREAD branch is identified by the absence of
-          // a recognised inbound.thread_id (lifecycle.ts:45: threadExists check).
-          // Condition: no inbound.thread_id (or unknown) → new thread minted by lifecycle;
-          // AND priorMessages came from retrieve() (not readThreadTail).
-          // Proxy: inbound.thread_id absent/unknown → new thread = retrieve() path.
-          const isNewThread = !inbound.thread_id || !store.threadExists(inbound.thread_id);
+          // returned ≥1 message. The NEW-THREAD branch is identified by wasKnownThread
+          // being false (captured before beginTurn could create the thread via CM-01
+          // adoption of the client-minted UUID).
+          const isNewThread = !wasKnownThread;
           if (isNewThread && begin.priorMessages.length > 0) {
             injectedMemory = true;
           }

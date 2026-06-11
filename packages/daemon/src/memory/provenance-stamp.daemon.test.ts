@@ -24,6 +24,13 @@
  *      turn 2: same socket + minted thread_id → same-thread hydration → injectedMemory=false (local
  *              variable reset) → show_text does NOT contain /history.html.
  *      This proves injectedMemory cannot leak across turns multiplexed on one persistent socket.
+ *   D. CM-01 ADOPTED-ID FLOW (real overlay flow) — two sequential turns on separate sockets:
+ *      turn 1: session_start WITH a client-minted unknown UUID thread_id → CM-01 adoption →
+ *              retrieve() injects seeded fact → show_text MUST contain /history.html.
+ *      turn 2: session_start WITH the SAME thread_id (now known) → same-thread hydration →
+ *              show_text must NOT contain /history.html.
+ *      This is the flow the real overlay ALWAYS uses (it always sends a client-minted UUID
+ *      on the first turn). T2.3a-C missed it because turn 1 sent NO thread_id.
  */
 
 import { test, expect, beforeAll, afterAll } from "bun:test";
@@ -257,4 +264,36 @@ test("T2.3a-C: persistent socket — turn 1 (new-thread) stamped; turn 2 (same-t
   } finally {
     ws.close();
   }
+});
+
+// ─── D. CM-01 ADOPTED-ID FLOW (real overlay flow) ─────────────────────────
+//
+// The real overlay ALWAYS sends a client-minted UUID thread_id on the first turn.
+// Before the fix, beginTurn's CM-01 adoption would CREATE the thread with that UUID,
+// making store.threadExists(inbound.thread_id) return true AFTER beginTurn ran —
+// so isNewThread was always false, and stampProvenance was always skipped.
+// After the fix, wasKnownThread is captured BEFORE beginTurn, so adoption does not
+// confuse the new-thread detection.
+//
+// Turn 1: session_start WITH a client-minted unknown UUID → CM-01 adoption →
+//   retrieve() injects seeded fact → injectedMemory = true → show_text stamped.
+// Turn 2: session_start WITH the SAME thread_id (now a known thread) →
+//   same-thread hydration (readThreadTail) → injectedMemory = false → NOT stamped.
+
+test("T2.3a-D: CM-01 adopted-id flow — turn 1 (client-minted UUID) stamped; turn 2 (same known thread_id) NOT stamped", async () => {
+  // Client-minted UUID — unknown to the daemon at this point.
+  const clientMintedThreadId = crypto.randomUUID();
+
+  // Turn 1: send the client-minted UUID → CM-01 adoption → retrieve() path.
+  const turn1Envelopes = await runTurn("What do you know?", clientMintedThreadId);
+  const turn1Content = findShowTextContent(turn1Envelopes);
+  expect(turn1Content).toBeDefined();
+  expect(turn1Content).toContain("/history.html");
+
+  // Turn 2: send the SAME UUID — the thread now exists in the store.
+  // Same-thread hydration path: readThreadTail, NOT retrieve().
+  const turn2Envelopes = await runTurn("Tell me more.", clientMintedThreadId);
+  const turn2Content = findShowTextContent(turn2Envelopes);
+  expect(turn2Content).toBeDefined();
+  expect(turn2Content).not.toContain("/history.html");
 });

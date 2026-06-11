@@ -248,6 +248,49 @@ test("guard: GET /memory/thread/<malformed-%> → 400 bad_target_shape (not 500 
   store.close();
 });
 
+// ─── DNS-rebinding guard tests ───────────────────────────────────────────────
+//
+// The Host-header allowlist in index.ts rejects requests whose Host does not
+// match 127.0.0.1:<port> or localhost:<port> (security review finding).
+
+test("dns-rebind-1: GET /memory/threads with Host: evil.com:<port> → 403 forbidden host", async () => {
+  const res = await fetch(`http://127.0.0.1:${PORT}/memory/threads`, {
+    headers: { Host: `evil.com:${PORT}` },
+  });
+  expect(res.status).toBe(403);
+  expect(await res.text()).toBe("forbidden host");
+});
+
+test("dns-rebind-2: GET /history.html with Host: evil.com → 403 forbidden host", async () => {
+  const res = await fetch(`http://127.0.0.1:${PORT}/history.html`, {
+    headers: { Host: "evil.com" },
+  });
+  expect(res.status).toBe(403);
+  expect(await res.text()).toBe("forbidden host");
+});
+
+test("dns-rebind-3: GET /memory/threads with Host: localhost:<port> → 200 (allowed)", async () => {
+  const res = await fetch(`http://127.0.0.1:${PORT}/memory/threads`, {
+    headers: { Host: `localhost:${PORT}` },
+  });
+  expect(res.status).toBe(200);
+});
+
+test("dns-rebind-4: POST /memory/forget with valid token but bad Host → 403 (Host check runs first)", async () => {
+  const token = readToken();
+  const res = await fetch(`http://127.0.0.1:${PORT}/memory/forget`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+      Host: `evil.com:${PORT}`,
+    },
+    body: JSON.stringify({ target: seededMessageId }),
+  });
+  expect(res.status).toBe(403);
+  expect(await res.text()).toBe("forbidden host");
+});
+
 // ─── T2.2a: GET /history.html — static History page ─────────────────────────
 
 // Test 9: GET /history.html → 200, content-type contains text/html, body contains

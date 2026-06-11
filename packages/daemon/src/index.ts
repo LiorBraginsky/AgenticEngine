@@ -87,6 +87,14 @@ export function startDaemon(port: number = DAEMON_PORT, provider?: AgentProvider
       // Memory HTTP surface — BEFORE origin gate (ADR-0013 Option B: reads open on loopback).
       // /history.html will 404 via handleMemoryHttp until T2.2a builds it — that's correct.
       if (url.pathname.startsWith("/memory/") || url.pathname === "/history.html") {
+        // DNS-rebinding guard: only 127.0.0.1 and localhost with the bound port are
+        // allowed as Host headers — this preserves ADR-0013's "local-process read-disclosure
+        // only" boundary (Option B intact). Writes stay token-gated; reads protected here.
+        const host = req.headers.get("host") ?? "";
+        const p = (server.port ?? boundPort).toString();
+        if (host !== `127.0.0.1:${p}` && host !== `localhost:${p}`) {
+          return new Response("forbidden host", { status: 403 });
+        }
         return handleMemoryHttp(req, url, memoryDeps);
       }
       // ── unchanged below: WS upgrade path keeps the origin gate ──

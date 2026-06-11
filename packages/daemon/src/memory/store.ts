@@ -37,6 +37,7 @@ export interface DistillationEventRow {
   facts_produced: number;
   trigger: string;
   distiller_version: string;
+  created_at: number;
 }
 
 export interface MessageForDistillRow {
@@ -350,7 +351,7 @@ export class MemoryStore {
   /** SELECT distillation_events for a thread, ordered by created_at ASC. */
   readDistillationEvents(threadId: string): DistillationEventRow[] {
     return this.db
-      .query("SELECT facts_produced, trigger, distiller_version FROM distillation_events WHERE thread_id = ? ORDER BY created_at ASC")
+      .query("SELECT facts_produced, trigger, distiller_version, created_at FROM distillation_events WHERE thread_id = ? ORDER BY created_at ASC")
       .all(threadId) as DistillationEventRow[];
   }
 
@@ -427,6 +428,16 @@ export class MemoryStore {
       role: r.role,
       content: r.tombstoned ? REDACTION_MARKER : (r.correction ?? r.content),
     }));
+  }
+
+  /**
+   * List all threads ordered by last_active_at DESC (T2.1a — additive SELECT only).
+   * Used by GET /memory/threads to populate the History page thread list.
+   */
+  listThreads(): { thread_id: string; title: string | null; last_active_at: number }[] {
+    return this.db
+      .query("SELECT thread_id, title, last_active_at FROM threads ORDER BY last_active_at DESC")
+      .all() as { thread_id: string; title: string | null; last_active_at: number }[];
   }
 
   /** Raw helpers used by WriteGate (mutations) — kept here so all SQL lives in the store. */

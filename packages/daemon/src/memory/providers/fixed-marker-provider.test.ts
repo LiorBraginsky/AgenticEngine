@@ -80,10 +80,11 @@ test("FixedMarkerProvider.retrieve has the same projection-read contract as Dumb
 });
 
 test("FixedMarkerProvider.retrieve skips tombstoned-provenance facts (defense-in-depth via eager purge)", async () => {
-  // FixedMarker no longer calls isMessageTombstoned in retrieve() (S3 fix).
-  // Invalidation is handled eagerly by WriteGate.forget → dropDistilledFactsByProvenance.
-  // This test confirms that after a forget(), the fact is gone from distilled_facts
-  // (because the eager purge ran), so retrieve() correctly returns nothing.
+  // retrieve() DOES call isFactTombstoned (MF-05 T1 projection-tombstone) — but the
+  // assertion here passes for a different reason: WriteGate.forget eagerly calls
+  // dropDistilledFactsByProvenance, so the fact is already gone from distilled_facts
+  // before retrieve() runs. isFactTombstoned never even sees this provenance because
+  // the row no longer exists in the table.
   const { store } = freshStore();
   const gate = new WriteGate(store, new RuleBasedScanner());
   const t = store.createThread();
@@ -99,11 +100,12 @@ test("FixedMarkerProvider.retrieve skips tombstoned-provenance facts (defense-in
 });
 
 test("S3: FixedMarkerProvider.retrieve returns thread-level facts even when a message in that thread is tombstoned", async () => {
-  // Verifies the S3 fix: FixedMarker's provenance is "thread:<uuid>", NOT a message UUID.
-  // The old code called isMessageTombstoned("thread:<uuid>") which always returned false
-  // (a silent no-op), but was misleading. Now retrieve() does no tombstone check at all.
-  // Invalidation for thread-level facts is via WriteGate.forget → dropDistilledFactsForThread.
-  // This test confirms a thread-level fact survives even when an UNRELATED message is tombstoned.
+  // retrieve() DOES call isFactTombstoned (MF-05 T1 projection-tombstone) — but the
+  // assertion holds because the keyspaces are disjoint: the fact's provenance is
+  // "thread:<uuid>" while the tombstone written by gate.forget() is keyed on a
+  // message-UUID. isFactTombstoned("thread:<uuid>") looks up a row that does not exist
+  // in the `mutations` table (the tombstone keyspace), so it returns false and the fact is NOT filtered out.
+  // This confirms that a thread-level fact correctly survives an unrelated message tombstone.
   const { store } = freshStore();
   const gate = new WriteGate(store, new RuleBasedScanner());
   const t = store.createThread();

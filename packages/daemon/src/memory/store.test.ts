@@ -129,6 +129,20 @@ test("readDistillationEvents returns rows for a thread ordered by created_at", (
   store.close();
 });
 
+test("readDistillationEvents includes created_at as a non-null integer timestamp", () => {
+  const { store } = freshStore();
+  const t = store.createThread();
+  const before = Date.now();
+  store.insertDistillationEvent(t, "dismiss", 2, "v1");
+  const after = Date.now();
+  const evs = store.readDistillationEvents(t);
+  expect(evs.length).toBe(1);
+  expect(typeof evs[0]!.created_at).toBe("number");
+  expect(evs[0]!.created_at).toBeGreaterThanOrEqual(before);
+  expect(evs[0]!.created_at).toBeLessThanOrEqual(after);
+  store.close();
+});
+
 test("readThreadMessagesForDistill returns ids and redacts tombstoned content", () => {
   const { store } = freshStore();
   const gate = new WriteGate(store, new RuleBasedScanner());

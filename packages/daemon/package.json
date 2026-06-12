@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "AGENTIC_ENV=dev bun run src/index.ts",
     "test-client": "bun run scripts/test-client.ts",
-    "memory-smoke": "bun run scripts/memory-smoke.ts"
+    "memory-smoke": "bun run scripts/memory-smoke.ts",
+    "keychain-set": "bun run scripts/keychain-set.ts",
+    "keychain-prod-probe": "bun run scripts/keychain-prod-probe.ts"
   },
   "dependencies": {
     "@agentic/protocol": "workspace:*",

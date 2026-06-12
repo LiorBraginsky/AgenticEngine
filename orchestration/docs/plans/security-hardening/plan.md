@@ -6,7 +6,12 @@
 - **Chunk:** `orchestration/chunks-todo/security-hardening/01-api-key-to-keychain.md`
 - **Spec:** `orchestration/docs/specs/2026-06-12-security-hardening.md` §3.1 / §3.7 / §3.8 (status: accepted)
 - **ADR worthy:** no (posture rule already doc-reconciled in spec §3.1; no new contract/boundary)
-- **Step tracker:** Step 1 ☐ · Step 2 ☐ · Step 3 ☐ · Step 4 ☐ · Step 5 ☐ · Step 6 ☐ · Review ☐
+- **Step tracker:** Step 1 ☑ · Step 2 ☑ · Step 3 ☑ · Step 4 ☑ · Step 5 ☑ · Step 6 ☑ · Review ☐
+- **Worker dispatch 1 (Steps 1–4) DONE:** service `agentic-engine` / account `ANTHROPIC_API_KEY`;
+  16 secrets-tests + 325 daemon-tests green; typecheck + lint:strict exit 0; frozen surfaces empty.
+  Note for review: `AnthropicProviderOptions` gained `resolverOpts?` (DI seam for fake keychain
+  getter) + a `_resetMemo` test export — slightly wider than "line 230 only" but within the plan's
+  "make the module testable" mandate.
 
 ---
 

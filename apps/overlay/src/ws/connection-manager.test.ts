@@ -40,7 +40,7 @@ async function oneTurn(mgr: ConnectionManager, fake: ReturnType<typeof makeFake>
 
 test("ConnectionManager: frames with an unknown/non-active session_id are silently dropped (gotcha #9 / spec §3.5)", async () => {
   const fake = makeFake();
-  const mgr = new ConnectionManager(() => fake.ws);
+  const mgr = new ConnectionManager(() => fake.ws, "test-token");
   mgr.connect();
 
   let toolCallFired = false;
@@ -67,7 +67,7 @@ test("ConnectionManager: frames with an unknown/non-active session_id are silent
 
 test("ConnectionManager: an ack for an unknown client_session_id is dropped (no false bind)", () => {
   const fake = makeFake();
-  const mgr = new ConnectionManager(() => fake.ws);
+  const mgr = new ConnectionManager(() => fake.ws, "test-token");
   mgr.connect();
   const p = mgr.runSession("hi", { handshakeTimeoutMs: 10_000 });
   fake.fire("open");
@@ -87,7 +87,7 @@ test("ConnectionManager: an ack for an unknown client_session_id is dropped (no 
 test("ConnectionManager: 3 turns reuse ONE socket — factory called exactly once, socket not closed between turns", async () => {
   const fake = makeFake();
   const factory = jest.fn(() => fake.ws);
-  const mgr = new ConnectionManager(factory);
+  const mgr = new ConnectionManager(factory, "test-token");
   mgr.connect();
 
   await oneTurn(mgr, fake, "srv-1").then((r) => expect(r).toEqual({ sessionId: "srv-1", reason: "completed" }));
@@ -104,7 +104,7 @@ test("ConnectionManager: 3 turns reuse ONE socket — factory called exactly onc
 
 test("ConnectionManager: per-turn handshake timeout fires HandshakeTimeoutError when daemon never replies", async () => {
   const fake = makeFake();
-  const mgr = new ConnectionManager(() => fake.ws);
+  const mgr = new ConnectionManager(() => fake.ws, "test-token");
   mgr.connect();
   const p = mgr.runSession("hi", { handshakeTimeoutMs: 2000 });
   fake.fire("open");
@@ -117,7 +117,7 @@ test("ConnectionManager: per-turn handshake timeout fires HandshakeTimeoutError 
 
 test("ConnectionManager: handshake timer disarms on first matching tool_call (turn stays alive past the timeout)", async () => {
   const fake = makeFake();
-  const mgr = new ConnectionManager(() => fake.ws);
+  const mgr = new ConnectionManager(() => fake.ws, "test-token");
   mgr.connect();
   let ctxCaptured = false;
   const p = mgr.runSession("hi", {
@@ -146,7 +146,7 @@ test("ConnectionManager: handshake timer disarms on first matching tool_call (tu
 
 test("ConnectionManager: mid-flight socket drop settles the active turn as cancelled-equivalent, sends NOTHING on the wire", async () => {
   const fake = makeFake();
-  const mgr = new ConnectionManager(() => fake.ws, {
+  const mgr = new ConnectionManager(() => fake.ws, "test-token", {
     // No-op reconnect scheduling so the test does not open a second socket.
     setTimeoutFn: () => 0 as unknown as ReturnType<typeof setTimeout>,
     clearTimeoutFn: () => {},
@@ -169,7 +169,7 @@ test("ConnectionManager: mid-flight socket drop settles the active turn as cance
 
 test("ConnectionManager: mid-flight drop produces NO unhandled rejection", async () => {
   const fake = makeFake();
-  const mgr = new ConnectionManager(() => fake.ws, {
+  const mgr = new ConnectionManager(() => fake.ws, "test-token", {
     setTimeoutFn: () => 0 as unknown as ReturnType<typeof setTimeout>,
     clearTimeoutFn: () => {},
   });
@@ -203,7 +203,7 @@ test("ConnectionManager: if ws.send throws (CONNECTING-window race), runSession 
   const clearedHandles: ReturnType<typeof setTimeout>[] = [];
   let timerSeq = 0;
 
-  const mgr = new ConnectionManager(() => ws, {
+  const mgr = new ConnectionManager(() => ws, "test-token", {
     setTimeoutFn: () => {
       const handle = (++timerSeq) as unknown as ReturnType<typeof setTimeout>;
       timerHandles.push(handle);
@@ -247,7 +247,7 @@ test("ConnectionManager: onSessionStart is NOT called when send throws in CONNEC
   const fire = (t: string, ev: { data?: unknown } = {}) => (listeners[t] ?? []).forEach((cb) => cb(ev));
 
   let sessionStartCalled = false;
-  const mgr = new ConnectionManager(() => ws, {
+  const mgr = new ConnectionManager(() => ws, "test-token", {
     setTimeoutFn: () => 0 as unknown as ReturnType<typeof setTimeout>,
     clearTimeoutFn: () => {},
     random: () => 0,
@@ -264,6 +264,50 @@ test("ConnectionManager: onSessionStart is NOT called when send throws in CONNEC
 });
 
 // ---------------------------------------------------------------------------
+// Token threading — factory receives [token] as protocols arg on every openSocket()
+// ---------------------------------------------------------------------------
+
+test("ConnectionManager: openSocket() passes [token] as the second (protocols) arg to the factory", () => {
+  const receivedArgs: [string, (string | string[] | undefined)?][] = [];
+  const fake = makeFake();
+  const factory = jest.fn((url: string, protocols?: string | string[]) => {
+    receivedArgs.push([url, protocols]);
+    return fake.ws;
+  });
+  const mgr = new ConnectionManager(factory, "install-token-abc");
+  mgr.connect();
+  expect(receivedArgs).toHaveLength(1);
+  expect(receivedArgs[0]![1]).toEqual(["install-token-abc"]);
+});
+
+test("ConnectionManager: factory receives [token] again on reconnect (re-presents on every openSocket)", () => {
+  const fake1 = makeFake();
+  const fake2 = makeFake();
+  const fakes = [fake1, fake2];
+  let i = 0;
+  const receivedProtocols: (string | string[] | undefined)[] = [];
+  const factory = jest.fn((_url: string, protocols?: string | string[]) => {
+    receivedProtocols.push(protocols);
+    return fakes[i++]!.ws;
+  });
+  let scheduled: (() => void) | undefined;
+  const mgr = new ConnectionManager(factory, "reconnect-token-xyz", {
+    setTimeoutFn: (cb) => { scheduled = cb; return 0 as unknown as ReturnType<typeof setTimeout>; },
+    clearTimeoutFn: () => {},
+    random: () => 0,
+  });
+  mgr.connect();
+  fake1.fire("open");
+  fake1.fire("close");   // involuntary drop → scheduleReconnect
+  expect(scheduled).toBeDefined();
+  scheduled!();          // fire the backoff timer → openSocket again
+  expect(factory).toHaveBeenCalledTimes(2);
+  // Both calls must present the token
+  expect(receivedProtocols[0]).toEqual(["reconnect-token-xyz"]);
+  expect(receivedProtocols[1]).toEqual(["reconnect-token-xyz"]);
+});
+
+// ---------------------------------------------------------------------------
 // 2e — Reconnect schedule fires after drop (backoff wired)
 // ---------------------------------------------------------------------------
 
@@ -274,7 +318,7 @@ test("ConnectionManager: after a drop it schedules a reconnect and reopens the s
   let i = 0;
   const factory = jest.fn(() => fakes[i++]!.ws);
   let scheduled: (() => void) | undefined;
-  const mgr = new ConnectionManager(factory, {
+  const mgr = new ConnectionManager(factory, "test-token", {
     setTimeoutFn: (cb) => { scheduled = cb; return 0 as unknown as ReturnType<typeof setTimeout>; },
     clearTimeoutFn: () => {},
     random: () => 0, // deterministic delay (value irrelevant — we invoke cb directly)
@@ -300,7 +344,7 @@ test("ConnectionManager.dismiss(): closes the socket and does NOT reconnect (vol
   let i = 0;
   const factory = jest.fn(() => fakes[i++]!.ws);
   let scheduled: (() => void) | undefined;
-  const mgr = new ConnectionManager(factory, {
+  const mgr = new ConnectionManager(factory, "test-token", {
     setTimeoutFn: (cb) => { scheduled = cb; return 0 as unknown as ReturnType<typeof setTimeout>; },
     clearTimeoutFn: () => {},
     random: () => 0,
@@ -325,7 +369,7 @@ test("ConnectionManager: an INVOLUNTARY drop still reconnects (asymmetry holds)"
   let i = 0;
   const factory = jest.fn(() => fakes[i++]!.ws);
   let scheduled: (() => void) | undefined;
-  const mgr = new ConnectionManager(factory, {
+  const mgr = new ConnectionManager(factory, "test-token", {
     setTimeoutFn: (cb) => { scheduled = cb; return 0 as unknown as ReturnType<typeof setTimeout>; },
     clearTimeoutFn: () => {},
     random: () => 0,
@@ -340,7 +384,7 @@ test("ConnectionManager: an INVOLUNTARY drop still reconnects (asymmetry holds)"
 
 test("ConnectionManager.dismiss(): an in-flight turn settles cancelled-equivalent (no unhandled rejection)", async () => {
   const fake = makeFake();
-  const mgr = new ConnectionManager(() => fake.ws, {
+  const mgr = new ConnectionManager(() => fake.ws, "test-token", {
     setTimeoutFn: () => 0 as unknown as ReturnType<typeof setTimeout>,
     clearTimeoutFn: () => {},
   });
@@ -360,7 +404,7 @@ test("ConnectionManager.dismiss(): an in-flight turn settles cancelled-equivalen
 
 test("ConnectionManager.runSession: onToolCall ctx carries sessionId/callId/picker, NO auto-cancel; session_start carries options.threadId (migrated)", async () => {
   const fake = makeFake();
-  const mgr = new ConnectionManager(() => fake.ws);
+  const mgr = new ConnectionManager(() => fake.ws, "test-token");
   mgr.connect();
   const tid = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
   let capturedCtx: ToolCallContext | undefined;
@@ -383,7 +427,7 @@ test("ConnectionManager.runSession: onToolCall ctx carries sessionId/callId/pick
 
 test("ConnectionManager.runSession: ctx.sendResult writes a parse-valid tool_result with picked nested under payload.result (migrated)", async () => {
   const fake = makeFake();
-  const mgr = new ConnectionManager(() => fake.ws);
+  const mgr = new ConnectionManager(() => fake.ws, "test-token");
   mgr.connect();
   let capturedCtx: ToolCallContext | undefined;
   const p = mgr.runSession("hi", { onToolCall: (ctx) => { capturedCtx = ctx; } });
@@ -407,7 +451,7 @@ test("ConnectionManager.runSession: ctx.sendResult writes a parse-valid tool_res
 
 test("ConnectionManager.runSession: ctx.sendCancel writes a parse-valid tool_cancel with matching call_id (migrated)", async () => {
   const fake = makeFake();
-  const mgr = new ConnectionManager(() => fake.ws);
+  const mgr = new ConnectionManager(() => fake.ws, "test-token");
   mgr.connect();
   let capturedCtx: ToolCallContext | undefined;
   const p = mgr.runSession("hi", { onToolCall: (ctx) => { capturedCtx = ctx; } });
@@ -430,7 +474,7 @@ test("ConnectionManager.runSession: ctx.sendCancel writes a parse-valid tool_can
 
 test("ConnectionManager.runSession: garbage / unknown-type frames and unknown tools never throw; onToolCall NOT fired for unknown tool (migrated)", async () => {
   const fake = makeFake();
-  const mgr = new ConnectionManager(() => fake.ws);
+  const mgr = new ConnectionManager(() => fake.ws, "test-token");
   mgr.connect();
   let callbackFired = false;
   const p = mgr.runSession("hi", { onToolCall: () => { callbackFired = true; } });
@@ -452,7 +496,7 @@ test("ConnectionManager.runSession: garbage / unknown-type frames and unknown to
 
 test("ConnectionManager.runSession: onSessionStart fires once, right after session_start is sent, before any content (migrated)", async () => {
   const fake = makeFake();
-  const mgr = new ConnectionManager(() => fake.ws);
+  const mgr = new ConnectionManager(() => fake.ws, "test-token");
   mgr.connect();
   const order: string[] = [];
   const p = mgr.runSession("hi", {

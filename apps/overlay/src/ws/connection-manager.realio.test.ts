@@ -49,7 +49,9 @@ function realFactory(url: string): WebSocketLike {
  * at module load and runSession() is called on user input — the socket is always
  * open by then. Tests must replicate that timing explicitly.
  */
-function makeManagerWithOpenWait(urlOverride: string): { mgr: ConnectionManager; opened: Promise<void> } {
+// NOTE (Step 3): replace "STEP3-TOKEN" with `new TokenStore(dataDir).token()` once
+// the daemon gate is wired in Step 3. The placeholder keeps Step 2 typecheck-clean.
+function makeManagerWithOpenWait(urlOverride: string, token = "STEP3-TOKEN"): { mgr: ConnectionManager; opened: Promise<void> } {
   let resolveOpen!: () => void;
   const opened = new Promise<void>((resolve) => { resolveOpen = resolve; });
   const mgr = new ConnectionManager(() => {
@@ -63,7 +65,7 @@ function makeManagerWithOpenWait(urlOverride: string): { mgr: ConnectionManager;
       });
     };
     return ws;
-  });
+  }, token);
   return { mgr, opened };
 }
 
@@ -205,6 +207,7 @@ test("real-I/O (Fix 2): daemon killed+restarted → manager AUTO-reconnects → 
   let resolveFirstOpen!: () => void;
   const firstOpened = new Promise<void>((r) => { resolveFirstOpen = r; });
   let firstOpenFired = false;
+  // NOTE (Step 3): replace "STEP3-TOKEN" with `new TokenStore(dataDir).token()`.
   const mgr = new ConnectionManager(
     () => {
       const ws = realFactory(url);
@@ -217,6 +220,7 @@ test("real-I/O (Fix 2): daemon killed+restarted → manager AUTO-reconnects → 
       };
       return ws;
     },
+    "STEP3-TOKEN",
     { baseMs: 10, capMs: 50, random: () => 0.5 },
   );
   mgr.connect();

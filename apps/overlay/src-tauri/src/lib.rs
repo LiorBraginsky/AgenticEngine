@@ -12,6 +12,24 @@ fn hide_panel(window: tauri::Window) {
     let _ = window.hide();
 }
 
+/// Read the per-install auth token minted by the daemon (spec §3.2, ADR-0003 p.5).
+/// Mirrors `packages/daemon/src/index.ts:64`:
+///   dataDir = AGENTIC_DATA_DIR ?? $HOME/.agentic-engine
+/// No new Cargo dep: uses std::fs + std::env (B1 approach).
+#[tauri::command]
+fn read_auth_token() -> Result<String, String> {
+    let dir = match std::env::var("AGENTIC_DATA_DIR") {
+        Ok(d) => d,
+        Err(_) => {
+            let home = std::env::var("HOME").map_err(|e| e.to_string())?;
+            format!("{home}/.agentic-engine")
+        }
+    };
+    std::fs::read_to_string(std::path::Path::new(&dir).join("auth-token"))
+        .map(|s| s.trim().to_string())
+        .map_err(|e| e.to_string())
+}
+
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
@@ -37,7 +55,7 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![hide_panel])
+        .invoke_handler(tauri::generate_handler![hide_panel, read_auth_token])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

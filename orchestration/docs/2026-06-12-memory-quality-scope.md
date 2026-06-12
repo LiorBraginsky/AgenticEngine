@@ -12,6 +12,17 @@ tags: [memory, north-star, distiller, self-awareness, overlay, scope]
 > run `superpowers:brainstorming` (via the dev-bus, routing seams UP to the conductor) +
 > `grill-with-docs`, then write the spec in `docs/specs/`. North-star authority: ADR-0012.
 
+## ⚠️ SCOPE DECISION (Lior, 2026-06-12) — SPLIT
+
+**THIS feature = 2a (self-awareness) + 2b (smart-distiller) ONLY — backend/agent, no UI dep.** It
+fixes exactly the live defect (agent disowns memory + imprecise recall). The **in-overlay hatch UI
+(§"in-overlay memory UI" below) is a SEPARATE follow-on feature — do NOT build it here.** Its first
+prerequisite is a **tray-icon + settings-overlay shell** (ADR-0006 p.4 / memory
+`project_tray_icon_followup`, deferred) — there is currently no way to *open* a Settings/History
+surface in the overlay. The **UX backlog A/B move with that follow-on**. Meanwhile the memory-quality
+**demo uses the existing `history.html` hatch** (it works — demo'd 2026-06-12). So: decompose 2a + 2b
+only; treat the in-overlay UI section as recorded future scope, not in-scope.
+
 ## Why now
 Security-hardening is done (memory **storage + injection + transparency-hatch** all shipped:
 MF-01..05, CM-01..03, ADR-0013 read-gate, #31/#38 closed). But a live overlay conversation

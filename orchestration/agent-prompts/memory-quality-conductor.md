@@ -24,12 +24,14 @@ at ~40% context; everything you need is on DISK — Finding #1, disk-canonical.)
 - `chunks-todo/` is drained (only README). main is current — `git rev-parse --short HEAD` to confirm.
 
 ═══ THE FEATURE: memory-quality ═══
-Build (as ONE feature, "done properly, not interim" — Lior): **(2a)** agent memory self-awareness
-(stop it disowning its injected memory) · **(2b)** smart distiller (precise structured recall,
-provider-swap not re-plumb — MF-02 seam) · **(in-overlay memory UI)** the hatch's real home (+ UX
-backlog A: locked-state not "Loading…", B: trim the token paste). Full rationale + the live evidence
-(thread `1ba9f64d`) + verification posture are in `docs/2026-06-12-memory-quality-scope.md`. North-star
-authority: ADR-0012.
+**SCOPE (Lior 2026-06-12 — SPLIT): THIS feature = 2a + 2b ONLY (backend, no UI dep)** — done
+properly, not interim: **(2a)** agent memory self-awareness (stop it disowning its injected memory)
+· **(2b)** smart distiller (precise structured recall, provider-swap not re-plumb — MF-02 seam).
+The **in-overlay hatch UI is a SEPARATE follow-on feature — NOT in scope here**; its prerequisite is
+a tray-icon + settings-overlay shell (ADR-0006 p.4, deferred), and the UX backlog (A locked-state, B
+token-trim) moves with it. The memory-quality **demo uses the existing `history.html` hatch**. Full
+rationale + the live evidence (thread `1ba9f64d`) + verification posture + the deferred-UI section
+are in `docs/2026-06-12-memory-quality-scope.md`. North-star authority: ADR-0012.
 
 ═══ MARCHING ORDERS ═══
 1. **Decompose** memory-quality: launch the decompose session on **`claude --model fable`** (frontier,

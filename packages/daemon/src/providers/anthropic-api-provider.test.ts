@@ -42,6 +42,7 @@ const { createAnthropicApiProvider } = await import(
   "./anthropic-api-provider.js"
 );
 const { _resetMemo } = await import("../secrets/cloud-secrets.js");
+const { COMPOSED_SYSTEM_PROMPT } = await import("./system-prompt.js");
 
 const SESSION_START_INBOUND: Extract<ProviderInput, { type: "session_start" }> =
   {
@@ -50,9 +51,6 @@ const SESSION_START_INBOUND: Extract<ProviderInput, { type: "session_start" }> =
     text: "hi",
     client_session_id: "c-1",
   };
-
-const SYSTEM_PROMPT =
-  "You are a concise assistant rendered in a small desktop overlay. Keep replies short.";
 
 // ── (v) id assertion ───────────────────────────────────────────────────────
 
@@ -96,9 +94,15 @@ describe("happy path: session_start", () => {
     };
     expect(p.model).toBe("claude-sonnet-4-6");
     // system is an array of blocks with cache_control (prompt caching convention)
-    const sysBlocks = p.system as Array<{ type: string; text: string }>;
+    const sysBlocks = p.system as Array<{
+      type: string;
+      text: string;
+      cache_control: { type: string };
+    }>;
     expect(Array.isArray(sysBlocks)).toBe(true);
-    expect(sysBlocks[0]!.text).toBe(SYSTEM_PROMPT);
+    expect(sysBlocks[0]!.text).toBe(COMPOSED_SYSTEM_PROMPT);
+    // cache_control shape must be preserved exactly (R2 — caching unchanged)
+    expect(sysBlocks[0]!.cache_control).toEqual({ type: "ephemeral" });
     expect(p.messages).toEqual([{ role: "user", content: "hi" }]);
     expect(p.max_tokens).toBe(512);
   });

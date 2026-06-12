@@ -23,11 +23,7 @@ import type {
 } from "./provider.js";
 import { resolveAnthropicKey } from "../secrets/cloud-secrets.js";
 import type { ResolveOpts } from "../secrets/cloud-secrets.js";
-
-// ── System prompt ──────────────────────────────────────────────────────────
-
-const SYSTEM_PROMPT =
-  "You are a concise assistant rendered in a small desktop overlay. Keep replies short.";
+import { COMPOSED_SYSTEM_PROMPT } from "./system-prompt.js";
 
 // ── Pure formatters (functional core) ─────────────────────────────────────
 
@@ -284,7 +280,7 @@ export function createAnthropicApiProvider(
           system: [
             {
               type: "text",
-              text: SYSTEM_PROMPT,
+              text: COMPOSED_SYSTEM_PROMPT,
               cache_control: { type: "ephemeral" },
             },
           ],

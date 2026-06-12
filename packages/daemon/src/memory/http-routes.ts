@@ -123,9 +123,9 @@ async function handleThread(
 // ─── Write route helpers ──────────────────────────────────────────────────────
 
 async function handleForget(req: Request, deps: MemoryHttpDeps): Promise<Response> {
-  // Token gate (ADR-0013 Option B — writes require bearer token)
+  // Token gate (ADR-0013 Option A end-state — writes require bearer token; harmonized to 401)
   if (!deps.tokenStore.verify(req.headers.get("authorization"))) {
-    return Response.json({ error: "Unauthorized" }, { status: 403 });
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   // Parse + validate body
@@ -149,9 +149,9 @@ async function handleForget(req: Request, deps: MemoryHttpDeps): Promise<Respons
 }
 
 async function handleEdit(req: Request, deps: MemoryHttpDeps): Promise<Response> {
-  // Token gate (ADR-0013 Option B — writes require bearer token)
+  // Token gate (ADR-0013 Option A end-state — writes require bearer token; harmonized to 401)
   if (!deps.tokenStore.verify(req.headers.get("authorization"))) {
-    return Response.json({ error: "Unauthorized" }, { status: 403 });
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   // Parse + validate body

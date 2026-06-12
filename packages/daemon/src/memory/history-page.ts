@@ -225,6 +225,8 @@ export const HISTORY_HTML = `<!DOCTYPE html>
       _authToken = val;
       tokenInput.value = "";
       setStatus("Token set for this session.", true);
+      // Load thread list now that the token is set (data gate; spec §3.5 / chunk 03)
+      loadThreadList();
     });
 
     function setStatus(msg, ok) {
@@ -234,7 +236,7 @@ export const HISTORY_HTML = `<!DOCTYPE html>
 
     // ── Thread list ───────────────────────────────────────────────────────────────
     function loadThreadList() {
-      fetch("/memory/threads")
+      fetch("/memory/threads", { headers: { "Authorization": "Bearer " + _authToken } })
         .then(function (r) { return r.json(); })
         .then(function (data) { renderThreadList(data.threads || []); })
         .catch(function (err) {
@@ -280,7 +282,7 @@ export const HISTORY_HTML = `<!DOCTYPE html>
     }
 
     function loadThread(threadId) {
-      fetch("/memory/thread/" + encodeURIComponent(threadId))
+      fetch("/memory/thread/" + encodeURIComponent(threadId), { headers: { "Authorization": "Bearer " + _authToken } })
         .then(function (r) { return r.json(); })
         .then(function (data) {
           renderMessages(data.messages || [], threadId);
@@ -484,8 +486,8 @@ export const HISTORY_HTML = `<!DOCTYPE html>
         }).then(function (r) {
           if (r.status === 204) {
             loadThread(threadId);
-          } else if (r.status === 403) {
-            setStatus("403 — unlock first or bad token.", false);
+          } else if (r.status === 401) {
+            setStatus("401 — unlock first or bad token.", false);
             resetForget();
           } else {
             setStatus("Error: " + r.status, false);
@@ -554,8 +556,8 @@ export const HISTORY_HTML = `<!DOCTYPE html>
         }).then(function (r) {
           if (r.status === 204) {
             loadThread(threadId);
-          } else if (r.status === 403) {
-            setStatus("403 — unlock first or bad token.", false);
+          } else if (r.status === 401) {
+            setStatus("401 — unlock first or bad token.", false);
             closeEditor();
           } else {
             setStatus("Error: " + r.status, false);
@@ -607,7 +609,8 @@ export const HISTORY_HTML = `<!DOCTYPE html>
     }
 
     // ── Bootstrap ────────────────────────────────────────────────────────────────
-    loadThreadList();
+    // NOTE: loadThreadList() is NOT called here — it is deferred to the Unlock handler
+    // so data does NOT render pre-paste (spec §3.5 / chunk 03 / ADR-0013 read-gate).
   </script>
 </body>
 </html>

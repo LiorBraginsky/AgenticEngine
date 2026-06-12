@@ -131,14 +131,14 @@ function readToken(): string {
   return readFileSync(join(sharedDataDir, "auth-token"), "utf8").trim();
 }
 
-// Test 4: POST /memory/forget without token → 403
-test("T2.1c-1: POST /memory/forget without Authorization header → 403", async () => {
+// Test 4: POST /memory/forget without token → 401 (harmonized from 403; B1 decision)
+test("T2.1c-1: POST /memory/forget without Authorization header → 401", async () => {
   const res = await fetch(`http://127.0.0.1:${PORT}/memory/forget`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ target: seededMessageId }),
   });
-  expect(res.status).toBe(403);
+  expect(res.status).toBe(401);
 });
 
 // Test 5: POST /memory/forget WITH token on seeded human message → 204; disk shows REDACTION_MARKER.

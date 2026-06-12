@@ -324,6 +324,28 @@ The orchestrator reads chunk files directly; Jimmy invokes with a one-liner
 file instead. The planning step (`decompose`) is light and decision-rich, so Jimmy drives it
 **in-chat**; the build is context-heavy, so it runs in a **fresh orchestrator chat per chunk**.
 
+### 7.4 Product vs process — two worlds, never entangled (Lior, 2026-06-12)
+
+**PRODUCT decisions and PROCESS decisions are separate substances. Do not entangle them.**
+
+- **Product** = what AgenticEngine *is* (daemon, overlay, protocol, memory, the auth model…).
+  Its decisions live in **ADRs** (`docs/adr/`) and **specs** (`docs/specs/`); its plan is
+  `docs/roadmap.md`. All ADRs/specs are product, always.
+- **Process** = how we *build* it (the pipeline, the conveyor, the Jimmy-conductor, the dev-bus,
+  the gates, half-manual). Its decisions live in **this file (`PIPELINE.md`)** and in
+  `docs/experiments/`; its plan is `docs/dev-roadmap.md`. **A process mechanism is NEVER an ADR.**
+  The dev-bus is the canonical case: it is dev-tooling + an experiment doc, not a product ADR — it
+  becomes ADR-worthy *only if* it ever grows into the **product's** concurrent-session model
+  (then the ADR is about the product, not the bus).
+- **Why:** the process is being factored toward **reusable, project-agnostic boilerplate** (see
+  `docs/dev-roadmap.md`) — it must not accrete product-specific entanglement, or it can't be
+  lifted onto another project. Keep the seam clean now so the extraction is cheap later.
+
+> Folder note: today both worlds sit under `orchestration/` (product canon in `docs/adr|specs|
+> roadmap|architecture|vision`; process machinery in `bin/`, `chunks-todo/`, `conveyor-ledger.md`,
+> `experiments/`, this file). The *decision* boundary above holds regardless; a *physical* folder
+> split (product-docs vs orchestration-machinery) is an optional future cleanup, not done yet.
+
 ---
 
 ## 8. Folder conventions (graduated from project memory)

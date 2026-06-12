@@ -1,5 +1,5 @@
 ---
-status: draft
+status: accepted
 date: 2026-06-12
 deciders: [lior]
 tags: [spec, security, auth, token, keychain, websocket, http]
@@ -7,10 +7,10 @@ tags: [spec, security, auth, token, keychain, websocket, http]
 
 # Spec: Security hardening pass — the per-install-token auth spine + cloud-secret home
 
-> **Sign-off:** `draft → accepted` is a Lior §5.2 gate ([[../PIPELINE]] §5.2). The decompose PR
-> stays open until this spec is accepted. Authored by the decompose session (fable) from
-> bus-resolved seams (conveyor q#001–q#003, conductor: Jimmy); **q#002-2a is a Jimmy OVERRIDE
-> flagged for Lior review** (see §3.2).
+> **Sign-off:** `accepted` (Lior, 2026-06-12 — §5.2 gate). Authored by the decompose session
+> (fable) from bus-resolved seams (conveyor q#001–q#003, conductor: Jimmy). **§3.2 — the Jimmy
+> OVERRIDE to the subprotocol transport (T2) was CONFIRMED by Lior** at sign-off. The decompose PR
+> (#43) is unblocked to merge; the three chunks are ready to build.
 
 ## 1. Problem & threat model
 
@@ -52,7 +52,7 @@ history.html paste-UX). **Posture rule:** Keychain = cloud/off-machine secrets; 
 local-only secrets. The roadmap's "all secrets in the OS Keychain" reads as "all **cloud**
 secrets" — doc-reconciliation recorded in the pass README, not a roadmap change.
 
-### 3.2 WS transport — `Sec-WebSocket-Protocol` subprotocol (q#002 → T2; **Jimmy OVERRIDE, Lior to confirm at PR**)
+### 3.2 WS transport — `Sec-WebSocket-Protocol` subprotocol (q#002 → T2; **Jimmy OVERRIDE — CONFIRMED by Lior 2026-06-12**)
 
 Browser WS API cannot set headers (the overlay's real socket is the browser `new WebSocket` inside
 the `WebSocketFactory` at `apps/overlay/src/main.ts:28`, driven by `connection-manager.ts` —

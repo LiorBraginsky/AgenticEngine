@@ -162,11 +162,11 @@ export interface AnthropicProviderOptions {
 /**
  * Creates an AnthropicApiProvider implementing the THIN AgentProvider port.
  *
- * Production usage:
- *   const provider = createAnthropicApiProvider({ apiKey: Bun.env.ANTHROPIC_API_KEY });
+ * Production usage (no args — the singleton below is sufficient):
+ *   const provider = createAnthropicApiProvider();
  *
- * Test usage:
- *   const provider = createAnthropicApiProvider({ apiKey: "sk-ant-fake", client: mockClient });
+ * Test usage (inject a pre-built or mock client):
+ *   const provider = createAnthropicApiProvider({ client: mockClient });
  */
 export function createAnthropicApiProvider(
   opts: AnthropicProviderOptions = {},
@@ -364,7 +364,9 @@ export function createAnthropicApiProvider(
 
 /**
  * Singleton instance for injector registration.
- * In production, reads ANTHROPIC_API_KEY from Bun.env lazily on first advance().
+ * Resolves ANTHROPIC_API_KEY lazily on first advance() via the cloud-secrets
+ * resolver: macOS Keychain in production, Bun.env/.env fallback in dev
+ * (AGENTIC_ENV=dev gate).
  */
 export const anthropicApiProvider: AgentProvider =
   createAnthropicApiProvider();

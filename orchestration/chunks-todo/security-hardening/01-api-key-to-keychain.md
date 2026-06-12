@@ -1,6 +1,6 @@
 # Chunk 01: Anthropic API key → macOS Keychain (+ env-isolated prod proof)
 
-**Status:** todo
+**Status:** in-progress
 **Created:** 2026-06-12
 **Phase:** Security hardening pass (pre-public-release gate)
 **Estimated size:** ~1 day

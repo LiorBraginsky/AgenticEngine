@@ -1,7 +1,8 @@
 ---
 title: Memory Quality — spec (2a self-awareness + 2b smart distiller)
-status: draft
+status: accepted
 date: 2026-06-12
+date-accepted: 2026-06-12
 deciders: [lior]
 feeds: memory-quality
 implements: adr/0012-conversation-and-memory-model
@@ -24,10 +25,10 @@ tags: [spec, memory, distiller, self-awareness, projection, llm, provenance]
 > grill pass (engine-reviewer subagent) ran 2026-06-12; its BLOCKER/MAJOR findings are
 > folded in and cited inline as (grill #N).
 >
-> **⚠️ §5.2 ATTENTION AT SIGN-OFF → read §4 "Guarantees & their boundaries" first.**
-> It clarifies the *strength* of an ADR-0012 non-negotiable (fact-level forget under a
-> generative distiller is BEST-EFFORT; message-level forget stays HARD). The conductor
-> escalates that section explicitly; Lior must consciously bless it.
+> **§5.2 SIGNED — Lior, 2026-06-12, with two revisions applied** (relay-001): §4's prose
+> reframed (deleting a fact already removes it from what the agent sees; fact-forget is
+> deliberately NOT coupled to source-deletion; reliable conversational fact-forget is
+> committed as roadmap feature **2c**), and roadmap features **2c/2d** firmly queued.
 
 ---
 
@@ -214,11 +215,18 @@ general suite).
 
 ---
 
-## 4. Guarantees & their boundaries  ⚠️ (READ AT SIGN-OFF — conductor escalates this)
+## 4. Guarantees & their boundaries  (signed by Lior 2026-06-12, prose per relay-001)
 
 > This section clarifies the STRENGTH of an ADR-0012 non-negotiable (decision 5a
 > view/edit/**forget**; 5d poisoning surface) under a generative distiller. q#003 Sub-3
-> ruling; flagged by the conductor for Lior's conscious blessing.
+> ruling; consciously blessed by Lior at sign-off with the reframing below.
+>
+> **The frame (Lior):** at inference the agent reads the injected **FACTS, not the raw
+> archive**. So **deleting a distilled fact already removes it from what the agent
+> sees.** The source message remaining in the archive is **harmless and intended** (the
+> lossless archive) — **the user does NOT need to delete history to make the agent stop
+> using a fact.** The ONLY leak is *re-derivation* by the generative distiller — and
+> that is exactly what the three best-effort layers below mitigate.
 
 | Operation | Guarantee | Mechanism |
 |---|---|---|
@@ -227,11 +235,18 @@ general suite).
 | **Quarantined source** (5d) | **HARD at the digest** | Quarantined messages are excluded from the digest BEFORE the LLM call (D8) — a poisoned source cannot resurface re-summarized. Test-covered. |
 | **Human-authored entries** (5e) | **HARD** | Never dropped by the replace; human-wins at injection (D6). |
 
-**The user-facing consequence:** a user who wants a fact gone *permanently* must forget
-the underlying message(s). **Recorded for the follow-on in-overlay UI:** "forget fact"
-should offer **"also forget source messages"** so users can reach the hard guarantee.
-(If Lior wants a hard fact-forget NOW, that is a spec revision: couple fact-forget to
-source-message deletion.)
+**The user-facing consequence:** forgetting a fact is the normal path and immediately
+stops the agent using it; only re-derivation can resurrect an equivalent fact, and the
+layers above make that unlikely, not impossible. Deleting the source message(s) is the
+**OPTIONAL hard escape** for content that must never be re-derivable — **NOT the
+required path**. We **deliberately do NOT couple fact-forget to source-deletion**
+(destroying real conversation history to remove one fact — rejected at sign-off).
+**Forward commitment (Lior, 2026-06-12):** reliable *conversational* fact-forget —
+"forget X" said to the agent actually forgets — is committed as roadmap feature
+**2c (agent memory-action tools)**; 2c plus a stronger distiller-exclusion is the path
+to making fact-forget stick in practice without deleting history. **Recorded for the
+follow-on in-overlay UI:** "forget fact" may offer **"also forget source messages"** as
+that optional hard escape.
 
 ---
 

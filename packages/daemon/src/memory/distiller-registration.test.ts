@@ -43,7 +43,7 @@ test("dismiss of an EMPTY thread still writes a distillation_events row with 0 f
   store.close();
 });
 
-test("B1: hook.dismiss() error does not propagate — caller survives a throwing distiller", async () => {
+test("dismiss() surfaces a throwing distiller's error so the WS handler catch is the boundary", async () => {
   // Verifies the B1 fix: if a distiller throws, the ConsolidationHook's runDistiller
   // error must not surface to the caller of hook.dismiss(). The WS handler wraps
   // dismiss in try/catch/finally; this test confirms the hook itself surfaces errors
@@ -208,9 +208,9 @@ test("throwing-provider failure path: existing projection INTACT, reprojection-f
   const evs = store.readDistillationEvents(t);
   expect(evs.some((e) => e.trigger === "reprojection-failed")).toBe(true);
 
-  // (3) facts_produced = unchanged projection size (2 facts seeded above)
+  // (3) facts_produced = surviving MACHINE projection size (1 machine fact; human excluded — same basis as success path)
   const failEv = evs.find((e) => e.trigger === "reprojection-failed")!;
-  expect(failEv.facts_produced).toBe(2);
+  expect(failEv.facts_produced).toBe(1);
 
   store.close();
 });

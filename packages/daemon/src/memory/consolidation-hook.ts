@@ -30,6 +30,7 @@ export class ConsolidationHook {
    * `triggerThreadId` defaults to `threadIds[0]` when omitted.
    */
   async dismiss(threadIds: string[], triggerThreadId?: string): Promise<void> {
+    if (threadIds.length === 0) return;
     // Phase 1: flip ALL statuses first
     for (const id of threadIds) {
       this.store.rawDb().query("UPDATE threads SET status = 'dismissed' WHERE thread_id = ?").run(id);

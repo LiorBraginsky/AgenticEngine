@@ -1,6 +1,6 @@
 import type { ConsolidationHook } from "./consolidation-hook.js";
 import type { MemoryStore } from "./store.js";
-import type { MemoryProvider } from "./memory-provider.js";
+import type { MemoryProvider, DistillResult } from "./memory-provider.js";
 import type { MemoryScanner } from "./scanner/memory-scanner.js";
 
 /**
@@ -39,15 +39,14 @@ export function registerDistiller(
 ): void {
   hook.register(async (dismissedThreadIds: string[], triggerThreadId: string) => {
     // ── Phase 1: COMPUTE (outside any transaction) ───────────────────────
-    let result: Awaited<ReturnType<typeof provider.distill>>;
+    let result: DistillResult;
     try {
       result = await provider.distill(store, triggerThreadId);
     } catch (err) {
       // Failure path: provider threw — do NOT drop the existing projection.
-      // facts_produced = count of the CURRENT persisted projection (unchanged).
-      // This records the size of the projection that SURVIVED (no drop happened).
+      // facts_produced = surviving MACHINE projection size (same basis as the success path's clean.length).
       const currentSize = (store.rawDb()
-        .query("SELECT COUNT(*) AS n FROM distilled_facts")
+        .query("SELECT COUNT(*) AS n FROM distilled_facts WHERE authored_by != 'human'")
         .get() as { n: number }).n;
       for (const id of dismissedThreadIds) {
         store.insertDistillationEvent(id, "reprojection-failed", currentSize, provider.id);
@@ -77,8 +76,9 @@ export function registerDistiller(
       });
     } catch (err) {
       // Phase 2 threw — same failure path as Phase 1.
+      // facts_produced = surviving MACHINE projection size (same basis as the success path's clean.length).
       const currentSize = (store.rawDb()
-        .query("SELECT COUNT(*) AS n FROM distilled_facts")
+        .query("SELECT COUNT(*) AS n FROM distilled_facts WHERE authored_by != 'human'")
         .get() as { n: number }).n;
       for (const id of dismissedThreadIds) {
         store.insertDistillationEvent(id, "reprojection-failed", currentSize, provider.id);

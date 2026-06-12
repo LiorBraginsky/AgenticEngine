@@ -5,9 +5,11 @@
  * Wired into index.ts BEFORE the origin gate so loopback browsers can reach it
  * without an allowlisted Origin header (ADR-0013 Option B).
  *
- * T2.1a: read routes (open on loopback, no auth).
+ * T2.1a: read routes — GET /memory/threads + GET /memory/thread/:id, bearer-token gated
+ *   (ADR-0013 read-token rider / spec §3.5 Option A end-state; 401 on missing/bad token).
  * T2.1c: write routes — POST /memory/edit + POST /memory/forget, bearer-token gated.
- * GET /history.html is T2.2a (not built yet).
+ * GET /history.html is T2.2a: static shell open on loopback (Host-guard only); all data
+ *   rendering is gated in-page (token in a JS var, paste-UX).
  *
  * ctx is FIXED server-side for all write routes: { actor: "user", authored_by: "human" }.
  * Every HTTP-originated mutation is treated as a human operator action (the point of the

@@ -5,7 +5,8 @@
  *   dev:  WKWebView sends Origin: http://localhost:1420  (allowlisted)
  *   prod: WKWebView sends Origin: tauri://localhost      (allowlisted)
  * JS CANNOT and MUST NOT attempt to set Origin — WKWebView sets it.
- * No query-param / subprotocol token substitute (Lior threat-model, plan §D).
+ * Per-install token rides Sec-WebSocket-Protocol (spec §3.2, ADR-0003 p.5
+ * un-deferred); read Rust-side at boot via invoke("read_auth_token").
  */
 
 import { invoke } from "@tauri-apps/api/core";
@@ -22,10 +23,19 @@ import { statusForEndReason } from "./lifecycle/session-end-reason.js";
 import type { StatusVariant } from "./widgets/status.js";
 
 // ---------------------------------------------------------------------------
-// Real WebSocket factory — adapts browser WebSocket to the seam's WebSocketLike.
+// Per-install auth token — read once at boot via Rust command (spec §3.2, B1).
+// The token is install-stable; reading once satisfies every reconnect (A1 approach).
 // ---------------------------------------------------------------------------
-const factory: WebSocketFactory = (url) => {
-  const s = new WebSocket(url);
+const authToken = await invoke<string>("read_auth_token");
+
+// ---------------------------------------------------------------------------
+// Real WebSocket factory — adapts browser WebSocket to the seam's WebSocketLike.
+// Uses the protocols (array) form: DOM WebSocket(url, protocols?) — array-only
+// form is the ONLY way to carry Sec-WebSocket-Protocol in a WKWebView context
+// (headers cannot be set by JS; see plan item 7-A and ADR-0003 p.5).
+// ---------------------------------------------------------------------------
+const factory: WebSocketFactory = (url, protocols) => {
+  const s = new WebSocket(url, protocols);
   return {
     send: (d) => s.send(d),
     close: () => s.close(),
@@ -37,7 +47,7 @@ const factory: WebSocketFactory = (url) => {
 // CM-02: one persistent connection for the overlay's lifetime. Opened on activation.
 // CM-03: a voluntary dismiss (EV_TEXT_DISMISS) closes this socket and re-creates a fresh
 // manager for the next conversation — hence `let`, reassigned in the dismiss handler.
-let connection = new ConnectionManager(factory);
+let connection = new ConnectionManager(factory, authToken);
 connection.connect();
 
 // ---------------------------------------------------------------------------
@@ -186,7 +196,7 @@ void listen(EV_TEXT_DISMISS, () => {
   // so construct a fresh one and open its socket on activation-equivalent. The prior
   // manager is intentionally orphaned — active=false guarantees its trailing close
   // event neither reconnects nor reopens; GC reclaims it once the socket closes.
-  connection = new ConnectionManager(factory);
+  connection = new ConnectionManager(factory, authToken);
   connection.connect();
 });
 

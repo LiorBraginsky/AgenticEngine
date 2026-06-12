@@ -18,12 +18,14 @@ import { MemoryStore } from "./store.js";
 import { WriteGate } from "./write-gate.js";
 import { RuleBasedScanner } from "./scanner/memory-scanner.js";
 import { DumbTailProvider } from "./providers/dumb-tail-provider.js";
+import { TokenStore } from "./token-store.js";
 
 // ─── Shared daemon harness (reused verbatim from MF-02) ──────────────────────
 
 let sharedDataDir: string;
 let server: ReturnType<typeof import("../index.js").startDaemon>;
 let PORT: number;
+let token: string;
 const ORIGIN = "tauri://localhost";
 
 beforeAll(async () => {
@@ -33,6 +35,8 @@ beforeAll(async () => {
   const { startDaemon } = await import("../index.js");
   server = startDaemon(0);
   PORT = server.port!;
+  // chunk-02 step-3: read the per-install token minted by the daemon at boot.
+  token = new TokenStore(sharedDataDir).token();
 });
 
 afterAll(() => server.stop(true));
@@ -44,7 +48,8 @@ afterAll(() => server.stop(true));
  */
 function runTurn(text: string, threadId?: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${PORT}`, { headers: { Origin: ORIGIN } });
+    // chunk-02 step-3: present token as Sec-WebSocket-Protocol subprotocol (layer-1 gate).
+    const ws = new WebSocket(`ws://127.0.0.1:${PORT}`, { headers: { Origin: ORIGIN }, protocols: [token] });
     ws.addEventListener("open", () =>
       ws.send(JSON.stringify({
         type: "session_start", trigger: "user", text, client_session_id: "c",

@@ -10,7 +10,8 @@
  * T2.1a tests:
  *   1. GET /memory/threads with NO Origin and NO token → 200 + seeded thread_id
  *   2. GET /memory/thread/:id → 200 + body has {messages, distilledFacts, distillationEvents}
- *   3. WS path byte-unchanged — disallowed Origin on / still → 403
+ *   3. WS path — no token → 401 (token gate is now layer 1; origin gate is layer 2)
+ *   3b. WS path — valid token + evil origin → 403 (origin gate fires after token passes)
  *
  * T2.1c tests (token-gated write routes):
  *   4. POST /memory/forget without token → 403
@@ -83,12 +84,30 @@ test("T2.1a-2: GET /memory/thread/:id → 200 and body has messages, distilledFa
   expect(messages.some((m) => m.content === "seeded message")).toBe(true);
 });
 
-// ─── Test 3: WS path byte-unchanged — disallowed Origin on / still → 403 ──────
+// ─── Test 3: WS path — disallowed Origin without a token → 401 (token gate is now layer 1) ──────
+//
+// Step-1 update: the per-install token gate (spec §3.2, ADR-0003 p.5 un-deferred) fires
+// BEFORE the origin check. A request with no token (evil browser with no protocols header)
+// is rejected with 401, not 403. The origin gate (layer 2) is intact for clients that pass
+// the token gate but present a bad origin — tested separately below.
 
-test("T2.1a-3: WS upgrade on / with disallowed Origin still returns 403 (origin gate unchanged)", async () => {
+test("T2.1a-3: WS upgrade on / with disallowed Origin and no token → 401 (token gate fires first)", async () => {
   const res = await fetch(`http://127.0.0.1:${PORT}/`, {
     headers: { Origin: "https://evil.example" },
   });
+  // Token gate is layer 1; no token → 401. The origin check (layer 2) is never reached.
+  expect(res.status).toBe(401);
+});
+
+test("T2.1a-3b: WS upgrade on / with valid token but disallowed Origin → 403 (origin gate is layer 2)", async () => {
+  const validToken = readToken();
+  const res = await fetch(`http://127.0.0.1:${PORT}/`, {
+    headers: {
+      Origin: "https://evil.example",
+      "Sec-WebSocket-Protocol": validToken,
+    },
+  });
+  // Token gate passes (valid token), but origin gate (layer 2) rejects with 403.
   expect(res.status).toBe(403);
 });
 

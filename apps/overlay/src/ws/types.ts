@@ -14,4 +14,4 @@ export interface WebSocketLike {
   ): void;
 }
 
-export type WebSocketFactory = (url: string) => WebSocketLike;
+export type WebSocketFactory = (url: string, protocols?: string | string[]) => WebSocketLike;

@@ -37,7 +37,7 @@ export class ConnectionManager {
   private readonly baseMs: number;
   private readonly capMs: number;
 
-  constructor(private readonly factory: WebSocketFactory, deps: ConnectionManagerDeps = {}) {
+  constructor(private readonly factory: WebSocketFactory, private readonly token: string, deps: ConnectionManagerDeps = {}) {
     this.setTimeoutFn = deps.setTimeoutFn ?? ((cb, ms) => setTimeout(cb, ms));
     this.clearTimeoutFn = deps.clearTimeoutFn ?? ((h) => clearTimeout(h));
     this.random = deps.random ?? Math.random;
@@ -51,7 +51,7 @@ export class ConnectionManager {
   }
 
   private openSocket(): void {
-    const ws = this.factory(WS_URL);
+    const ws = this.factory(WS_URL, [this.token]);
     this.ws = ws;
     ws.addEventListener("open", () => { this.reconnectAttempt = 0; });
     ws.addEventListener("message", (ev) => this.dispatch(ev.data));

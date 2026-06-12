@@ -8,10 +8,12 @@ import { WriteGate } from "./write-gate.js";
 import { ThreadLifecycle } from "./thread-lifecycle.js";
 import { DumbTailProvider } from "./providers/dumb-tail-provider.js";
 import { RuleBasedScanner } from "./scanner/memory-scanner.js";
+import { TokenStore } from "./token-store.js";
 
 let dataDir: string;
 let server: ReturnType<typeof import("../index.js").startDaemon>;
 let PORT: number;
+let token: string;
 const ORIGIN = "tauri://localhost";
 
 beforeAll(async () => {
@@ -21,6 +23,8 @@ beforeAll(async () => {
   const { startDaemon } = await import("../index.js");
   server = startDaemon(0);
   PORT = server.port!;
+  // chunk-02 step-3: read the per-install token minted by the daemon at boot.
+  token = new TokenStore(dataDir).token();
 });
 afterAll(() => server.stop(true));
 
@@ -31,7 +35,8 @@ function openDb() {
 /** Drive ONE full mock turn to `done`, with optional thread_id (copied from memory-integration.daemon.test.ts). */
 function runTurn(text: string, threadId?: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${PORT}`, { headers: { Origin: ORIGIN } });
+    // chunk-02 step-3: present token as Sec-WebSocket-Protocol subprotocol (layer-1 gate).
+    const ws = new WebSocket(`ws://127.0.0.1:${PORT}`, { headers: { Origin: ORIGIN }, protocols: [token] });
     ws.addEventListener("open", () =>
       ws.send(JSON.stringify({
         type: "session_start", trigger: "user", text, client_session_id: "c",
@@ -149,4 +154,64 @@ test("EDGE — session_start{thread_id} of a status=dismissed thread hydrates an
   const status = (store.rawDb().query("SELECT status FROM threads WHERE thread_id = ?").get(tid) as { status: string }).status;
   expect(status).toBe("dismissed");
   store.close();
+});
+
+// ─── Adversarial thread-adoption tests (Step 3, DoD #4) ──────────────────────
+//
+// ADR-0014 regret-(a) rider: the connection gate IS the caller-auth gate.
+// A tokenless or bad-token client cannot reach session_start / adopt a thread_id.
+// These tests prove the rider is discharged at the WS upgrade level — the rejected
+// client never gets to send a single frame, so no thread row can be created.
+//
+// Real sockets against the real startDaemon (Strike-4 discipline).
+
+test("adversarial (DoD#4-a): tokenless client is rejected before upgrade — no thread row created", async () => {
+  // Count existing thread rows BEFORE the attack attempt.
+  const db1 = openDb();
+  const before = (db1.query("SELECT COUNT(*) AS n FROM threads").get() as { n: number }).n;
+  db1.close();
+
+  // Tokenless client: valid Origin, no protocols. The daemon must reject at the WS gate.
+  const ws = new WebSocket(`ws://127.0.0.1:${PORT}`, { headers: { Origin: ORIGIN } }); // no protocols
+  const rejected = await new Promise<boolean>((resolve) => {
+    ws.addEventListener("open", () => resolve(false)); // must NOT open
+    ws.addEventListener("error", () => resolve(true));
+    ws.addEventListener("close", () => resolve(true));
+    setTimeout(() => resolve(false), 1500);
+  });
+
+  // Layer-1 gate must have rejected the upgrade.
+  expect(rejected).toBe(true);
+
+  // No thread row was created (the client never reached session_start / adoption).
+  const db2 = openDb();
+  const after = (db2.query("SELECT COUNT(*) AS n FROM threads").get() as { n: number }).n;
+  db2.close();
+  expect(after).toBe(before);
+});
+
+test("adversarial (DoD#4-b): bad-token client is rejected before upgrade — no thread row created", async () => {
+  // Count existing thread rows BEFORE the attack attempt.
+  const db1 = openDb();
+  const before = (db1.query("SELECT COUNT(*) AS n FROM threads").get() as { n: number }).n;
+  db1.close();
+
+  // Bad-token client: valid Origin, wrong 64-char hex token.
+  const badToken = "b".repeat(64); // same length as a real token, wrong value
+  const ws = new WebSocket(`ws://127.0.0.1:${PORT}`, { headers: { Origin: ORIGIN }, protocols: [badToken] });
+  const rejected = await new Promise<boolean>((resolve) => {
+    ws.addEventListener("open", () => resolve(false)); // must NOT open
+    ws.addEventListener("error", () => resolve(true));
+    ws.addEventListener("close", () => resolve(true));
+    setTimeout(() => resolve(false), 1500);
+  });
+
+  // Layer-1 gate must have rejected the upgrade.
+  expect(rejected).toBe(true);
+
+  // No thread row was created by the rejected client.
+  const db2 = openDb();
+  const after = (db2.query("SELECT COUNT(*) AS n FROM threads").get() as { n: number }).n;
+  db2.close();
+  expect(after).toBe(before);
 });

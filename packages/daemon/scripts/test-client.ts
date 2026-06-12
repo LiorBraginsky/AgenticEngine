@@ -2,8 +2,15 @@
 // Assertions live in mock-agent.daemon.test.ts; this file is for manual inspection.
 import { parseEnvelope } from "@agentic/protocol";
 import { DAEMON_PORT } from "../src/index.js";
+import { TokenStore } from "../src/memory/token-store.js";
+import { join } from "node:path";
+import { homedir } from "node:os";
 
-const ws = new WebSocket(`ws://127.0.0.1:${DAEMON_PORT}`, { headers: { Origin: "tauri://localhost" } });
+// chunk-02 step-3: read the per-install token from the same dataDir the daemon uses.
+const dataDir = Bun.env.AGENTIC_DATA_DIR ?? join(homedir(), ".agentic-engine");
+const token = new TokenStore(dataDir).token();
+
+const ws = new WebSocket(`ws://127.0.0.1:${DAEMON_PORT}`, { headers: { Origin: "tauri://localhost" }, protocols: [token] });
 
 ws.addEventListener("open", () => {
   console.log("[client] connected; sending session_start");

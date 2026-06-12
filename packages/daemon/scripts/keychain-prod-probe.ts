@@ -16,8 +16,10 @@
  * ─── Exact invocation command ────────────────────────────────────────────
  * Option A (recommended — re-exec under cleaned env automatically):
  *   bun run --cwd packages/daemon keychain-prod-probe
- *   (the script detects AGENTIC_ENV/ANTHROPIC_API_KEY and re-execs itself under
- *    a cleaned env automatically if they are present)
+ *   (the script detects AGENTIC_ENV/ANTHROPIC_API_KEY and re-execs itself ONCE
+ *    under a cleaned env + a clean cwd (os.tmpdir(), which has no reachable .env)
+ *    automatically if they are present. The user-facing command is unchanged —
+ *    the clean-cwd + once-only sentinel are internal to the re-exec.)
  *
  * Option B (manual env strip — more explicit):
  *   env -i HOME="$HOME" /path/to/bun run packages/daemon/scripts/keychain-prod-probe.ts
@@ -30,7 +32,14 @@
  *   - HOME preserved (Keychain lives under the user's login session)
  *   - NO AGENTIC_ENV (disables .env fallback — C1 gate)
  *   - NO ANTHROPIC_API_KEY (no env bypass)
- *   - NO PATH (proves /usr/bin/security is invoked by absolute path — Grill #1)
+ *   - NO reachable .env — the re-exec runs with cwd=os.tmpdir(). Bun auto-loads
+ *     `.env` FROM THE CWD on every startup; packages/daemon/.env sets
+ *     ANTHROPIC_API_KEY, so re-execing in that cwd would re-contaminate the child
+ *     (→ infinite loop). tmpdir() has no `.env` up its tree, so the child starts
+ *     genuinely clean — this is what simulates the launchd "no inherited env, no
+ *     .env on disk" prod condition.
+ *   - minimal PATH only so `bun` itself can launch; /usr/bin/security is invoked
+ *     by absolute path, so the Keychain read does not depend on PATH (Grill #1).
  *
  * ─── What success looks like ─────────────────────────────────────────────
  *   [probe] Anthropic API key resolved from Keychain (source=keychain).
@@ -75,32 +84,69 @@ console.log("╚═════════════════════�
 console.log("");
 
 // ── Auto re-exec under cleaned env if contaminated ────────────────────────
+//
+// WHY a clean CWD (not just a clean env object): Bun auto-loads `.env` FROM THE
+// PROCESS CWD on every startup. `packages/daemon/.env` sets ANTHROPIC_API_KEY, so
+// a re-exec that strips the env object but keeps cwd=packages/daemon would have
+// ANTHROPIC_API_KEY *reappear* in the child from `.env` → contamination re-detected
+// → re-exec → ∞ loop (the bug the §6.1 demo caught). The fix: spawn the child with
+// cwd = os.tmpdir(), which has no reachable `.env`. ESM imports resolve from
+// import.meta.path (the script file) and node_modules resolves by walking up from
+// the script dir — both cwd-independent — and /usr/bin/security is absolute, so
+// Keychain access is unaffected by the changed cwd.
+//
+// BELT + SUSPENDERS: a once-only sentinel (PROBE_REEXECED) guarantees the re-exec
+// happens AT MOST ONCE. If the child is STILL contaminated after the marker is set,
+// we FAIL LOUDLY rather than loop again.
+import { tmpdir } from "node:os";
+
+const REEXEC_MARKER = "PROBE_REEXECED";
+const alreadyReExeced = Bun.env[REEXEC_MARKER] === "1";
 
 const hasContamination =
   Bun.env.AGENTIC_ENV !== undefined ||
   Bun.env.ANTHROPIC_API_KEY !== undefined;
 
+if (hasContamination && alreadyReExeced) {
+  // Sentinel tripped: one cleaned-env re-exec already happened and the env is
+  // STILL dirty. That means `.env` was not actually excluded (clean-cwd failed,
+  // or a reachable `.env` exists up the tree). NEVER loop again — fail loudly.
+  console.error(
+    "[probe] FATAL: environment STILL contaminated after one cleaned-env re-exec.\n" +
+    "  ANTHROPIC_API_KEY / AGENTIC_ENV reappeared in the re-exec'd child — `.env`\n" +
+    "  was NOT excluded. The re-exec must run with cwd in a directory that has no\n" +
+    "  reachable `.env` (see the clean-cwd note in the re-exec block above).\n" +
+    `    AGENTIC_ENV present:       ${Bun.env.AGENTIC_ENV !== undefined}\n` +
+    `    ANTHROPIC_API_KEY present: ${Bun.env.ANTHROPIC_API_KEY !== undefined}`,
+  );
+  process.exit(1);
+}
+
 if (hasContamination) {
-  console.log("[probe] Detected contaminated environment. Re-execing under cleaned env...");
-  console.log("[probe] (AGENTIC_ENV and/or ANTHROPIC_API_KEY present — stripping them)");
+  console.log("[probe] Detected contaminated environment. Re-execing under cleaned env (once)...");
+  console.log("[probe] (AGENTIC_ENV and/or ANTHROPIC_API_KEY present — stripping them + excluding .env via clean cwd)");
   console.log("");
 
-  // Build a minimal cleaned env: only HOME + PATH to find bun itself
-  // Note: PATH is stripped to verify /usr/bin/security is absolute-path invoked
-  // but we need PATH to find bun for the re-exec. The subprocess spawned by
-  // resolveAnthropicKey() uses /usr/bin/security (absolute) — Grill #1 verified.
+  // Minimal cleaned env: HOME (Keychain session) + a minimal PATH so `bun` itself
+  // can launch. /usr/bin/security is invoked by absolute path, so the resolver does
+  // not depend on PATH. PROBE_REEXECED marks the child so it can never trigger a
+  // second re-exec (anti-infinite-loop sentinel).
   const cleanEnv: Record<string, string> = {
     HOME: Bun.env.HOME ?? "",
-    // Minimal PATH so bun itself can run. /usr/bin/security is called by absolute path.
     PATH: "/usr/local/bin:/usr/bin:/bin",
+    [REEXEC_MARKER]: "1",
   };
 
   const bunExe = process.execPath;
-  const scriptPath = import.meta.path;
+  const scriptPath = import.meta.path; // absolute — imports/node_modules anchor here, not cwd
+
+  // CWD with no reachable `.env` so Bun's dotenv auto-load cannot re-contaminate.
+  const cleanCwd = tmpdir();
 
   const proc = Bun.spawnSync(
     [bunExe, "run", scriptPath],
     {
+      cwd: cleanCwd,
       env: cleanEnv,
       stdout: "inherit",
       stderr: "inherit",

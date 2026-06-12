@@ -97,12 +97,30 @@ export function startDaemon(port: number = DAEMON_PORT, provider?: AgentProvider
         }
         return handleMemoryHttp(req, url, memoryDeps);
       }
-      // ── unchanged below: WS upgrade path keeps the origin gate ──
-      // Origin-allowlist gate BEFORE upgrade (interim CSWSH mitigation).
+      // ── WS upgrade path: token gate (layer 1) + origin gate (layer 2) ──
+      // Token gate (spec §3.2, ADR-0003 p.5 un-deferred): verify the per-install
+      // token presented as the Sec-WebSocket-Protocol subprotocol BEFORE upgrade.
+      const proto = req.headers.get("sec-websocket-protocol");
+      if (!tokenStore.verifyToken(proto)) {
+        // Log origin + reason for audit; NEVER log the token value (spec §3.8, DoD #7).
+        console.error("[daemon] WS upgrade rejected:", {
+          origin: req.headers.get("origin"),
+          reason: "bad-or-missing-token",
+        });
+        return new Response("Unauthorized", { status: 401 });
+      }
+      // Origin-allowlist gate (layer 2, interim CSWSH mitigation — ADR-0003 Amendment).
       if (!isOriginAllowed(req.headers.get("origin"))) {
         return new Response("Forbidden origin", { status: 403 });
       }
-      if (server.upgrade(req, { data: { sessionIds: new Set<string>() } })) return undefined; // 101 Switching Protocols
+      // Echo the negotiated subprotocol on the 101 (RFC 6455 §4.1; browser drops
+      // the connection if the daemon does not echo it back).
+      // Bun echoes Sec-WebSocket-Protocol automatically when the client offered it —
+      // DO NOT manually repeat it in `headers`; doing so causes a 1002 protocol error
+      // (Bun detects the duplicate and closes the connection). Verified by runtime probe.
+      if (server.upgrade(req, {
+        data: { sessionIds: new Set<string>() },
+      })) return undefined; // 101 Switching Protocols
       return new Response("Upgrade failed", { status: 400 });
     },
     websocket: {

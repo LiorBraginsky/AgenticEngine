@@ -81,3 +81,51 @@ test("T2.1b-7: verify() rejects bare token without the Bearer scheme", () => {
   // Pass the raw token string with no prefix — must be rejected
   expect(ts.verify(ts.token())).toBe(false);
 });
+
+// ─── Step-1 timing-safe additions ────────────────────────────────────────────
+// These tests cover the new verifyToken() method (WS subprotocol path — bare
+// token, no "Bearer " prefix) and the updated timing-safe verify() internals.
+
+test("step1-ts-1: verify('Bearer <correct>') → true (timing-safe path)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mf05-ts-"));
+  const ts = new TokenStore(dir);
+  expect(ts.verify(`Bearer ${ts.token()}`)).toBe(true);
+});
+
+test("step1-ts-2: verify('Bearer <wrong-same-length>') → false (timing-safe path)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mf05-ts-"));
+  const ts = new TokenStore(dir);
+  // The minted token is 64 hex chars; craft a wrong token of the same length
+  const wrong = "a".repeat(64);
+  expect(ts.verify(`Bearer ${wrong}`)).toBe(false);
+});
+
+test("step1-ts-3: verify('Bearer <wrong-different-length>') → false", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mf05-ts-"));
+  const ts = new TokenStore(dir);
+  expect(ts.verify("Bearer tooshort")).toBe(false);
+});
+
+test("step1-ts-4: verify(undefined) → false (timing-safe path)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mf05-ts-"));
+  const ts = new TokenStore(dir);
+  expect(ts.verify(undefined)).toBe(false);
+});
+
+test("step1-ts-5: verifyToken('<correct>') → true (WS subprotocol path)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mf05-ts-"));
+  const ts = new TokenStore(dir);
+  expect(ts.verifyToken(ts.token())).toBe(true);
+});
+
+test("step1-ts-6: verifyToken('<wrong>') → false (WS subprotocol path)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mf05-ts-"));
+  const ts = new TokenStore(dir);
+  expect(ts.verifyToken("deadbeef")).toBe(false);
+});
+
+test("step1-ts-7: verifyToken(undefined) → false (WS subprotocol path)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mf05-ts-"));
+  const ts = new TokenStore(dir);
+  expect(ts.verifyToken(undefined)).toBe(false);
+});

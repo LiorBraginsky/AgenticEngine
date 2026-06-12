@@ -141,7 +141,7 @@ test("forget-survives-re-derive: tombstoned fact absent from rebuilt slice and r
   const [mid] = store.appendMessages(threadId, [{ role: "user", content: "secret fact" }], "s1");
 
   // 2. Dismiss → distill → fact is in distilled_facts
-  await hook.dismiss(threadId);
+  await hook.dismiss([threadId]);
   const beforeForget = store.readDistilledFacts(50);
   expect(beforeForget.some((f) => f.fact === "secret fact")).toBe(true);
 
@@ -180,7 +180,7 @@ test("forget-purges-live-slice: live distilled_facts row gone IMMEDIATELY after 
   const [mid] = store.appendMessages(threadId, [{ role: "user", content: "live secret" }], "s1");
 
   // 2. Dismiss → distill → fact is live in distilled_facts
-  await hook.dismiss(threadId);
+  await hook.dismiss([threadId]);
   expect(store.readDistilledFacts(10).length).toBeGreaterThan(0);
   expect(store.readDistilledFacts(10).some((f) => f.fact === "live secret")).toBe(true);
 
@@ -297,13 +297,13 @@ test("distillation-observable (5b): dismiss of empty thread writes distillation_
   const threadId = store.createThread();
 
   // 2. Dismiss the empty thread
-  await hook.dismiss(threadId);
+  await hook.dismiss([threadId]);
 
-  // 3. Assert: a distillation_events row exists with facts_produced = 0
+  // 3. Assert: a distillation_events row exists with facts_produced = 0, trigger="reprojection"
   const events = store.readDistillationEvents(threadId);
   expect(events.length).toBe(1);
   expect(events[0]!.facts_produced).toBe(0);
-  expect(events[0]!.trigger).toBe("dismiss");
+  expect(events[0]!.trigger).toBe("reprojection");
 
   // Also assert distilled_facts is empty (no facts emitted for empty thread)
   expect(store.readDistilledFacts(10).length).toBe(0);

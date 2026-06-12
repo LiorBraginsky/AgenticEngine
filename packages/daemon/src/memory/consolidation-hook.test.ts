@@ -11,24 +11,43 @@ function fresh() {
   return { store, hook: new ConsolidationHook(store) };
 }
 
-test("dismissing a thread flips status to 'dismissed' AND invokes the registered handler", () => {
+test("dismissing a thread flips status to 'dismissed' AND invokes the registered handler (batch signature)", async () => {
   const { store, hook } = fresh();
   const t = store.createThread();
-  const calls: string[] = [];
-  hook.register((threadId, trigger) => { calls.push(`${threadId}:${trigger}`); });
-  hook.dismiss(t);
-  expect(calls).toEqual([`${t}:dismiss`]);
+  const calls: Array<{ ids: string[]; trigger: string }> = [];
+  hook.register((threadIds, triggerThreadId) => { calls.push({ ids: threadIds, trigger: triggerThreadId }); });
+  await hook.dismiss([t]);
+  expect(calls).toHaveLength(1);
+  expect(calls[0]!.ids).toEqual([t]);
+  expect(calls[0]!.trigger).toBe(t); // triggerThreadId defaults to threadIds[0]
   const status = (store.rawDb().query("SELECT status FROM threads WHERE thread_id = ?").get(t) as { status: string }).status;
   expect(status).toBe("dismissed");
   store.close();
 });
 
-test("default (no registration) dismiss is a no-op pass-through that still flips status", () => {
+test("default (no registration) dismiss is a no-op pass-through that still flips status", async () => {
   const { store, hook } = fresh();
   const t = store.createThread();
-  expect(() => hook.dismiss(t)).not.toThrow();
+  await expect(hook.dismiss([t])).resolves.toBeUndefined();
   const status = (store.rawDb().query("SELECT status FROM threads WHERE thread_id = ?").get(t) as { status: string }).status;
   expect(status).toBe("dismissed");
+  store.close();
+});
+
+test("batch dismiss: multiple threads all get status=dismissed and handler fires ONCE with the full array", async () => {
+  const { store, hook } = fresh();
+  const t1 = store.createThread();
+  const t2 = store.createThread();
+  const calls: Array<{ ids: string[]; trigger: string }> = [];
+  hook.register((threadIds, triggerThreadId) => { calls.push({ ids: threadIds, trigger: triggerThreadId }); });
+  await hook.dismiss([t1, t2], t1);
+  expect(calls).toHaveLength(1);
+  expect(calls[0]!.ids).toEqual([t1, t2]);
+  expect(calls[0]!.trigger).toBe(t1);
+  const s1 = (store.rawDb().query("SELECT status FROM threads WHERE thread_id = ?").get(t1) as { status: string }).status;
+  const s2 = (store.rawDb().query("SELECT status FROM threads WHERE thread_id = ?").get(t2) as { status: string }).status;
+  expect(s1).toBe("dismissed");
+  expect(s2).toBe("dismissed");
   store.close();
 });
 

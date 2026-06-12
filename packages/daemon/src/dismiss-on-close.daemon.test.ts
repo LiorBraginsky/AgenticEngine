@@ -76,7 +76,7 @@ function statusOf(threadId: string): string | undefined {
   return row?.status;
 }
 
-test("DoD — open socket → run a turn on thread T → close → status(T)=dismissed AND a distillation_events row exists", async () => {
+test("DoD — open socket → run a turn on thread T → close → status(T)=dismissed AND a reprojection distillation_events row exists", async () => {
   const threadId = crypto.randomUUID(); // client-minted (adoption posture)
   const ws = await openSocket();
   await turnOver(ws, "deploy is yeet.sh", threadId);
@@ -84,11 +84,11 @@ test("DoD — open socket → run a turn on thread T → close → status(T)=dis
 
   const events = await waitForDistillationEvent(threadId);
   expect(events.length).toBe(1);
-  expect(events[0]!.trigger).toBe("dismiss");
+  expect(events[0]!.trigger).toBe("reprojection");
   expect(statusOf(threadId)).toBe("dismissed");
 });
 
-test("DoD — two conversations on ONE connection (thread switch via new client-minted id) → close → BOTH dismissed", async () => {
+test("DoD — two conversations on ONE connection (thread switch via new client-minted id) → close → BOTH dismissed, ONE reprojection each (not double)", async () => {
   const threadA = crypto.randomUUID();
   const threadB = crypto.randomUUID();
   const ws = await openSocket();
@@ -98,8 +98,11 @@ test("DoD — two conversations on ONE connection (thread switch via new client-
 
   const eventsA = await waitForDistillationEvent(threadA);
   const eventsB = await waitForDistillationEvent(threadB);
+  // Exactly ONE reprojection row per dismissed thread (2 total), no double-reprojection
   expect(eventsA.length).toBe(1);
+  expect(eventsA[0]!.trigger).toBe("reprojection");
   expect(eventsB.length).toBe(1);
+  expect(eventsB[0]!.trigger).toBe("reprojection");
   expect(statusOf(threadA)).toBe("dismissed");
   expect(statusOf(threadB)).toBe("dismissed");
 });

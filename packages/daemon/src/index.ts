@@ -236,17 +236,21 @@ export function startDaemon(port: number = DAEMON_PORT, provider?: AgentProvider
         // ── CM-03: dismiss = close(ws). After the flush, consolidate EVERY active
         //    (not-yet-dismissed) thread on this connection (spec §3.2; ADR-0014 d.2).
         //    dismiss ⇒ persist + distill (ADR-0012): the thread is NOT deleted.
-        //    B1 discipline: each dismiss is non-fatal — log, never crash, never block
-        //    cleanup. finally always records the id so a partial/failed dismiss never
-        //    retry-loops (same discipline the retired provisional block used).
-        for (const threadId of ws.data.touchedThreadIds ?? []) {
-          if (ws.data.dismissedThreadIds?.has(threadId)) continue;
+        //    D5: ONE batch dismiss fires ONE projection rebuild (not per-thread).
+        //    B1 discipline: the whole batch is non-fatal — log, never crash, never block
+        //    cleanup. finally always records all ids so a failed batch never retry-loops.
+        const toDismiss = [...(ws.data.touchedThreadIds ?? [])].filter(
+          (id) => !ws.data.dismissedThreadIds?.has(id),
+        );
+        if (toDismiss.length > 0) {
           try {
-            await hook.dismiss(threadId);
+            await hook.dismiss(toDismiss);
           } catch (err) {
-            console.error("[daemon] dismiss error on close (non-fatal, thread:", threadId, "):", err);
+            console.error("[daemon] batch dismiss error on close (non-fatal, threads:", toDismiss, "):", err);
           } finally {
-            (ws.data.dismissedThreadIds ??= new Set<string>()).add(threadId);
+            for (const id of toDismiss) {
+              (ws.data.dismissedThreadIds ??= new Set<string>()).add(id);
+            }
           }
         }
       },

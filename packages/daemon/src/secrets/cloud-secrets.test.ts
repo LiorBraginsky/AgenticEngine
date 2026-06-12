@@ -10,11 +10,12 @@
  *   5. Dotenv fallback when AGENTIC_ENV=dev
  *   6. Dotenv fallback BLOCKED when AGENTIC_ENV is absent (prod-safe default-deny)
  *   7. Memoization: resolver only calls spawn once per process
+ *   8. _classifyKeychainStderr: ACL-denial stderr containing "44" must NOT classify as missing
  */
 import { test, expect, describe, beforeEach } from "bun:test";
 
 import type { KeychainGetFn, ResolveOpts } from "./cloud-secrets.js";
-import { resolveAnthropicKey, _resetMemo } from "./cloud-secrets.js";
+import { resolveAnthropicKey, _resetMemo, _classifyKeychainStderr } from "./cloud-secrets.js";
 
 // Helper to build a fake keychainGet
 function makeKeychainGet(
@@ -244,5 +245,50 @@ describe("memoization", () => {
     resolveAnthropicKey(opts);
 
     expect(callCount).toBe(2);
+  });
+});
+
+// ── 8. _classifyKeychainStderr — classifier correctness ───────────────────
+//
+// This is the load-bearing classifier: an ACL denial MUST NOT be misreported
+// as `missing`. Tests drive the pure function directly so the logic is verified
+// independent of spawn behavior.
+
+describe("_classifyKeychainStderr", () => {
+  test("not-found stderr → 'missing'", () => {
+    expect(
+      _classifyKeychainStderr(
+        "security: seckeychainsearchcopynext: the specified item could not be found in the keychain.",
+        44,
+      ),
+    ).toBe("missing");
+  });
+
+  test("errsecitemnotfound (lowercased) → 'missing'", () => {
+    expect(_classifyKeychainStderr("errsecitemnotfound", 44)).toBe("missing");
+  });
+
+  test("ACL-denial stderr that ALSO contains '44' → 'acl_denied', NOT 'missing'", () => {
+    // This is the regression case: the removed `"44"` clause would have
+    // misclassified this as `missing`, hiding the known-risk signal.
+    const aclSterrWithDigits =
+      "security: errsecinteractionnotallowed: 44 user interaction not allowed.";
+    expect(_classifyKeychainStderr(aclSterrWithDigits, 25308)).toBe("acl_denied");
+  });
+
+  test("errsecinteractionnotallowed (lowercased) → 'acl_denied'", () => {
+    expect(_classifyKeychainStderr("errsecinteractionnotallowed", 25308)).toBe("acl_denied");
+  });
+
+  test("'denied' in stderr → 'acl_denied'", () => {
+    expect(_classifyKeychainStderr("authorization denied", 25300)).toBe("acl_denied");
+  });
+
+  test("null exit code → 'cli_not_found'", () => {
+    expect(_classifyKeychainStderr("", null)).toBe("cli_not_found");
+  });
+
+  test("unrecognised non-zero exit with empty stderr → 'acl_denied' (safer over-report)", () => {
+    expect(_classifyKeychainStderr("unknown error from keychain", 1)).toBe("acl_denied");
   });
 });

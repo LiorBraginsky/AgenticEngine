@@ -62,9 +62,69 @@ export type ResolveResult = ResolveSuccess | ResolveFailure;
 export interface ResolveOpts {
   /** Override the Keychain backend (for unit tests). Defaults to the real implementation. */
   keychainGet?: KeychainGetFn;
+  /**
+   * Override the Keychain service name looked up by the production keychainGetMacOS
+   * implementation. Used ONLY by the real-I/O integration test to target the
+   * "agentic-engine-test" namespace without touching the production item.
+   * Never set in production code — defaults to KEYCHAIN_SERVICE.
+   */
+  service?: string;
+  /**
+   * Override the Keychain account name looked up by the production keychainGetMacOS
+   * implementation. Used ONLY by the real-I/O integration test to target a
+   * random-UUID test account. Never set in production code — defaults to KEYCHAIN_ACCOUNT.
+   */
+  account?: string;
 }
 
 // ── macOS Keychain helper (absolute path — Grill #1) ─────────────────────
+
+/**
+ * Classifies a non-zero-exit stderr from /usr/bin/security find-generic-password
+ * into a named failure reason.
+ *
+ * Exported for unit testing — the classification logic is load-bearing (an ACL denial
+ * MUST NOT be misreported as `missing`). Accepts already-lowercased stderr.
+ *
+ * Rules:
+ *   - "could not be found" / "errsecitemnotfound" → missing (item absent).
+ *   - ACL / denial patterns → acl_denied (known-risk signal).
+ *   - All match literals are lowercase — caller must pass lowercased input.
+ *   - Do NOT add bare digit strings (e.g. "44") — they match too broadly and can
+ *     misclassify an ACL denial whose stderr contains those digits.
+ */
+export function _classifyKeychainStderr(
+  lowercasedStderr: string,
+  exitCode: number | null,
+): "missing" | "acl_denied" | "cli_not_found" {
+  // Item-not-found patterns
+  if (
+    lowercasedStderr.includes("could not be found") ||
+    lowercasedStderr.includes("errsecitemnotfound")
+  ) {
+    return "missing";
+  }
+
+  // ACL / user-interaction prompt denial patterns.
+  // All literals MUST be lowercase to match the .toLowerCase() applied by the caller.
+  if (
+    lowercasedStderr.includes("user interaction not allowed") ||
+    lowercasedStderr.includes("acl") ||
+    lowercasedStderr.includes("denied") ||
+    lowercasedStderr.includes("authorizationdenied") ||
+    lowercasedStderr.includes("errsecinteractionnotallowed")
+  ) {
+    return "acl_denied";
+  }
+
+  // No exit code (process killed) → treat as cli issue
+  if (exitCode === null) {
+    return "cli_not_found";
+  }
+
+  // Default: unrecognised non-zero stderr → acl_denied (safer over-report)
+  return "acl_denied";
+}
 
 /**
  * Reads a password from the macOS Keychain via /usr/bin/security.
@@ -101,38 +161,10 @@ function keychainGetMacOS(service: string, account: string): KeychainResult {
     return { ok: false, reason: "missing" };
   }
 
-  // Non-zero exit — classify from stderr
+  // Non-zero exit — classify via the exported classifier
   const stderr = new TextDecoder().decode(proc.stderr).trim().toLowerCase();
-
-  // "SecKeychainSearchCopyNext" / "The specified item could not be found" is item-not-found
-  if (
-    stderr.includes("could not be found") ||
-    stderr.includes("errSecItemNotFound") ||
-    stderr.includes("44") // -25300 decimal truncated in some stderr formats
-  ) {
-    return { ok: false, reason: "missing" };
-  }
-
-  // ACL / user-interaction prompt denial patterns
-  if (
-    stderr.includes("user interaction not allowed") ||
-    stderr.includes("acl") ||
-    stderr.includes("denied") ||
-    stderr.includes("authorizationdenied") ||
-    stderr.includes("errSecInteractionNotAllowed")
-  ) {
-    return { ok: false, reason: "acl_denied" };
-  }
-
-  // Any other non-zero exit: if it looks like the binary wasn't usable, cli_not_found
-  // Otherwise fall to acl_denied as the safer escalation (surfaces the known-risk).
-  if (proc.exitCode === null) {
-    // Killed / no exit code → treat as cli issue
-    return { ok: false, reason: "cli_not_found" };
-  }
-
-  // Default non-zero with unrecognised stderr → acl_denied (safer over-report)
-  return { ok: false, reason: "acl_denied" };
+  const reason = _classifyKeychainStderr(stderr, proc.exitCode);
+  return { ok: false, reason };
 }
 
 // ── Failure message builders ───────────────────────────────────────────────
@@ -195,7 +227,9 @@ export function resolveAnthropicKey(opts: ResolveOpts = {}): ResolveResult {
   if (_memo) return _memo;
 
   const get: KeychainGetFn = opts.keychainGet ?? keychainGetMacOS;
-  const keychainResult = get(KEYCHAIN_SERVICE, KEYCHAIN_ACCOUNT);
+  const service = opts.service ?? KEYCHAIN_SERVICE;
+  const account = opts.account ?? KEYCHAIN_ACCOUNT;
+  const keychainResult = get(service, account);
 
   if (keychainResult.ok) {
     const success: ResolveSuccess = {

@@ -2,6 +2,7 @@ import type { MemoryProvider, DistillResult } from "../memory-provider.js";
 import type { MemoryStore } from "../store.js";
 import type { SessionMessage } from "../../providers/provider.js";
 import { REDACTION_MARKER } from "../schema.js";
+import { REMEMBERED_LABEL } from "../../providers/system-prompt.js";
 
 /** Tail recency heuristic: take the most recent N messages from a thread. */
 const DISTILL_TAIL_N = 5;
@@ -62,7 +63,7 @@ export class DumbTailProvider implements MemoryProvider {
     // (FixedMarker "thread:<id>"). No regression: message-UUID case is unchanged.
     const live = rows.filter((f) => !store.isFactTombstoned(f.provenance));
     return Promise.resolve(
-      live.map((f) => ({ role: "user" as const, content: `[remembered] ${f.fact}` })),
+      live.map((f) => ({ role: "user" as const, content: `${REMEMBERED_LABEL}${f.fact}` })),
     );
   }
 }

@@ -1,6 +1,6 @@
 # Chunk 1: Memory self-concept — the agent owns its memory (2a)
 
-**Status:** todo
+**Status:** in-progress
 **Created:** 2026-06-12
 **Phase:** memory-quality (spec `docs/specs/2026-06-12-memory-quality.md` §3.1)
 **Estimated size:** ~0.5–1 day

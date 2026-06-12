@@ -6,6 +6,7 @@ import { MemoryStore } from "../store.js";
 import { WriteGate } from "../write-gate.js";
 import { RuleBasedScanner } from "../scanner/memory-scanner.js";
 import { DumbTailProvider } from "./dumb-tail-provider.js";
+import { REMEMBERED_LABEL } from "../../providers/system-prompt.js";
 
 function freshStore() {
   const dir = mkdtempSync(join(tmpdir(), "mf02-dt-"));
@@ -151,5 +152,24 @@ test("MF-04: DumbTailProvider.retrieve admits global-scope fact for any thread (
   );
   const sliceB = await provider.retrieve(store, tB);
   expect(sliceB.some((m) => m.content.includes("global note"))).toBe(true);
+  store.close();
+});
+
+// ── Label-consistency (memory-quality chunk 01 DoD) ───────────────────────
+
+test("label-consistency: DumbTailProvider.retrieve output starts with REMEMBERED_LABEL; REMEMBERED_LABEL === '[remembered] '", async () => {
+  // Wire-byte pin: REMEMBERED_LABEL must equal exactly "[remembered] " (bracket word + trailing space)
+  expect(REMEMBERED_LABEL).toBe("[remembered] ");
+
+  // retrieve() output prefix must start with the imported REMEMBERED_LABEL (not a hardcoded copy)
+  const { store } = freshStore();
+  store.insertDistilledFacts(
+    [{ fact: "deploy is yeet.sh", provenance: "m-lc-1", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" }],
+    "dumb-tail",
+  );
+  const t = store.createThread();
+  const slice = await provider.retrieve(store, t);
+  expect(slice.length).toBeGreaterThan(0);
+  expect(slice[0]!.content.startsWith(REMEMBERED_LABEL)).toBe(true);
   store.close();
 });

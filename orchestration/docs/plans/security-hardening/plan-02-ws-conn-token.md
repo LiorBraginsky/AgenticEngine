@@ -6,7 +6,9 @@
 - **Chunk:** `orchestration/chunks-todo/security-hardening/02-ws-conn-token-subprotocol.md`
 - **Spec:** `orchestration/docs/specs/2026-06-12-security-hardening.md` §3.2 / §3.3 / §3.6 / §3.8 / §4 (status: accepted)
 - **ADR worthy:** no (executes accepted ADR-0003 p.5 + Amendment; discharges accepted ADR-0014 regret-(a) rider; authors no new contract)
-- **Step tracker:** Step 1 ☑ · Step 2 ☑ · Step 3 ☐ · Review ☐
+- **Step tracker:** Step 1 ☑ · Step 2 ☑ · Step 3 ☑ · Review ☐
+
+> **Step 3 done (orchestrator-verified, independent re-run):** 9 WS daemon test files + 2 scripts + overlay realio test present the token (object-form `{ headers: { Origin }, protocols: [token] }` — keeps layer-2 origin); adversarial thread-adoption tests (tokenless + bad-token both rejected pre-upgrade, no thread row created — ADR-0014 rider discharged at the connection gate); audit enumerates the ONLY 2 thread-write paths (WS `session_start`→`lifecycle.beginTurn`→`store.createThread`; HTTP Bearer-gated edit/forget). **Full suite 352 pass / 0 fail · typecheck 0 · lint:strict 0 · protocol diff EMPTY · mock reducer diff EMPTY · DoD #7 logs carry origin/reason not the token.** All mechanical DoD (#3-#8) GREEN. Behavioral DoD #1/#2 remain Lior §6.1 live demo.
 
 > **Step 2 done (orchestrator-verified):** Rust `read_auth_token` command (`std::fs`, mirrors daemon dataDir resolution, NO new Cargo dep — Cargo.toml/lock byte-unchanged → no ADR); `WebSocketFactory` gains `protocols`; `ConnectionManager(factory, token)` passes `[token]` in `openSocket()` (re-presented on every reconnect + dismiss re-connect); `main.ts` boot-reads via `invoke`, array-form factory (DOM-lib correct), stale comment rewritten. typecheck 0 · lint:strict 0 · cargo check 0 · connection-manager.test.ts 20/20 · protocol diff EMPTY. (`realio.test.ts` got a placeholder `"STEP3-TOKEN"` to keep the branch compiling — Step 3 finalizes it.) Rust+WKWebView file-read at runtime = behavioral (DoD #1/#2), Lior §6.1.
 

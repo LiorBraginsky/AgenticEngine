@@ -1,6 +1,6 @@
 # Chunk 3: Smart distiller provider — LLM-backed, non-default (2b)
 
-**Status:** todo
+**Status:** in-progress
 **Created:** 2026-06-12
 **Phase:** memory-quality (spec `docs/specs/2026-06-12-memory-quality.md` §3.3 + §4)
 **Estimated size:** ~1–1.5 days

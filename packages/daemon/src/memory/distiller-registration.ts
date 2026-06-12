@@ -38,20 +38,27 @@ export function registerDistiller(
   scanner: MemoryScanner,
 ): void {
   hook.register(async (dismissedThreadIds: string[], triggerThreadId: string) => {
-    // ── Phase 1: COMPUTE (outside any transaction) ───────────────────────
-    let result: DistillResult;
-    try {
-      result = await provider.distill(store, triggerThreadId);
-    } catch (err) {
-      // Failure path: provider threw — do NOT drop the existing projection.
-      // facts_produced = surviving MACHINE projection size (same basis as the success path's clean.length).
+    // ── Local failure helper (DRY — used by all three phase catch blocks) ──
+    // On any phase failure: read the surviving MACHINE projection size, write one
+    // `reprojection-failed` event row per dismissed thread (independent inserts —
+    // no atomicity needed since nothing was dropped), console.error, then the
+    // caller rethrows so index.ts logs the non-fatal error.
+    const recordReprojectionFailure = (err: unknown, phase: string): void => {
       const currentSize = (store.rawDb()
         .query("SELECT COUNT(*) AS n FROM distilled_facts WHERE authored_by != 'human'")
         .get() as { n: number }).n;
       for (const id of dismissedThreadIds) {
         store.insertDistillationEvent(id, "reprojection-failed", currentSize, provider.id);
       }
-      console.error("[distiller] provider.distill failed; existing projection preserved:", err);
+      console.error(`[distiller] ${phase} failed; existing projection preserved:`, err);
+    };
+
+    // ── Phase 1: COMPUTE (outside any transaction) ───────────────────────
+    let result: DistillResult;
+    try {
+      result = await provider.distill(store, triggerThreadId);
+    } catch (err) {
+      recordReprojectionFailure(err, "provider.distill");
       throw err; // surface so index.ts catch can log the non-fatal error
     }
 
@@ -75,15 +82,7 @@ export function registerDistiller(
         return true;
       });
     } catch (err) {
-      // Phase 2 threw — same failure path as Phase 1.
-      // facts_produced = surviving MACHINE projection size (same basis as the success path's clean.length).
-      const currentSize = (store.rawDb()
-        .query("SELECT COUNT(*) AS n FROM distilled_facts WHERE authored_by != 'human'")
-        .get() as { n: number }).n;
-      for (const id of dismissedThreadIds) {
-        store.insertDistillationEvent(id, "reprojection-failed", currentSize, provider.id);
-      }
-      console.error("[distiller] scan phase failed; existing projection preserved:", err);
+      recordReprojectionFailure(err, "scan phase");
       throw err;
     }
 
@@ -95,6 +94,13 @@ export function registerDistiller(
       trigger: "reprojection",
       factsProduced: clean.length,
     }));
-    store.replaceProjection(clean, provider.id, eventRows);
+    try {
+      store.replaceProjection(clean, provider.id, eventRows);
+    } catch (err) {
+      // Phase 3 threw (e.g. constraint violation in the flat tx — bun:sqlite rolls
+      // back automatically, so never-drop holds). Write failure events + rethrow.
+      recordReprojectionFailure(err, "replaceProjection (Phase 3)");
+      throw err;
+    }
   });
 }

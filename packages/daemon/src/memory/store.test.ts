@@ -399,3 +399,65 @@ test("readDistilledFactsForThread: human-authored fact appears before machine fa
 
   store.close();
 });
+
+// ---- MAJOR-1: recency ordering via replaceProjection with > RETRIEVE_SLICE_N facts ----
+
+/**
+ * Regression test for the recency-inversion bug:
+ *   - replaceProjection stamped Date.now() per-row inside the insert loop.
+ *   - readDistilledFactsForThread ordered by derived_at DESC with no tie-breaker.
+ *   - When the loop crosses a ms boundary, later-inserted (= OLDER) rows get a
+ *     larger derived_at → DESC ranks them FIRST → LIMIT 20 fills with the OLDEST
+ *     facts and drops the newest.
+ * Fix: single `now` before the loop + `rowid ASC` stable tie-breaker.
+ * Deterministic-RED requirement: 200 facts ensure the insert loop crosses a ms
+ * boundary reliably under the unfixed code (tested by running without fix).
+ */
+test("replaceProjection: readDistilledFactsForThread LIMIT 20 returns the NEWEST facts in newest-first order (recency-inversion regression)", () => {
+  const FACT_COUNT = 500; // large enough to cross ms boundary reliably (200 stays in 1ms; 500 spans 2ms)
+  const SLICE_N = 20;     // mirrors RETRIEVE_SLICE_N
+  const { store } = freshStore();
+  const t = store.createThread();
+
+  // Build facts in newest-first order (index 0 = newest, index FACT_COUNT-1 = oldest).
+  // scope='cross-thread' so all facts are injectable for forThreadId=t.
+  // The provider would iterate threads newest-first and produce facts in this order,
+  // so index 0 is the most-recently-active thread's fact.
+  const facts = Array.from({ length: FACT_COUNT }, (_, i) => ({
+    fact: `fact-${i}`,
+    provenance: `thread:prov-${i}`,
+    scope: "cross-thread" as const,
+    expiry: null,
+    confidence: 1,
+    authored_by: "machine" as const,
+  }));
+
+  // replaceProjection is the production path that had the per-row Date.now() bug.
+  // Insert via the real replaceProjection (exercises the write path under test).
+  store.replaceProjection(facts, "test", [{ threadId: t, trigger: "reprojection", factsProduced: facts.length }]);
+
+  const slice = store.readDistilledFactsForThread(t, SLICE_N);
+
+  // Assertions:
+  // 1. Exactly SLICE_N rows returned.
+  expect(slice.length).toBe(SLICE_N);
+  // 2. The slice must be the NEWEST facts (indices 0..19) — NOT the oldest.
+  //    Under the bug, the slice would be filled with the OLDEST facts (high indices).
+  const sliceFacts = slice.map((r) => r.fact);
+  for (let i = 0; i < SLICE_N; i++) {
+    expect(sliceFacts).toContain(`fact-${i}`);
+  }
+  // 3. None of the oldest facts (beyond SLICE_N) should be in the slice.
+  for (let i = SLICE_N; i < FACT_COUNT; i++) {
+    expect(sliceFacts).not.toContain(`fact-${i}`);
+  }
+  // 4. Order within the slice: newest-first (fact-0 before fact-1, etc.).
+  //    rowid ASC insertion order = provider's newest-first order, so fact-0 has lower rowid.
+  const idx0 = sliceFacts.indexOf("fact-0");
+  const idx19 = sliceFacts.indexOf("fact-19");
+  expect(idx0).toBeGreaterThanOrEqual(0);
+  expect(idx19).toBeGreaterThanOrEqual(0);
+  expect(idx0).toBeLessThan(idx19);
+
+  store.close();
+});

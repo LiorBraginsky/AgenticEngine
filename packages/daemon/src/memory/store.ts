@@ -219,7 +219,7 @@ export class MemoryStore {
                )
              )
            )
-         ORDER BY (df.authored_by = 'human') DESC, df.derived_at DESC
+         ORDER BY (df.authored_by = 'human') DESC, df.derived_at DESC, df.rowid ASC
          LIMIT ?`,
       )
       .all(Date.now(), forThreadId, forThreadId, limit) as DistilledFactRow[];
@@ -364,6 +364,15 @@ export class MemoryStore {
     distillerVersion: string,
     events: { threadId: string; trigger: string; factsProduced: number }[],
   ): void {
+    // Capture one timestamp for the entire atomic rebuild (MAJOR-1 fix part 1).
+    // A single `now` means all machine fact rows share the same derived_at, which
+    // makes the rowid ASC tie-breaker in readDistilledFactsForThread the sole
+    // determinant of order within the machine projection. Because a full DELETE +
+    // INSERT assigns rowids monotonically in insertion order, rowid ASC = the
+    // provider's intended newest-first order. Per-row Date.now() caused later-
+    // inserted (= older) facts to get a larger derived_at → DESC ranked them first
+    // → LIMIT 20 filled with the oldest conversations.
+    const now = Date.now();
     const insertFact = this.db.query(
       "INSERT INTO distilled_facts (id, fact, provenance, scope, expiry, confidence, authored_by, derived_at, distiller_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     );
@@ -382,7 +391,7 @@ export class MemoryStore {
           f.expiry ?? null,
           f.confidence,
           f.authored_by,
-          Date.now(),
+          now,
           distillerVersion,
         );
       }
@@ -393,7 +402,7 @@ export class MemoryStore {
           e.trigger,
           e.factsProduced,
           distillerVersion,
-          Date.now(),
+          now,
         );
       }
     });

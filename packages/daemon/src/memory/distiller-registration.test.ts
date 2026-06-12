@@ -214,3 +214,90 @@ test("throwing-provider failure path: existing projection INTACT, reprojection-f
 
   store.close();
 });
+
+// ── MAJOR-2: Phase-3 (transaction) failure must write reprojection-failed rows and rethrow ──
+
+/**
+ * Regression test for the silent Phase-3 failure bug:
+ *   - Phase-3 `store.replaceProjection(...)` was outside any try/catch.
+ *   - If the tx threw (e.g. a `fact: null` passing the scanner's `content ?? ""`
+ *     but failing `distilled_facts.fact NOT NULL`), never-drop held (bun:sqlite rollback),
+ *     BUT no `reprojection-failed` rows were written → dismiss indistinguishable from "never dismissed."
+ *
+ * The scanner uses `content ?? ""`, so a fact with `fact: null` passes Phase 2 entirely
+ * and reaches Phase 3, where `NOT NULL` rejects it in the INSERT.
+ *
+ * Fix: wrap Phase-3 in the same failure path as Phase 1/2.
+ */
+test("Phase-3 tx failure: prior projection INTACT, reprojection-failed rows written, console.error fired, error rethrown", async () => {
+  const { store } = freshStore();
+  const hook = new ConsolidationHook(store);
+
+  // Seed an existing projection: 2 machine facts + 1 human fact
+  store.rawDb().query(
+    "INSERT INTO distilled_facts (id, fact, provenance, scope, expiry, confidence, authored_by, derived_at, distiller_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+  ).run(crypto.randomUUID(), "prior machine fact A", "thread:prior-1", "cross-thread", null, 1, "machine", Date.now(), "v0");
+  store.rawDb().query(
+    "INSERT INTO distilled_facts (id, fact, provenance, scope, expiry, confidence, authored_by, derived_at, distiller_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+  ).run(crypto.randomUUID(), "prior machine fact B", "thread:prior-2", "cross-thread", null, 1, "machine", Date.now(), "v0");
+  store.rawDb().query(
+    "INSERT INTO distilled_facts (id, fact, provenance, scope, expiry, confidence, authored_by, derived_at, distiller_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+  ).run(crypto.randomUUID(), "human pinned fact", "thread:human-pinned", "cross-thread", null, 1, "human", Date.now(), "manual");
+
+  // Provider returns one fact with `fact: null` cast as any.
+  // The scanner sees `content: null`, applies `null ?? ""` → "" → passes ALL scanner rules.
+  // Phase 3 then tries to INSERT fact=null → violates `distilled_facts.fact NOT NULL` → throws.
+  // This verifies the scanner actually lets it through to Phase 3.
+  const nullFactProvider: MemoryProvider = {
+    id: "null-fact-provider",
+    distill: async (_store, threadId) => ({
+      threadId,
+      facts: [
+        {
+          fact: null as unknown as string, // passes scanner (null ?? "" = ""), fails NOT NULL
+          provenance: "thread:null-fact",
+          scope: "cross-thread" as const,
+          expiry: null,
+          confidence: 1,
+          authored_by: "machine" as const,
+        },
+      ],
+    }),
+    retrieve: async () => [],
+  };
+
+  registerDistiller(hook, store, nullFactProvider, new RuleBasedScanner());
+
+  const t = store.createThread();
+  const errSpy = spyOn(console, "error").mockImplementation(() => {});
+
+  let caughtError: unknown = null;
+  try {
+    await hook.dismiss([t]);
+  } catch (err) {
+    caughtError = err;
+  }
+
+  // (c) console.error must have fired
+  expect(errSpy).toHaveBeenCalled();
+  errSpy.mockRestore();
+
+  // (d) The error must have been rethrown (not swallowed)
+  expect(caughtError).not.toBeNull();
+
+  // (a) Prior projection INTACT (never-drop via rollback): both machine facts still present
+  const facts = store.readDistilledFacts(50);
+  expect(facts.some((f) => f.fact === "prior machine fact A")).toBe(true);
+  expect(facts.some((f) => f.fact === "prior machine fact B")).toBe(true);
+  expect(facts.some((f) => f.fact === "human pinned fact")).toBe(true);
+
+  // (b) Per-thread reprojection-failed row must be written
+  const evs = store.readDistillationEvents(t);
+  expect(evs.some((e) => e.trigger === "reprojection-failed")).toBe(true);
+
+  // facts_produced = surviving MACHINE projection size = 2 (human excluded, same basis as Phase 1/2)
+  const failEv = evs.find((e) => e.trigger === "reprojection-failed")!;
+  expect(failEv.facts_produced).toBe(2);
+
+  store.close();
+});

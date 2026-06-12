@@ -55,7 +55,7 @@ test("T1.1: view returns messages (roles/content) from real archive including to
   gate.forget(mid1!, { actor: "user", authored_by: "human" }, "test forget");
 
   // Dismiss → distill
-  await hook.dismiss(threadId);
+  await hook.dismiss([threadId]);
 
   const result = await hatch.view(threadId);
 
@@ -72,9 +72,9 @@ test("T1.1: view returns messages (roles/content) from real archive including to
   // Distilled facts must be present
   expect(Array.isArray(result.distilledFacts)).toBe(true);
 
-  // Distillation events must include the dismiss event
+  // Distillation events must include the reprojection event
   expect(result.distillationEvents.length).toBeGreaterThan(0);
-  expect(result.distillationEvents[0]!.trigger).toBe("dismiss");
+  expect(result.distillationEvents[0]!.trigger).toBe("reprojection");
 });
 
 test("T1.1: view distilledFacts includes facts from the real store", async () => {
@@ -86,7 +86,7 @@ test("T1.1: view distilledFacts includes facts from the real store", async () =>
   const threadId = store.createThread();
   store.appendMessages(threadId, [{ role: "user", content: "deploy is yeet.sh" }], "s1");
 
-  await hook.dismiss(threadId);
+  await hook.dismiss([threadId]);
 
   const result = await hatch.view(threadId);
 
@@ -106,7 +106,7 @@ test("T1.2(c): Hatch.forget of a message id → tombstone + hard-scrub absent fr
   const [mid] = store.appendMessages(threadId, [{ role: "user", content: "secret fact" }], "s1");
 
   // Dismiss → distill (so fact is live in distilled_facts)
-  await hook.dismiss(threadId);
+  await hook.dismiss([threadId]);
   expect(store.readDistilledFacts(50).some((f) => f.fact === "secret fact")).toBe(true);
 
   // Forget via Hatch (message-id route → existing WriteGate.forget)
@@ -161,7 +161,7 @@ test("T1.2(a) LOAD-BEARING: forgetFact(thread-level provenance) survives drop+re
   store.appendMessages(threadId, [{ role: "assistant", content: "live message two" }], "s1");
 
   // Dismiss → distill → FixedMarker produces a thread-level fact (provenance = "thread:<id>")
-  await hook.dismiss(threadId);
+  await hook.dismiss([threadId]);
   const beforeForget = store.readDistilledFacts(50);
   const threadFact = beforeForget.find((f) => f.provenance === `thread:${threadId}`);
   expect(threadFact).toBeDefined(); // sanity: fact exists before forget
@@ -210,7 +210,7 @@ test("T1.2(d) regression: WriteGate.forget(messageId) still tombstones and purge
 
   const threadId = store.createThread();
   const [mid] = store.appendMessages(threadId, [{ role: "user", content: "to be forgotten" }], "s1");
-  await hook.dismiss(threadId);
+  await hook.dismiss([threadId]);
 
   expect(store.readDistilledFacts(50).some((f) => f.fact === "to be forgotten")).toBe(true);
 
@@ -245,7 +245,7 @@ test("Fix-2: Hatch.edit → distill → retrieve in new thread B reflects correc
   hatch.edit(mid!, "corrected fact for cross-thread", { actor: "user", authored_by: "human" });
 
   // Distill thread A — distiller reads the corrected content via readThreadMessagesForDistill
-  await hook.dismiss(threadA);
+  await hook.dismiss([threadA]);
 
   // Thread B: retrieve injection slice — must see CORRECTED content, not original
   const threadB = store.createThread();
@@ -303,7 +303,7 @@ test("T1.3: view().distillationEvents has a row with facts_produced===0 for a fu
   gate.forget(mid!, { actor: "user", authored_by: "human" });
 
   // Dismiss: the only message is tombstoned, so distill produces 0 facts
-  await hook.dismiss(threadId);
+  await hook.dismiss([threadId]);
 
   const result = await hatch.view(threadId);
 
@@ -312,5 +312,5 @@ test("T1.3: view().distillationEvents has a row with facts_produced===0 for a fu
   const zeroRow = result.distillationEvents.find((e) => e.facts_produced === 0);
   expect(zeroRow).toBeDefined();
   // "deliberately retained nothing" ≠ "silently lost"
-  expect(zeroRow!.trigger).toBe("dismiss");
+  expect(zeroRow!.trigger).toBe("reprojection");
 });

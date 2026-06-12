@@ -20,17 +20,47 @@ export class DumbTailProvider implements MemoryProvider {
   readonly id = "dumb-tail";
 
   /**
-   * Re-derive distilled facts for one thread.
-   * Reads the tombstone-honored tail (via readThreadMessagesForDistill),
+   * Returns the COMPLETE projection over the whole tombstone-honored archive
+   * (iterates `listThreads()`). `threadId` is the TRIGGER thread (recorded in
+   * `DistillResult.threadId`), not a filter.
+   *
+   * Per-thread: reads the tombstone-honored tail (via readThreadMessagesForDistill),
    * takes the LAST DISTILL_TAIL_N messages, and emits one fact per live message.
    * Tombstoned messages (content === REDACTION_MARKER) are skipped — F1.
+   * DISTILL_TAIL_N=5 is applied PER THREAD (not across all threads).
    */
   async distill(store: MemoryStore, threadId: string): Promise<DistillResult> {
-    const allMessages = store.readThreadMessagesForDistill(threadId);
+    const threads = store.listThreads();
+    const allFacts: ReturnType<typeof this._distillOneThread> = [];
+
+    for (const { thread_id } of threads) {
+      const threadFacts = this._distillOneThread(store, thread_id);
+      allFacts.push(...threadFacts);
+    }
+
+    return Promise.resolve({ threadId, facts: allFacts });
+  }
+
+  /**
+   * Extract the tail-facts for a single thread (shared by distill loop).
+   * Filters: tombstone, quarantine, fact-tombstone — unchanged from MF-02/MF-05.
+   */
+  private _distillOneThread(
+    store: MemoryStore,
+    tid: string,
+  ): Array<{
+    fact: string;
+    provenance: string;
+    scope: "cross-thread";
+    expiry: null;
+    confidence: number;
+    authored_by: "machine";
+  }> {
+    const allMessages = store.readThreadMessagesForDistill(tid);
     // Take the last DISTILL_TAIL_N messages (already ordered ASC by turn_index)
     const tail = allMessages.slice(-DISTILL_TAIL_N);
 
-    const facts = tail
+    return tail
       .filter((m) => m.content !== REDACTION_MARKER)
       .filter((m) => !store.isMessageQuarantined(m.id))
       // MF-05 T1.2: projection-tombstone — skip facts whose provenance is tombstoned at the
@@ -45,8 +75,6 @@ export class DumbTailProvider implements MemoryProvider {
         confidence: 1.0,
         authored_by: "machine" as const,
       }));
-
-    return Promise.resolve({ threadId, facts });
   }
 
   /**

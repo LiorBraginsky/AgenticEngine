@@ -1,6 +1,6 @@
 # Chunk 2: Projection contract — global re-projection semantics (2b, NO LLM)
 
-**Status:** todo
+**Status:** in-progress
 **Created:** 2026-06-12
 **Phase:** memory-quality (spec `docs/specs/2026-06-12-memory-quality.md` §3.2)
 **Estimated size:** ~1 day

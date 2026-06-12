@@ -1,17 +1,35 @@
 import type { ConsolidationHook } from "./consolidation-hook.js";
 import type { MemoryStore } from "./store.js";
-import type { MemoryProvider } from "./memory-provider.js";
+import type { MemoryProvider, DistillResult } from "./memory-provider.js";
 import type { MemoryScanner } from "./scanner/memory-scanner.js";
 
 /**
- * Wire the distiller as the consolidation-hook's handler.
- * Fires on every dismiss — writes distilled_facts AND a distillation_events row
- * even when facts.length === 0 (5b: "deliberately retained nothing" is observable).
+ * Wire the distiller as the consolidation-hook's batch handler.
  *
- * MF-03 5d: each produced DistilledFact is scanned before insert. A flagged fact
- * is quarantined (recordQuarantine keyed on its provenance, NOT inserted into
- * distilled_facts). Only clean facts are inserted. The distillation_events row
- * records the clean count — poisoned facts are never counted as "produced."
+ * THREE-PHASE FLOW per dismiss (spec D4, R3, R4):
+ *
+ * Phase 1 — COMPUTE (outside any tx): `provider.distill(store, triggerThreadId)`.
+ *   The ONLY await in the flow. The seam where chunk 03's LLM call will live —
+ *   deliberately outside the transaction (grill #6: open-tx-await stalls the
+ *   single-connection daemon). If it rejects/throws → failure path.
+ *
+ * Phase 2 — SCAN per-fact (outside the tx, pre-insert): per fact, scanner.scan();
+ *   on !v.ok, record a quarantine marker iff provenance is a message UUID (not
+ *   "thread:"). Produce `clean` = survivors. 5d quarantine recording stays
+ *   per-fact, pre-insert — DO NOT MOVE IT INTO THE TRANSACTION.
+ *
+ * Phase 3 — ONE synchronous tx (the replace): build one event row per id in
+ *   `dismissedThreadIds` with trigger="reprojection" and facts_produced=clean.length
+ *   (the RESULTING projection size, same value across all rows in the run).
+ *   Call store.replaceProjection(clean, provider.id, eventRows) — the single flat
+ *   db.transaction doing drop(!= human) + insert(clean) + insert(events).
+ *
+ * FAILURE PATH (Phase 1 or 2 throws): do NOT call replaceProjection (no drop →
+ *   existing projection stays intact; "never an empty projection"). Read the current
+ *   persisted projection size (count all distilled_facts) for facts_produced.
+ *   Write one trigger="reprojection-failed" row per id in dismissedThreadIds
+ *   (independent inserts — no atomicity needed, nothing was dropped), then
+ *   console.error. The existing projection is unchanged; next disconnect retries.
  */
 export function registerDistiller(
   hook: ConsolidationHook,
@@ -19,24 +37,70 @@ export function registerDistiller(
   provider: MemoryProvider,
   scanner: MemoryScanner,
 ): void {
-  hook.register(async (threadId, trigger) => {
-    const result = await provider.distill(store, threadId);
-    const clean = result.facts.filter((f) => {
-      const v = scanner.scan({ content: f.fact, scope: f.scope, authored_by: f.authored_by });
-      if (!v.ok) {
-        // Only record a quarantine marker when the provenance is a message UUID (not a
-        // thread-level "thread:<uuid>" ref). isMessageQuarantined queries by message UUID
-        // and can never match a thread-level provenance, making such a marker write-only.
-        // Thread-level facts are re-blocked deterministically on every dismiss by the
-        // scanner itself — no durable marker is needed for them.
-        if (f.provenance && !f.provenance.startsWith("thread:")) {
-          store.recordQuarantine({ target_id: f.provenance, rule: v.rule });
-        }
-        return false;
+  hook.register(async (dismissedThreadIds: string[], triggerThreadId: string) => {
+    // ── Local failure helper (DRY — used by all three phase catch blocks) ──
+    // On any phase failure: read the surviving MACHINE projection size, write one
+    // `reprojection-failed` event row per dismissed thread (independent inserts —
+    // no atomicity needed since nothing was dropped), console.error, then the
+    // caller rethrows so index.ts logs the non-fatal error.
+    const recordReprojectionFailure = (err: unknown, phase: string): void => {
+      const currentSize = (store.rawDb()
+        .query("SELECT COUNT(*) AS n FROM distilled_facts WHERE authored_by != 'human'")
+        .get() as { n: number }).n;
+      for (const id of dismissedThreadIds) {
+        store.insertDistillationEvent(id, "reprojection-failed", currentSize, provider.id);
       }
-      return true;
-    });
-    store.insertDistilledFacts(clean, provider.id);
-    store.insertDistillationEvent(threadId, trigger, clean.length, provider.id);
+      console.error(`[distiller] ${phase} failed; existing projection preserved:`, err);
+    };
+
+    // ── Phase 1: COMPUTE (outside any transaction) ───────────────────────
+    let result: DistillResult;
+    try {
+      result = await provider.distill(store, triggerThreadId);
+    } catch (err) {
+      recordReprojectionFailure(err, "provider.distill");
+      throw err; // surface so index.ts catch can log the non-fatal error
+    }
+
+    // ── Phase 2: SCAN per-fact (outside the tx, pre-insert) ─────────────
+    // Per-fact quarantine recording stays HERE, pre-insert (5d unchanged).
+    let clean: typeof result.facts;
+    try {
+      clean = result.facts.filter((f) => {
+        const v = scanner.scan({ content: f.fact, scope: f.scope, authored_by: f.authored_by });
+        if (!v.ok) {
+          // Only record a quarantine marker when the provenance is a message UUID (not a
+          // thread-level "thread:<uuid>" ref). isMessageQuarantined queries by message UUID
+          // and can never match a thread-level provenance, making such a marker write-only.
+          // Thread-level facts are re-blocked deterministically on every dismiss by the
+          // scanner itself — no durable marker is needed for them.
+          if (f.provenance && !f.provenance.startsWith("thread:")) {
+            store.recordQuarantine({ target_id: f.provenance, rule: v.rule });
+          }
+          return false;
+        }
+        return true;
+      });
+    } catch (err) {
+      recordReprojectionFailure(err, "scan phase");
+      throw err;
+    }
+
+    // ── Phase 3: ONE synchronous tx (the replace) ────────────────────────
+    // One event row per dismissed thread; facts_produced = clean.length (same
+    // value across all rows in this run — documents the RESULTING projection size).
+    const eventRows = dismissedThreadIds.map((id) => ({
+      threadId: id,
+      trigger: "reprojection",
+      factsProduced: clean.length,
+    }));
+    try {
+      store.replaceProjection(clean, provider.id, eventRows);
+    } catch (err) {
+      // Phase 3 threw (e.g. constraint violation in the flat tx — bun:sqlite rolls
+      // back automatically, so never-drop holds). Write failure events + rethrow.
+      recordReprojectionFailure(err, "replaceProjection (Phase 3)");
+      throw err;
+    }
   });
 }

@@ -19,30 +19,68 @@ export class FixedMarkerProvider implements MemoryProvider {
   readonly id = "fixed-marker";
 
   /**
-   * Emit exactly ONE fact: "thread:<threadId> has <N> live messages"
-   * where N counts only non-tombstoned messages.
+   * Returns the COMPLETE projection over the whole tombstone-honored archive
+   * (iterates `listThreads()`). `threadId` is the TRIGGER thread (recorded in
+   * `DistillResult.threadId`), not a filter.
+   *
+   * Emits exactly ONE count-fact per thread: "thread:<id> has <N> live messages".
+   * Tombstoned-thread-provenance skip (MF-05 T1.2) is UNCHANGED — if a thread's
+   * provenance has been tombstoned via forgetFact, that thread emits no fact.
    */
   async distill(store: MemoryStore, threadId: string): Promise<DistillResult> {
-    const allMessages = store.readThreadMessagesForDistill(threadId);
-    const liveCount = allMessages.filter((m) => m.content !== REDACTION_MARKER && !store.isMessageQuarantined(m.id)).length;
+    const threads = store.listThreads();
+    const facts: Array<{
+      fact: string;
+      provenance: string;
+      scope: "cross-thread";
+      expiry: null;
+      confidence: number;
+      authored_by: "machine";
+    }> = [];
 
-    // MF-05 T1.2: projection-tombstone — if the thread-level provenance has been tombstoned
-    // by forgetFact, skip emitting the fact entirely (suppresses re-derive rebuild of a forgotten fact).
-    const threadProvenance = `thread:${threadId}`;
-    if (store.isFactTombstoned(threadProvenance)) {
-      return Promise.resolve({ threadId, facts: [] });
+    for (const { thread_id } of threads) {
+      const threadFact = this._distillOneThread(store, thread_id);
+      if (threadFact !== null) {
+        facts.push(threadFact);
+      }
     }
 
-    const fact = {
-      fact: `thread:${threadId} has ${liveCount} live message${liveCount === 1 ? "" : "s"}`,
+    return Promise.resolve({ threadId, facts });
+  }
+
+  /**
+   * Emit ONE count-fact for a single thread, or null if tombstoned.
+   * Shared by the distill loop.
+   */
+  private _distillOneThread(
+    store: MemoryStore,
+    tid: string,
+  ): {
+    fact: string;
+    provenance: string;
+    scope: "cross-thread";
+    expiry: null;
+    confidence: number;
+    authored_by: "machine";
+  } | null {
+    // MF-05 T1.2: projection-tombstone — if the thread-level provenance has been tombstoned
+    // by forgetFact, skip emitting the fact entirely (suppresses re-derive rebuild of a forgotten fact).
+    const threadProvenance = `thread:${tid}`;
+    if (store.isFactTombstoned(threadProvenance)) {
+      return null;
+    }
+
+    const allMessages = store.readThreadMessagesForDistill(tid);
+    const liveCount = allMessages.filter((m) => m.content !== REDACTION_MARKER && !store.isMessageQuarantined(m.id)).length;
+
+    return {
+      fact: `thread:${tid} has ${liveCount} live message${liveCount === 1 ? "" : "s"}`,
       provenance: threadProvenance,
       scope: "cross-thread" as const,
       expiry: null,
       confidence: 0.5,
       authored_by: "machine" as const,
     };
-
-    return Promise.resolve({ threadId, facts: [fact] });
   }
 
   /**

@@ -208,18 +208,21 @@ export class MemoryStore {
          FROM distilled_facts df
          LEFT JOIN messages m ON m.id = df.provenance
          WHERE
-           COALESCE(df.scope, 'cross-thread') IN ('cross-thread', 'global')
-           OR (
-             df.scope = 'thread-local'
-             AND (
-               m.thread_id = ?
-               OR (df.provenance LIKE 'thread:%' AND substr(df.provenance, 8) = ?)
+           (df.expiry IS NULL OR df.expiry > ?)
+           AND (
+             COALESCE(df.scope, 'cross-thread') IN ('cross-thread', 'global')
+             OR (
+               df.scope = 'thread-local'
+               AND (
+                 m.thread_id = ?
+                 OR (df.provenance LIKE 'thread:%' AND substr(df.provenance, 8) = ?)
+               )
              )
            )
-         ORDER BY df.derived_at DESC
+         ORDER BY (df.authored_by = 'human') DESC, df.derived_at DESC, df.rowid ASC
          LIMIT ?`,
       )
-      .all(forThreadId, forThreadId, limit) as DistilledFactRow[];
+      .all(Date.now(), forThreadId, forThreadId, limit) as DistilledFactRow[];
   }
 
   /** Returns true if a tombstone mutation exists for the given messageId. */
@@ -337,6 +340,73 @@ export class MemoryStore {
    * survive a full machine re-derive cycle. */
   dropAllDistilledFacts(): void {
     this.db.query("DELETE FROM distilled_facts WHERE authored_by != 'human'").run();
+  }
+
+  /**
+   * Atomic replace of the machine projection (chunk 02, spec D5/D6/D7).
+   *
+   * ONE flat synchronous `db.transaction`:
+   *   1. DELETE machine facts (authored_by != 'human') — 5e guard inline.
+   *   2. INSERT each fact in `clean` into distilled_facts.
+   *   3. INSERT one row per entry in `events` into distillation_events.
+   *
+   * IMPORTANT:
+   * - No `await` inside — pure synchronous SQLite; the daemon's single connection
+   *   never stalls mid-transaction (grill #6 seam; chunk 03 LLM call lives OUTSIDE).
+   * - Does NOT call `insertDistilledFacts` or `dropAllDistilledFacts` (both wrap
+   *   their own transactions — nested tx with bun:sqlite uses SAVEPOINT and must be
+   *   avoided; this keeps it one flat tx).
+   * - `facts_produced` recorded in each event row equals `clean.length` (the RESULTING
+   *   projection size after this call, same value across all event rows in a run).
+   */
+  replaceProjection(
+    clean: DistilledFact[],
+    distillerVersion: string,
+    events: { threadId: string; trigger: string; factsProduced: number }[],
+  ): void {
+    // Capture one timestamp for the entire atomic rebuild (MAJOR-1 fix part 1).
+    // A single `now` means all machine fact rows share the same derived_at, which
+    // makes the rowid ASC tie-breaker in readDistilledFactsForThread the sole
+    // determinant of order within the machine projection. Because a full DELETE +
+    // INSERT assigns rowids monotonically in insertion order, rowid ASC = the
+    // provider's intended newest-first order. Per-row Date.now() caused later-
+    // inserted (= older) facts to get a larger derived_at → DESC ranked them first
+    // → LIMIT 20 filled with the oldest conversations.
+    const now = Date.now();
+    const insertFact = this.db.query(
+      "INSERT INTO distilled_facts (id, fact, provenance, scope, expiry, confidence, authored_by, derived_at, distiller_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    );
+    const insertEvent = this.db.query(
+      "INSERT INTO distillation_events (id, thread_id, trigger, facts_produced, distiller_version, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+    );
+    const tx = this.db.transaction(() => {
+      // 5e guard — inline: authored_by != 'human' (byte-for-byte meaning preserved)
+      this.db.query("DELETE FROM distilled_facts WHERE authored_by != 'human'").run();
+      for (const f of clean) {
+        insertFact.run(
+          crypto.randomUUID(),
+          f.fact,
+          f.provenance,
+          f.scope,
+          f.expiry ?? null,
+          f.confidence,
+          f.authored_by,
+          now,
+          distillerVersion,
+        );
+      }
+      for (const e of events) {
+        insertEvent.run(
+          crypto.randomUUID(),
+          e.threadId,
+          e.trigger,
+          e.factsProduced,
+          distillerVersion,
+          now,
+        );
+      }
+    });
+    tx();
   }
 
   /** INSERT a distillation event row into distillation_events. */

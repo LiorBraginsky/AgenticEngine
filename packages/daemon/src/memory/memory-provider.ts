@@ -29,9 +29,13 @@ export interface MemoryProvider {
   readonly id: string; // "dumb-tail", "fixed-marker" (the swap-proof second impl)
 
   /**
-   * Re-derive distilled facts for one thread from the UNTOUCHED archive.
+   * Returns the COMPLETE projection over the whole tombstone-honored archive
+   * (iterates `listThreads()`). `threadId` is the TRIGGER thread (recorded in
+   * `DistillResult.threadId`), not a filter.
+   *
    * Read-only over messages/mutations (lossless, §4.2). MUST honor tombstones —
-   * a forgotten message never yields a fact (F1).
+   * a forgotten message never yields a fact (F1). Each provider iterates ALL
+   * threads regardless of which thread triggered the distillation.
    */
   distill(store: MemoryStore, threadId: string): Promise<DistillResult>;
 

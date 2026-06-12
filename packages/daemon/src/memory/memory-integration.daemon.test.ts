@@ -144,14 +144,15 @@ test("edit appends a correction; original message row is unchanged in place", ()
   store.close();
 });
 
-test("dismiss invokes the registered consolidation-hook and flips status to dismissed", () => {
+test("dismiss invokes the registered consolidation-hook and flips status to dismissed", async () => {
   const store = new MemoryStore({ dataDir });
   const hook = new ConsolidationHook(store);
-  const calls: string[] = [];
-  hook.register((tid, trig) => { calls.push(`${tid}:${trig}`); });
+  const calls: Array<{ ids: string[]; trigger: string }> = [];
+  hook.register((threadIds, triggerThreadId) => { calls.push({ ids: threadIds, trigger: triggerThreadId }); });
   const tid = (store.rawDb().query("SELECT thread_id FROM threads LIMIT 1").get() as { thread_id: string }).thread_id;
-  hook.dismiss(tid);
-  expect(calls).toEqual([`${tid}:dismiss`]);
+  await hook.dismiss([tid]);
+  expect(calls).toHaveLength(1);
+  expect(calls[0]!.ids).toEqual([tid]);
   expect((store.rawDb().query("SELECT status FROM threads WHERE thread_id=?").get(tid) as { status: string }).status).toBe("dismissed");
   store.close();
 });

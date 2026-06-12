@@ -1,6 +1,36 @@
 # Plan — memory-quality chunk 02: Projection contract (2b, NO LLM)
 
-## Status: Planning-complete — entering Phase 2 (implementation)
+## Status: Review-complete — ready-to-merge (Phase 3; awaiting Jimmy clean-checkout re-verify + merge, crawl rung §11.4)
+
+> **Reviewer (engine-reviewer) verdict 2026-06-13: CLEAN — 0 blockers, 0 majors.** All 10
+> scrutinized frozen invariants PASS (single flat synchronous tx; LLM-outside-tx seam;
+> failure-never-drops; 5e `!= 'human'` guard preserved; 5d quarantine per-fact pre-insert;
+> ONE re-projection per disconnect; `reprojection`/`reprojection-failed` event semantics;
+> expiry+human-precedence on reads; global projection via `listThreads()`; frozen surfaces
+> byte-unchanged). Real SQLite throughout; only stub = throwing/deterministic fake provider.
+> Two MINORs + two NITs found → all four **folded** (commit 13c7e26): empty-batch `dismiss([])`
+> early-return guard; failure-path `facts_produced` narrowed to `!= 'human'` (matches the
+> success path's machine-only `clean.length` basis); misleading test title fixed; `DistillResult`
+> annotation on the chunk-03 seam line. Minor/nit fixes implement the reviewer's own suggestions →
+> no re-review round needed.
+>
+> **Orchestrator independent re-verification (§6.2 command evidence, not worker assertion), on
+> the fix HEAD `13c7e26`:** `bun test` **389 pass / 0 fail** (49 files, real SQLite) · `bun run
+> lint:strict` exit 0 (`--max-warnings=0`) · typecheck exit 0 · frozen diff (`@agentic/protocol`
+> + `mock-agent.ts`) **empty**. (Note: a mid-build LSP `string` vs `string[]` diagnostic on the
+> test files was STALE — the include glob `packages/*/src/**/*.ts` covers them and tsc exits 0.)
+>
+> **Verified-done (§6) — all 5 DoD are [mechanical], no behavioral demo gate this chunk** (the
+> Lior live demo is chunk 04, spec §5):
+> - DoD#1 contract + both providers project all threads + compute-first/scan-per-fact/single-tx
+>   replace + throwing-provider failure test (projection intact + `reprojection-failed` rows) →
+>   reviewer-confirmed structurally + test green. ✓
+> - DoD#2 ONE re-projection per multi-thread disconnect (real daemon test asserts exactly one
+>   `reprojection` row per dismissed thread, both dismissed, no double-reprojection). ✓
+> - DoD#3 expired fact not injected (D7 store test). ✓
+> - DoD#4 carried proofs green under new semantics (swap-proof, forget-survives-re-derive,
+>   lossless integrity, distillation-observable) + full suite/lint/typecheck exit 0, real SQLite. ✓
+> - DoD#5 frozen surfaces byte-unchanged. ✓
 
 **Chunk:** `orchestration/chunks-todo/memory-quality/02-projection-contract.md`
 **Spec:** `orchestration/docs/specs/2026-06-12-memory-quality.md` §3.2 (D4, D5, D6, D7), §5 (verification), §7 (architect-time)

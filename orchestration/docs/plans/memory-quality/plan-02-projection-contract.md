@@ -1,6 +1,39 @@
 # Plan — memory-quality chunk 02: Projection contract (2b, NO LLM)
 
-## Status: Review-complete — ready-to-merge (Phase 3; awaiting Jimmy clean-checkout re-verify + merge, crawl rung §11.4)
+## Status: Review-complete + hard-review folded — ready-to-merge (Phase 3; awaiting Jimmy clean-checkout re-verify + merge, crawl rung §11.4)
+
+> **Hard-review fold 2026-06-13 (conductor relay-002, frontier hard-reviewer LAYERED on the clean
+> engine-reviewer pass).** Two REAL MAJORs (neither a blocker — never-drop/5e/frozen all held) folded
+> into the branch before merge (commit `51832d0`), each with a mandated test verified RED-without-fix →
+> GREEN-with-fix:
+> - **MAJOR-1 — recency INVERSION of the injected slice.** `replaceProjection` stamped `Date.now()`
+>   per-row inside the insert loop + `readDistilledFactsForThread` ordered `derived_at DESC` with no
+>   stable tie-breaker. Providers iterate `listThreads()` newest-first (inserted first), so once the
+>   insert loop crossed a ms boundary the LIMIT-20 slice filled with the OLDEST facts and dropped the
+>   newest — degrading the feature's core value (dumb-tail is default until ch04 + permanent no-key
+>   fallback). FIX: capture `const now` ONCE before the tx (one timestamp for the whole atomic rebuild)
+>   + `ORDER BY (authored_by='human') DESC, derived_at DESC, rowid ASC` (rowid ASC = insertion order =
+>   newest-first; distilled_facts has an implicit rowid). NO schema migration. Test (store.test.ts):
+>   500 facts (>RETRIEVE_SLICE_N=20) → slice = newest-20, newest-first. RED at 500 (machine crossed 2ms;
+>   200 stayed in 1ms — count is volume-based, post-fix order is DETERMINISTIC regardless of count).
+> - **MAJOR-2 — silent Phase-3 failure.** The Phase-3 `replaceProjection` call was outside any
+>   try/catch; a tx throw (e.g. a malformed `fact:null` the scanner's `content ?? ""` passes, hitting
+>   `fact NOT NULL`) rolled back (never-drop held) but wrote NO `reprojection-failed` rows → the dismiss
+>   was invisible in History (spec §5 "failure observably distinct" violated). This chunk DEFINES the
+>   failure contract chunk 03 plugs its LLM into → closed here. FIX: wrap Phase-3 in the SAME failure
+>   path (extracted `recordReprojectionFailure` helper, used by all 3 phases → de-triplicated) — write
+>   per-thread `reprojection-failed` rows + console.error + rethrow. Test (distiller-registration.test.ts):
+>   real store + fake malformed provider → prior projection INTACT + reprojection-failed rows + console.error
+>   + rethrow. RED without the wrap (console.error 0 calls).
+> - **MAJOR-3 (concurrent re-projection serialization) is NOT this chunk** — not live in 02 (providers
+>   resolve synchronously); routed to chunk 03's DoD (where a real network `await` in Phase 1 makes
+>   overlapping disconnects interleavable + testable). NO dead/untested serialization added here.
+>
+> **Orchestrator §6.2 re-verify on `51832d0`:** `bun test` **391 pass / 0 fail** (49 files, +2 new) ·
+> `lint:strict` exit 0 · typecheck exit 0 · frozen diff empty. Both new tests spot-checked non-vacuous
+> (RED-proven; assertions match the frozen requirements).
+
+
 
 > **Reviewer (engine-reviewer) verdict 2026-06-13: CLEAN — 0 blockers, 0 majors.** All 10
 > scrutinized frozen invariants PASS (single flat synchronous tx; LLM-outside-tx seam;

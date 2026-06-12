@@ -1,6 +1,6 @@
 # Chunk 02: Per-install WS token via subprotocol + thread-adoption caller-auth + timing-safe verify
 
-**Status:** todo
+**Status:** in-progress
 **Created:** 2026-06-12
 **Phase:** Security hardening pass (pre-public-release gate)
 **Estimated size:** ~1 day

@@ -50,7 +50,8 @@ Rules:
 - Set expiry:null unless the fact is clearly time-bound.
 - Never scope a fact "global".
 - Never output prose, markdown, or code fences — only the bare JSON array.
-- If no facts are extractable, output [].`;
+- If no facts are extractable, output [].
+- Emit facts in order from most recent / most relevant to least recent, so that the most useful facts appear first.`;
 
 // ── Error type ─────────────────────────────────────────────────────────────
 
@@ -95,7 +96,6 @@ export function normalizeFactText(s: string): string {
 
 export interface DigestResult {
   text: string;
-  validProvenanceIds: Set<string>;
   empty: boolean;
 }
 
@@ -120,7 +120,6 @@ export interface DigestResult {
 export function buildDigest(store: MemoryStore): DigestResult {
   const threads = store.listThreads();
   const parts: string[] = [];
-  const validProvenanceIds = new Set<string>();
   const M = SMART_DIGEST_MAX_MSGS_PER_THREAD;
 
   for (const { thread_id } of threads) {
@@ -150,16 +149,15 @@ export function buildDigest(store: MemoryStore): DigestResult {
     const lines: string[] = [`=== thread ${thread_id} ===`];
     for (const m of slice) {
       lines.push(`[${m.role}|${m.id}] ${m.content}`);
-      validProvenanceIds.add(m.id);
     }
     parts.push(lines.join("\n"));
   }
 
   if (parts.length === 0) {
-    return { text: "", validProvenanceIds, empty: true };
+    return { text: "", empty: true };
   }
 
-  return { text: parts.join("\n\n"), validProvenanceIds, empty: false };
+  return { text: parts.join("\n\n"), empty: false };
 }
 
 // ── Parse contract (D10 — defensive) ──────────────────────────────────────
@@ -179,7 +177,7 @@ export function buildDigest(store: MemoryStore): DigestResult {
  * Throws SmartDistillError on non-JSON or non-array response.
  * Returns [] (empty array) if all elements are malformed — acceptable (5b).
  */
-export function parseFacts(raw: string, validProvenanceIds: Set<string>): DistilledFact[] {
+export function parseFacts(raw: string): DistilledFact[] {
   // Step 1: strip optional ```json ... ``` fence (and bare ``` ... ``` fence)
   let cleaned = raw.trim();
   cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "");
@@ -239,9 +237,6 @@ export function parseFacts(raw: string, validProvenanceIds: Set<string>): Distil
   }
 
   return facts;
-  // Note: validProvenanceIds is available here for future layer-0 provenance validation;
-  // unresolvable provenances are intentionally kept (layer-2 backstops).
-  void validProvenanceIds;
 }
 
 // ── DI options (mirrors anthropic-api-provider.ts pattern) ────────────────
@@ -322,7 +317,7 @@ export class SmartDistillerProvider implements MemoryProvider {
    */
   async distill(store: MemoryStore, triggerThreadId: string): Promise<DistillResult> {
     // Phase 1a: build digest (tombstone/quarantine-honored)
-    const { text: digest, validProvenanceIds, empty } = buildDigest(store);
+    const { text: digest, empty } = buildDigest(store);
 
     // 5b: empty archive → short-circuit without LLM call
     if (empty) {
@@ -331,11 +326,26 @@ export class SmartDistillerProvider implements MemoryProvider {
 
     // Phase 1b: LLM call (outside any SQLite tx — grill #6 seam)
     const client = this.getClient();
+
+    // Build system prompt dynamically: static base + optional layer-3 exclusion block.
+    // Layer-3 (best-effort MITIGATION): tombstoned fact texts are appended as explicit
+    // LLM exclusions. A generative model can ignore this instruction — the load-bearing
+    // mechanism remains digest exclusion (D8). This is a soft nudge, not a guarantee.
+    const { normalizedTexts: tombstonedNorms, rawTexts: tombstonedRawTexts } =
+      this._getTombstonedTexts(store);
+    let systemText = SMART_SYSTEM_PROMPT;
+    if (tombstonedRawTexts.length > 0) {
+      const exclusionLines = tombstonedRawTexts.map((t) => `- ${t}`).join("\n");
+      systemText =
+        SMART_SYSTEM_PROMPT +
+        `\n\nDo NOT emit any fact equivalent to these previously-forgotten facts:\n${exclusionLines}`;
+    }
+
     const response = await client.messages.create({
       model: SMART_MODEL,
       max_tokens: SMART_MAX_TOKENS,
       thinking: { type: "disabled" },
-      system: [{ type: "text", text: SMART_SYSTEM_PROMPT }],
+      system: [{ type: "text", text: systemText }],
       messages: [{ role: "user", content: digest }],
     });
 
@@ -349,7 +359,7 @@ export class SmartDistillerProvider implements MemoryProvider {
     }
 
     // Phase 1c: defensive parse (throws SmartDistillError on bad JSON/non-array)
-    const parsed = parseFacts(rawText, validProvenanceIds);
+    const parsed = parseFacts(rawText);
 
     // Phase 1d: best-effort post-filters (MITIGATION — not a guarantee)
 
@@ -365,7 +375,6 @@ export class SmartDistillerProvider implements MemoryProvider {
     // a tombstoned fact's normalized text. We derive tombstoned fact texts from the
     // distilled_facts table filtered by isFactTombstoned provenance.
     // (MITIGATION: exact-after-normalize, not fuzzy/semantic — a rephrased fact defeats this.)
-    const tombstonedNorms = this._getTombstonedNormalizedTexts(store);
     const afterLayer2 = afterLayer1.filter((f) => {
       const norm = normalizeFactText(f.fact);
       return !tombstonedNorms.has(norm);
@@ -375,28 +384,33 @@ export class SmartDistillerProvider implements MemoryProvider {
   }
 
   /**
-   * Collect normalized texts of all currently-tombstoned distilled facts.
-   * Used by layer-2 post-filter. Returns a Set of normalized strings.
+   * Collect raw and normalized texts of all currently-tombstoned distilled facts
+   * in a single scan. Used by layer-2 (normalized set) and layer-3 (raw texts).
    *
    * This is a best-effort MITIGATION — the set is derived from distilled_facts rows
    * that still exist; if a row was deleted, we have no text to compare against.
    * The load-bearing exclusion mechanism is digest exclusion (D8) — tombstoned-provenance
    * messages never enter the digest in the first place.
    */
-  private _getTombstonedNormalizedTexts(store: MemoryStore): Set<string> {
+  private _getTombstonedTexts(store: MemoryStore): {
+    normalizedTexts: Set<string>;
+    rawTexts: string[];
+  } {
     // Read all distilled facts and filter to those with tombstoned provenances.
     // We use readDistilledFacts with a large limit as a full scan.
     // This is O(projection_size) which is acceptable for the fact count expected.
     const allFacts = store.readDistilledFacts(10_000);
-    const result = new Set<string>();
+    const normalizedTexts = new Set<string>();
+    const rawTexts: string[] = [];
     for (const f of allFacts) {
       // Check each provenance component
       const components = f.provenance.split(",").map((p) => p.trim());
       if (components.some((p) => store.isFactTombstoned(p))) {
-        result.add(normalizeFactText(f.fact));
+        normalizedTexts.add(normalizeFactText(f.fact));
+        rawTexts.push(f.fact);
       }
     }
-    return result;
+    return { normalizedTexts, rawTexts };
   }
 
   /**

@@ -17,6 +17,7 @@ import {
   SmartDistillError,
   normalizeFactText,
   SMART_DIGEST_MAX_MSGS_PER_THREAD,
+  SMART_SYSTEM_PROMPT,
 } from "./smart-distiller-provider.js";
 import { REMEMBERED_LABEL } from "../../providers/system-prompt.js";
 import type { Anthropic } from "@anthropic-ai/sdk";
@@ -552,6 +553,87 @@ test("SmartDistillerProvider.retrieve skips tombstoned fact provenances (defense
   const messages = await provider.retrieve(store, threadId);
 
   expect(messages.length).toBe(0);
+
+  store.close();
+});
+
+// ── Test 11: layer-3 — tombstoned fact texts passed as LLM exclusions (§4) ──
+
+/** Builds a stub that records the `system` argument from messages.create. */
+function capturingClient(raw: string): { client: Anthropic; getCapturedSystem: () => unknown } {
+  let capturedSystem: unknown = undefined;
+  const client = {
+    messages: {
+      create: async (params: Record<string, unknown>) => {
+        capturedSystem = params["system"];
+        return { content: [{ type: "text", text: raw }] };
+      },
+    },
+  } as unknown as Anthropic;
+  return {
+    client,
+    getCapturedSystem: () => capturedSystem,
+  };
+}
+
+test("layer-3 (MITIGATION): with tombstoned fact present, system prompt contains exclusion block with the fact text", async () => {
+  const store = freshStore();
+  const threadId = store.createThread();
+
+  // Non-empty archive so distill proceeds
+  store.appendMessages(threadId, [{ role: "user", content: "hello" }], "s1");
+
+  // Insert a distilled fact then tombstone it so layer-3 can recover its text
+  const tombstonedProvenance = "thread:layer3-test";
+  store.insertDistilledFacts(
+    [
+      {
+        fact: "User dislikes cats",
+        provenance: tombstonedProvenance,
+        scope: "cross-thread",
+        expiry: null,
+        confidence: 1,
+        authored_by: "machine",
+      },
+    ],
+    "smart",
+  );
+  store.tombstoneFact(tombstonedProvenance, { actor: "user", authored_by: "human" });
+
+  const { client, getCapturedSystem } = capturingClient("[]");
+  const provider = new SmartDistillerProvider({ client });
+  await provider.distill(store, threadId);
+
+  const systemArg = getCapturedSystem();
+  // system is passed as an array of content blocks: [{ type: "text", text: "..." }]
+  expect(Array.isArray(systemArg)).toBe(true);
+  const systemText = (systemArg as Array<{ type: string; text: string }>)[0]?.text ?? "";
+
+  // Must contain the exclusion block
+  expect(systemText).toContain("Do NOT emit any fact equivalent to these previously-forgotten facts:");
+  // Must include the specific tombstoned fact text
+  expect(systemText).toContain("User dislikes cats");
+
+  store.close();
+});
+
+test("layer-3 (MITIGATION): with NO tombstoned facts, system prompt equals static SMART_SYSTEM_PROMPT byte-for-byte", async () => {
+  const store = freshStore();
+  const threadId = store.createThread();
+
+  // Non-empty archive, but no tombstoned facts at all
+  store.appendMessages(threadId, [{ role: "user", content: "hello" }], "s1");
+
+  const { client, getCapturedSystem } = capturingClient("[]");
+  const provider = new SmartDistillerProvider({ client });
+  await provider.distill(store, threadId);
+
+  const systemArg = getCapturedSystem();
+  expect(Array.isArray(systemArg)).toBe(true);
+  const systemText = (systemArg as Array<{ type: string; text: string }>)[0]?.text ?? "";
+
+  // Without tombstoned facts, must be byte-identical to the static base
+  expect(systemText).toBe(SMART_SYSTEM_PROMPT);
 
   store.close();
 });

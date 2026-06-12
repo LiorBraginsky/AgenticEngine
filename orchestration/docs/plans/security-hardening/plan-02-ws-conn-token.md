@@ -1,12 +1,14 @@
 # Plan: Chunk 02 — Per-install WS token via `Sec-WebSocket-Protocol` + thread-adoption caller-auth + timing-safe verify
 
-## Status: Planning complete — ready for implementation
+## Status: Review-complete — BEHAVIORAL DEMO PENDING (not shipped, not merged)
 
 - **Feature:** security-hardening
 - **Chunk:** `orchestration/chunks-todo/security-hardening/02-ws-conn-token-subprotocol.md`
 - **Spec:** `orchestration/docs/specs/2026-06-12-security-hardening.md` §3.2 / §3.3 / §3.6 / §3.8 / §4 (status: accepted)
 - **ADR worthy:** no (executes accepted ADR-0003 p.5 + Amendment; discharges accepted ADR-0014 regret-(a) rider; authors no new contract)
-- **Step tracker:** Step 1 ☑ · Step 2 ☑ · Step 3 ☑ · Review ☐
+- **Step tracker:** Step 1 ☑ · Step 2 ☑ · Step 3 ☑ · Review ☑
+
+> **Review done (orchestrator-verified, two independent reviewers).** `engine-reviewer`: **reviewer-clean — 0 Critical / 0 Major**, 2 Minor (cosmetic `server.upgrade` line-format; optional explicit-403 WS assert). `security-review`: **0 Critical / 0 High**, 2 benign LOW (RFC-7230 OWS-trim on the subprotocol header — not exploitable; no re-chmod of a pre-existing token file — out of scope). Both reviewers independently re-ran gates + frozen diffs and **live-probed** adversarial cases (comma-list subprotocol `"token, junk"` → fail-closed; tokenless/empty/whitespace → 401; valid-token + evil-origin → 403 proving layer-2; tokenless client creates 0 thread rows → ADR-0014 T3 rider discharged). Minor items left as-is (cosmetic/optional, no behavioral impact). **Mechanical DoD #3-#8 GREEN; behavioral DoD #1/#2 gated on Lior §6.1 live demo → PR opened, NOT auto-merged.**
 
 > **Step 3 done (orchestrator-verified, independent re-run):** 9 WS daemon test files + 2 scripts + overlay realio test present the token (object-form `{ headers: { Origin }, protocols: [token] }` — keeps layer-2 origin); adversarial thread-adoption tests (tokenless + bad-token both rejected pre-upgrade, no thread row created — ADR-0014 rider discharged at the connection gate); audit enumerates the ONLY 2 thread-write paths (WS `session_start`→`lifecycle.beginTurn`→`store.createThread`; HTTP Bearer-gated edit/forget). **Full suite 352 pass / 0 fail · typecheck 0 · lint:strict 0 · protocol diff EMPTY · mock reducer diff EMPTY · DoD #7 logs carry origin/reason not the token.** All mechanical DoD (#3-#8) GREEN. Behavioral DoD #1/#2 remain Lior §6.1 live demo.
 

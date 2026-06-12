@@ -1,17 +1,33 @@
 # Plan: Chunk 01 — Anthropic API key → macOS Keychain (+ env-isolated prod proof)
 
-## Status: Phase 2 — Implementation (in progress)
+## Status: Review-complete — BEHAVIORAL DEMO PENDING (not shipped, not merged)
 
 - **Feature:** security-hardening
 - **Chunk:** `orchestration/chunks-todo/security-hardening/01-api-key-to-keychain.md`
 - **Spec:** `orchestration/docs/specs/2026-06-12-security-hardening.md` §3.1 / §3.7 / §3.8 (status: accepted)
 - **ADR worthy:** no (posture rule already doc-reconciled in spec §3.1; no new contract/boundary)
-- **Step tracker:** Step 1 ☑ · Step 2 ☑ · Step 3 ☑ · Step 4 ☑ · Step 5 ☑ · Step 6 ☑ · Review ☐
-- **Worker dispatch 1 (Steps 1–4) DONE:** service `agentic-engine` / account `ANTHROPIC_API_KEY`;
-  16 secrets-tests + 325 daemon-tests green; typecheck + lint:strict exit 0; frozen surfaces empty.
-  Note for review: `AnthropicProviderOptions` gained `resolverOpts?` (DI seam for fake keychain
-  getter) + a `_resetMemo` test export — slightly wider than "line 230 only" but within the plan's
-  "make the module testable" mandate.
+- **Step tracker:** Step 1 ☑ · Step 2 ☑ · Step 3 ☑ · Step 4 ☑ · Step 5 ☑ · Step 6 ☑ · Review ☑
+
+### Closeout state (orchestrator-verified)
+- **Mechanical DoD #2/#4/#5 — GREEN (own command-evidence):** full root suite **334 pass / 0 fail**;
+  `typecheck` exit 0; `lint:strict` exit 0; frozen surfaces (`packages/protocol`, mock reducer,
+  `injector.ts`) **byte-untouched** (empty diff vs `main`).
+- **Reviewer-clean:** engine-reviewer 0 Critical/0 Major on first pass; **0/0/0/0 on the fix-round
+  re-review** (final state reviewer-clean).
+- **Security:** automated commit-review flagged **[HIGH] CWE-214 argv secret leak** in
+  `keychain-set.ts` (engine-reviewer had missed it). FIXED + verified: secret now flows via piped
+  stdin (`Bun.spawn` ReadableStream password+retype), `-w` with no value in argv — secret nowhere in
+  argv, zero new dependency. (Empirically validated round-trip on a real Keychain.)
+- **Classifier hardened (review Findings 2/3):** removed false-`missing` `"44"` substring; lowercased
+  two dead `errSec*` branches; extracted testable `_classifyKeychainStderr`; real-I/O test now drives
+  the PRODUCTION `keychainGetMacOS` (not a copy). 7 new regression tests incl. ACL-denial-with-"44"
+  → `acl_denied`.
+
+### ⛔ The one gate left — DoD #1 (BEHAVIORAL, §6.1, Lior only)
+"env-isolated real daemon + real Keychain + real Anthropic call" **cannot be closed by code/tests**
+(PIPELINE §6.1 — code-reading & green tests are NOT behavioral evidence; this scar lied 3× in v0).
+Requires Lior's **live run** of the probe driver. The chunk stays `in-progress`, NOT archived, and the
+PR is NOT auto-merged until the demo signs off. **Demo command + L3 option in the PR body + ledger.**
 
 ---
 

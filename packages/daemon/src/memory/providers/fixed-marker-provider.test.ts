@@ -67,6 +67,71 @@ test("FixedMarkerProvider.distill emits ONE fact even for an empty thread", asyn
   store.close();
 });
 
+// ── Step 2 (chunk 02): global-projection contract ────────────────────────
+
+test("D4: FixedMarkerProvider.distill with 2 threads returns exactly one count-fact PER thread", async () => {
+  const { store } = freshStore();
+  const tA = store.createThread();
+  const tB = store.createThread();
+  store.appendMessages(tA, [{ role: "user", content: "hello" }], "s1");
+  store.appendMessages(tB, [{ role: "user", content: "world" }], "s2");
+  store.appendMessages(tB, [{ role: "user", content: "extra" }], "s3");
+  const r = await provider.distill(store, tA);
+  // Exactly one fact per thread (set assertion over provenance keys)
+  const provenances = r.facts.map((f) => f.provenance);
+  expect(provenances).toContain(`thread:${tA}`);
+  expect(provenances).toContain(`thread:${tB}`);
+  expect(provenances.length).toBe(2);
+  store.close();
+});
+
+test("D4: FixedMarkerProvider.distill count-fact body is correct per thread", async () => {
+  const { store } = freshStore();
+  const tA = store.createThread();
+  const tB = store.createThread();
+  store.appendMessages(tA, [{ role: "user", content: "a1" }], "s1");
+  store.appendMessages(tB, [{ role: "user", content: "b1" }], "s2");
+  store.appendMessages(tB, [{ role: "user", content: "b2" }], "s3");
+  const r = await provider.distill(store, tA);
+  const facts = r.facts;
+  const factA = facts.find((f) => f.provenance === `thread:${tA}`);
+  const factB = facts.find((f) => f.provenance === `thread:${tB}`);
+  expect(factA?.fact).toBe(`thread:${tA} has 1 live message`);
+  expect(factB?.fact).toBe(`thread:${tB} has 2 live messages`);
+  store.close();
+});
+
+test("D4: FixedMarkerProvider.distill DistillResult.threadId equals the trigger threadId", async () => {
+  const { store } = freshStore();
+  const tA = store.createThread();
+  const tB = store.createThread();
+  store.appendMessages(tA, [{ role: "user", content: "a" }], "s1");
+  store.appendMessages(tB, [{ role: "user", content: "b" }], "s2");
+  const r = await provider.distill(store, tA);
+  expect(r.threadId).toBe(tA);
+  store.close();
+});
+
+test("D4: FixedMarkerProvider.distill tombstoned-thread-provenance skip still applies (no fact for that thread)", async () => {
+  const { store } = freshStore();
+  const gate = new WriteGate(store, new RuleBasedScanner());
+  const tA = store.createThread();
+  const tB = store.createThread();
+  store.appendMessages(tA, [{ role: "user", content: "a" }], "s1");
+  store.appendMessages(tB, [{ role: "user", content: "b" }], "s2");
+  // Tombstone the thread-level provenance for tA so FixedMarker skips it
+  gate.forgetFact(`thread:${tA}`, { actor: "user", authored_by: "human" });
+  const r = await provider.distill(store, tB);
+  const provenances = r.facts.map((f) => f.provenance);
+  // tA's thread provenance is tombstoned — its count-fact must be absent
+  expect(provenances).not.toContain(`thread:${tA}`);
+  // tB's fact should still be present
+  expect(provenances).toContain(`thread:${tB}`);
+  store.close();
+});
+
+// ── FixedMarkerProvider retrieve + existing tests ──────────────────────────
+
 test("FixedMarkerProvider.retrieve has the same projection-read contract as DumbTail (provider-agnostic inject)", async () => {
   const { store } = freshStore();
   store.insertDistilledFacts(

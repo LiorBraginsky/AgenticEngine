@@ -82,7 +82,30 @@ inside `doOneRun`. Proceeds autonomously to Phase 2 (PIPELINE §5.2, narrowed 20
 
 ---
 
-## Status: Planning complete — entering Phase 2 (implementation)
+## Status: Review-complete + re-review clean + EXECUTED probe green — ready-to-merge (crawl §11.4: Jimmy re-verifies clean checkout + merges; worker no self-merge)
+
+> **Verified-done (§6) — chunk 03 has NO behavioral demo gate** (its sole behavioral DoD is
+> DEFERRED to chunk 04's feature-closing Lior demo, spec §5). All other DoD are `[mechanical]`
+> + the `[mechanical — EXECUTED evidence]` probe. Orchestrator-independent re-verification
+> (§6.2 command evidence) on HEAD `27f0a0c`:
+> - `bun test` **417 pass / 0 fail** (51 files; real SQLite — only mock = LLM `clientFactory`/fake provider, Strike-4) ✓
+> - `bun run typecheck` exit 0 · `bun run lint:strict` exit 0 · `apps/overlay` typecheck exit 0 ✓
+> - frozen surfaces (`@agentic/protocol`, `mock-agent.ts`, `history-page.ts`) diff **empty** ✓
+> - **EXECUTED real-API probe (Strike-5) RAN green** — `bun run packages/daemon/scripts/smart-distiller-probe.ts`
+>   → `source=keychain` → real Haiku call → 2 facts ("User prefers dark mode in all apps"; "User's
+>   favourite colour is blue", cross-thread, conf 0.95, provenance-stamped) → PROBE PASSED exit 0.
+>   Full stdout pasted in the PR body. ✓
+> - `MEMORY_PROVIDER` default UNCHANGED (`dumb-tail`); flip is chunk 04. ✓
+>
+> **engine-reviewer:** initial pass CLEAN (0 BLOCKER / 0 MAJOR; 3 MINOR) → all 3 folded (96e3f79:
+> drop dead `validProvenanceIds` param, complete §4 layer-3 LLM exclusions via the layer-2 scan,
+> recency prompt nudge) → re-review CLEAN (0/0; 1 trivial stale-JSDoc MINOR → folded 27f0a0c).
+>
+> **MAJOR-3 (relay-003) serialization** empirically RED-without-queue → GREEN-with-queue (reviewer
+> reproduced: final projection = stale run A without the queue; later run B wins with it).
+>
+> Chunk stays `in-progress`; physical archive batched at memory-quality feature closeout (chunk 04),
+> per the 01/02 convention.
 
 ---
 

@@ -4,8 +4,30 @@
 > мінімальна **шина** worker→Jimmy для дизайн-питань. Збудовано автономно за прямою
 > вказівкою Lior'а; він перевіряє результат зранку.
 
-**Status:** experiment (live overnight 2026-06-12 → Lior AM review)
+**Status:** experiment CONTINUING — Run 1 (security-hardening) OK, **provisional**; setup-verdict
+**DEFERRED** until usage stats across **3–4 features** (Lior, 2026-06-12). Keep the dev-bus running.
 **Motivates:** Finding #9 (below) · **Builds:** the run-rung transport PIPELINE §11.4 deferred
+
+## Verdict policy (Lior, 2026-06-12)
+
+**No verdict from one run.** A single clean run is encouraging, not conclusive. Record what
+happened, keep working, and gather **per-feature usage stats over the next 3–4 features**; only then
+decide keep / climb-to-product-bus / drop. Per-feature signal to tally (cheap, `conveyor-bus.sh
+stats` per run):
+
+- **asks / feature** — how often a worker routes a design seam up at all (the core "is the bus
+  earning its keep" number).
+- **jimmy vs jimmy-provisional vs (worker-solo on timeout)** — was the conductor available + did it
+  decide or have to defer to Lior.
+- **override-rate** — how often the conductor *changed* the worker's recommendation (the "Jimmy >
+  box" signal Lior is testing) vs merely ratified it.
+- **latency** + any 529/contention.
+
+### Run 1 — security-hardening (2026-06-12, first data point)
+3 asks · 3 jimmy-answered · 0 provisional · 0 Lior-interrupts · latencies 94/173/160s. Conductor
+**added value 3×** over worker-solo: 1 override (q#002 transport T1→T2), 1 cross-ADR synthesis
+(q#001 token-spine), 1 added decision (required the spec). Smooth; no 529. **One data point — not a
+verdict.**
 
 ---
 

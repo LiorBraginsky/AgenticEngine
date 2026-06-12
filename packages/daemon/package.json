@@ -8,7 +8,8 @@
     "test-client": "bun run scripts/test-client.ts",
     "memory-smoke": "bun run scripts/memory-smoke.ts",
     "keychain-set": "bun run scripts/keychain-set.ts",
-    "keychain-prod-probe": "bun run scripts/keychain-prod-probe.ts"
+    "keychain-prod-probe": "bun run scripts/keychain-prod-probe.ts",
+    "smart-distiller-probe": "bun run scripts/smart-distiller-probe.ts"
   },
   "dependencies": {
     "@agentic/protocol": "workspace:*",

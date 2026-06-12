@@ -301,3 +301,136 @@ test("Phase-3 tx failure: prior projection INTACT, reprojection-failed rows writ
 
   store.close();
 });
+
+// ── MAJOR-3: concurrent overlapping re-projections must serialize ──────────
+
+/**
+ * MAJOR-3 regression test.
+ *
+ * Harness: two deferred promises with explicit resolve handles let us control
+ * exactly when each async distill() returns, without real timers or sleeps.
+ *
+ * Run A — FIRST-enqueued (older facts "fact-A").
+ * Run B — SECOND-enqueued (newer facts "fact-B").
+ *
+ * Both hook.dismiss() calls are fired back-to-back WITHOUT awaiting the first
+ * (overlapping). Then A's deferred resolves (A was first in queue, starts first),
+ * then B's deferred resolves (B starts after A finishes).
+ *
+ * Correct ordering:
+ *   With queue: A runs first, commits fact-A. B runs after, commits fact-B (wins).
+ *   Without queue: A and B start simultaneously. We resolve dA before dB, so A
+ *   commits first (fact-A). Then dB resolves, B commits last (fact-B). By accident
+ *   B wins too — the RED case needs different arrangement.
+ *
+ * To make a valid RED test (without queue, A clobbers B):
+ *   Arrange so that WITHOUT the queue, run A would be the LAST to commit:
+ *   - Resolve dB first (B completes and commits fact-B) while A is still pending
+ *   - Then resolve dA (A completes and commits fact-A, CLOBBERING B)
+ *   - Final = fact-A (stale)
+ *
+ *   With the queue:
+ *   - A is first in queue, runs first. But dB is resolved first (already done).
+ *   - A blocks on dA.
+ *   - We resolve dA; A runs + commits fact-A.
+ *   - Queue runs B; B immediately gets its fact (dB already resolved). Commits fact-B.
+ *   - Final = fact-B (B was last committed, later-enqueued wins).
+ *
+ * We sequence: fire A + B, resolve dB, resolve dA, await both.
+ *
+ * RED: no queue → A and B both start; dB resolves first → B commits fact-B;
+ *               dA resolves after → A commits fact-A CLOBBERING B → final = [fact-A] → FAIL
+ * GREEN: queue → A runs first (blocks on dA); then dA resolves → A commits fact-A;
+ *               B runs; dB already resolved → B commits fact-B immediately → final = [fact-B] → PASS
+ */
+test("MAJOR-3: overlapping dismisses serialize — later-enqueued run B wins over slow earlier run A", async () => {
+  // Deferred promise helpers (deterministic, no real timers)
+  type Deferred = { promise: Promise<void>; resolve: () => void };
+  function deferred(): Deferred {
+    let resolve!: () => void;
+    const promise = new Promise<void>((res) => { resolve = res; });
+    return { promise, resolve };
+  }
+
+  const { store } = freshStore();
+  const hook = new ConsolidationHook(store);
+  const scanner = new RuleBasedScanner();
+
+  const dA = deferred(); // gate: run A's distill blocks until dA.resolve()
+  const dB = deferred(); // gate: run B's distill blocks until dB.resolve()
+
+  const threadId = store.createThread();
+
+  // Async stub provider: distill returns different facts per call, gated by deferred promises.
+  // Call 1 → run A (first-enqueued, older facts, slow — gated by dA)
+  // Call 2 → run B (second-enqueued, newer facts, gated by dB)
+  let callCount = 0;
+  const stubProvider: MemoryProvider = {
+    id: "stub-serialization",
+    distill: async (_s, tId) => {
+      callCount++;
+      if (callCount === 1) {
+        // Run A: wait for dA before returning "fact-A" facts
+        await dA.promise;
+        return {
+          threadId: tId,
+          facts: [{ fact: "fact-A", provenance: "thread:a", scope: "cross-thread" as const, expiry: null, confidence: 0.9, authored_by: "machine" as const }],
+        };
+      } else {
+        // Run B: wait for dB before returning "fact-B" facts
+        await dB.promise;
+        return {
+          threadId: tId,
+          facts: [{ fact: "fact-B", provenance: "thread:b", scope: "cross-thread" as const, expiry: null, confidence: 0.9, authored_by: "machine" as const }],
+        };
+      }
+    },
+    retrieve: async () => [],
+  };
+
+  registerDistiller(hook, store, stubProvider, scanner);
+
+  // Fire run A (does NOT await — overlapping). A was enqueued FIRST.
+  const promiseA = hook.dismiss([threadId]);
+
+  // Fire run B immediately (overlap — A has not resolved yet). B was enqueued SECOND.
+  const promiseB = hook.dismiss([threadId]);
+
+  // Resolve dB FIRST (B is "ready" before A). Without the queue, B commits fact-B
+  // before A finishes, and then A commits fact-A last, CLOBBERING B (RED).
+  // With the queue, B can only start after A finishes, so this resolving dB early is a
+  // no-op until A completes.
+  dB.resolve();
+
+  // Resolve dA — A's distill unblocks.
+  // Without queue: A was already running; A now finishes + commits fact-A (clobbers B).
+  // With queue: A is first-in-queue, runs and commits fact-A; THEN B starts (dB already
+  //   resolved, so B completes immediately) and commits fact-B, winning.
+  dA.resolve();
+
+  // Await both in any order (they will settle in queue order).
+  await Promise.all([promiseA, promiseB]);
+
+  // With the promise-queue (GREEN):
+  //   Queue ran A first, committed fact-A; then B ran, committed fact-B (last = wins).
+  //   Final projection = fact-B only.
+  //
+  // Without the queue (RED):
+  //   A and B both started immediately. dB resolved first → B committed fact-B.
+  //   Then dA resolved → A committed fact-A, clobbering B.
+  //   Final projection = fact-A only => test FAILED.
+  const finalFacts = store.readDistilledFacts(50);
+  const factTexts = finalFacts.map((f) => f.fact);
+
+  // fact-B must be present (later-enqueued B ran last and committed)
+  expect(factTexts).toContain("fact-B");
+  // fact-A must NOT appear (B's replaceProjection dropped A's machine facts before inserting B's)
+  expect(factTexts).not.toContain("fact-A");
+
+  // 2 success events total (one per dismiss)
+  const evs = store.readDistillationEvents(threadId);
+  const successEvs = evs.filter((e) => e.trigger === "reprojection");
+  expect(successEvs.length).toBe(2);
+
+  store.close();
+});

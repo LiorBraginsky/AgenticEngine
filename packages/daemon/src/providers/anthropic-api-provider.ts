@@ -21,6 +21,8 @@ import type {
   ProviderSessionState,
   SessionMessage,
 } from "./provider.js";
+import { resolveAnthropicKey } from "../secrets/cloud-secrets.js";
+import type { ResolveOpts } from "../secrets/cloud-secrets.js";
 
 // ── System prompt ──────────────────────────────────────────────────────────
 
@@ -138,19 +140,23 @@ export function classifyAnthropicError(err: unknown): string {
 /**
  * Dependency-injection options for tests and production.
  *
- *   apiKey         — if empty → do NOT call the SDK → provider_failure
- *                   (guards against accidentally using a real key in tests)
+ *   apiKey         — if set (truthy), used verbatim; resolver is NOT called (Grill #2).
+ *                   Empty string → missing-key guard fires (provider_failure).
  *   client         — injectable for unit tests; if omitted, built lazily from apiKey
  *   clientFactory  — injectable factory for tests that need to assert the resolved
  *                   key reaches client construction; default: (key) => new Anthropic({ apiKey: key })
+ *   resolverOpts   — injected into resolveAnthropicKey() for unit tests that need to
+ *                   fake the Keychain without shelling out.
  */
 export interface AnthropicProviderOptions {
-  /** ANTHROPIC_API_KEY string. Empty string = missing key. */
+  /** ANTHROPIC_API_KEY string. Truthy → used verbatim (resolver NOT called). */
   apiKey?: string;
   /** Pre-built Anthropic client (injectable for tests). */
   client?: Anthropic;
   /** Factory used to construct the lazy client. Overridable in tests. */
   clientFactory?: (apiKey: string) => Anthropic;
+  /** Injected resolver options for unit tests (e.g. fake Keychain getter). */
+  resolverOpts?: ResolveOpts;
 }
 
 /**
@@ -227,9 +233,33 @@ export function createAnthropicApiProvider(
       };
 
       // ── Missing/empty key guard — do NOT call the SDK ───────────────────
-      const resolvedKey = opts.apiKey ?? Bun.env.ANTHROPIC_API_KEY ?? "";
+      //
+      // Grill #2: opts.apiKey keeps TOP precedence. If truthy, use it verbatim
+      // and do NOT invoke the resolver (no shell-out in unit tests).
+      // The resolver replaces ONLY the Bun.env.ANTHROPIC_API_KEY ?? "" tail.
+      let resolvedKey: string;
+      let resolveDetail: string | undefined;
+      if (opts.apiKey !== undefined && opts.apiKey !== null) {
+        // Direct injection path (tests / callers that pass an explicit key)
+        resolvedKey = opts.apiKey;
+      } else {
+        // Production path: resolve from Keychain (or .env in dev)
+        const resolved = resolveAnthropicKey(opts.resolverOpts);
+        if (resolved.ok) {
+          resolvedKey = resolved.key;
+        } else {
+          // Build the loud, named error detail (DoD #4).
+          // fixHint already contains the full message; use it directly.
+          resolveDetail = resolved.fixHint;
+          resolvedKey = "";
+        }
+      }
+
       if (!resolvedKey.trim()) {
-        const detail = "ANTHROPIC_API_KEY not set";
+        const detail =
+          resolveDetail ??
+          "ANTHROPIC_API_KEY not set (tried: none — key was empty string)";
+        console.error(`[anthropic-provider] ${detail}`);
         const error: ProviderError = { kind: "provider_failure", detail };
         return {
           ok: false,

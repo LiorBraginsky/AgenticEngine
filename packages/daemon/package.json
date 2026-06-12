@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "bun run src/index.ts",
+    "dev": "AGENTIC_ENV=dev bun run src/index.ts",
     "test-client": "bun run scripts/test-client.ts",
     "memory-smoke": "bun run scripts/memory-smoke.ts"
   },

@@ -289,3 +289,113 @@ test("readDistilledFactsForThread: NULL-scope fact is treated as cross-thread (d
   expect(sliceB.some((f) => f.fact === "null-scope fact")).toBe(true);
   store.close();
 });
+
+// ---- chunk 02: replaceProjection + expiry filter (D7) + author ordering (D6) ----
+
+test("replaceProjection: drops machine facts, keeps human facts, inserts clean set and event rows atomically (5e)", () => {
+  const { store } = freshStore();
+  const t = store.createThread();
+
+  // seed: one machine fact + one human fact
+  store.rawDb().query(
+    "INSERT INTO distilled_facts (id, fact, provenance, scope, expiry, confidence, authored_by, derived_at, distiller_version) VALUES (?,?,?,?,?,?,?,?,?)",
+  ).run(crypto.randomUUID(), "old machine fact", "m-old", "cross-thread", null, 1, "machine", Date.now(), "v0");
+  store.rawDb().query(
+    "INSERT INTO distilled_facts (id, fact, provenance, scope, expiry, confidence, authored_by, derived_at, distiller_version) VALUES (?,?,?,?,?,?,?,?,?)",
+  ).run(crypto.randomUUID(), "human pinned", "thread:human", "cross-thread", null, 1, "human", Date.now(), "manual");
+
+  const clean = [
+    { fact: "new machine fact", provenance: "m-new", scope: "cross-thread" as const, expiry: null, confidence: 1, authored_by: "machine" as const },
+  ];
+  const events = [{ threadId: t, trigger: "reprojection", factsProduced: 1 }];
+
+  store.replaceProjection(clean, "v1", events);
+
+  const allFacts = store.readDistilledFacts(20);
+
+  // old machine fact must be gone
+  expect(allFacts.some((f) => f.fact === "old machine fact")).toBe(false);
+  // human fact must survive (5e)
+  expect(allFacts.some((f) => f.fact === "human pinned")).toBe(true);
+  // new clean fact must be present
+  expect(allFacts.some((f) => f.fact === "new machine fact")).toBe(true);
+  // event row must have landed
+  const evs = store.readDistillationEvents(t);
+  expect(evs.length).toBe(1);
+  expect(evs[0]!.trigger).toBe("reprojection");
+  expect(evs[0]!.facts_produced).toBe(1);
+  expect(evs[0]!.distiller_version).toBe("v1");
+
+  store.close();
+});
+
+test("replaceProjection: pre-existing human-authored fact is preserved after replace (5e human guard)", () => {
+  const { store } = freshStore();
+  const t = store.createThread();
+
+  store.rawDb().query(
+    "INSERT INTO distilled_facts (id, fact, provenance, scope, expiry, confidence, authored_by, derived_at, distiller_version) VALUES (?,?,?,?,?,?,?,?,?)",
+  ).run(crypto.randomUUID(), "human fact stays", "thread:human2", "cross-thread", null, 1, "human", Date.now(), "manual");
+
+  // replace with an empty clean set
+  store.replaceProjection([], "v1", [{ threadId: t, trigger: "reprojection", factsProduced: 0 }]);
+
+  const allFacts = store.readDistilledFacts(20);
+  expect(allFacts.some((f) => f.fact === "human fact stays")).toBe(true);
+
+  store.close();
+});
+
+test("readDistilledFactsForThread: excludes a fact with expiry <= Date.now() (D7)", () => {
+  const { store } = freshStore();
+  const tA = store.createThread();
+
+  const pastExpiry = Date.now() - 1000; // already expired
+  const futureExpiry = Date.now() + 60_000; // not yet expired
+
+  store.rawDb().query(
+    "INSERT INTO distilled_facts (id, fact, provenance, scope, expiry, confidence, authored_by, derived_at, distiller_version) VALUES (?,?,?,?,?,?,?,?,?)",
+  ).run(crypto.randomUUID(), "expired fact", "m-exp", "cross-thread", pastExpiry, 1, "machine", Date.now() - 2000, "v1");
+  store.rawDb().query(
+    "INSERT INTO distilled_facts (id, fact, provenance, scope, expiry, confidence, authored_by, derived_at, distiller_version) VALUES (?,?,?,?,?,?,?,?,?)",
+  ).run(crypto.randomUUID(), "live fact", "m-live", "cross-thread", futureExpiry, 1, "machine", Date.now(), "v1");
+  store.rawDb().query(
+    "INSERT INTO distilled_facts (id, fact, provenance, scope, expiry, confidence, authored_by, derived_at, distiller_version) VALUES (?,?,?,?,?,?,?,?,?)",
+  ).run(crypto.randomUUID(), "null expiry fact", "m-null-exp", "cross-thread", null, 1, "machine", Date.now(), "v1");
+
+  const slice = store.readDistilledFactsForThread(tA, 20);
+
+  expect(slice.some((f) => f.fact === "expired fact")).toBe(false);
+  expect(slice.some((f) => f.fact === "live fact")).toBe(true);
+  expect(slice.some((f) => f.fact === "null expiry fact")).toBe(true);
+
+  store.close();
+});
+
+test("readDistilledFactsForThread: human-authored fact appears before machine fact in the slice (D6 ordering)", () => {
+  const { store } = freshStore();
+  const tA = store.createThread();
+  const now = Date.now();
+
+  // Insert machine fact first (earlier derived_at) and human fact second (later derived_at)
+  // Without D6 ordering, the machine fact would appear first by derived_at DESC.
+  // With D6, human must precede machine regardless of derived_at.
+  store.rawDb().query(
+    "INSERT INTO distilled_facts (id, fact, provenance, scope, expiry, confidence, authored_by, derived_at, distiller_version) VALUES (?,?,?,?,?,?,?,?,?)",
+  ).run(crypto.randomUUID(), "machine fact", "m-mach", "cross-thread", null, 1, "machine", now + 100, "v1");
+  store.rawDb().query(
+    "INSERT INTO distilled_facts (id, fact, provenance, scope, expiry, confidence, authored_by, derived_at, distiller_version) VALUES (?,?,?,?,?,?,?,?,?)",
+  ).run(crypto.randomUUID(), "human fact", "thread:human3", "cross-thread", null, 1, "human", now, "manual");
+
+  const slice = store.readDistilledFactsForThread(tA, 20);
+
+  const humanIdx = slice.findIndex((f) => f.fact === "human fact");
+  const machineIdx = slice.findIndex((f) => f.fact === "machine fact");
+
+  expect(humanIdx).toBeGreaterThanOrEqual(0);
+  expect(machineIdx).toBeGreaterThanOrEqual(0);
+  // human must come before machine
+  expect(humanIdx).toBeLessThan(machineIdx);
+
+  store.close();
+});

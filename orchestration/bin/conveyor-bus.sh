@@ -62,10 +62,13 @@ case "${1:-list}" in
     ;;
   wait)
     secs="${2:-20}"; max="${3:-1800}"; elapsed=0
+    # 4th arg = ledger-match for THIS worker's report (e.g. "security-hardening 01");
+    # must be chunk-specific so a PRIOR DONE line (e.g. an earlier decompose) doesn't false-fire.
+    lmatch="${4:-zzz-no-match-sentinel}"
     while :; do
       [ -n "$(unanswered)" ] && { echo "EVENT new-question"; exit 0; }
-      grep -qiE '^(DONE|BLOCKED).*security-hardening decompose' "$LEDGER" 2>/dev/null \
-        && { echo "EVENT worker-ledger-report"; exit 0; }
+      grep -qiE "^(DONE|BLOCKED).*${lmatch}" "$LEDGER" 2>/dev/null \
+        && { echo "EVENT worker-ledger-report ($lmatch)"; exit 0; }
       tmux capture-pane -t "$WORKER_PANE" -p 2>/dev/null | grep -qiE 'Enter to select|❯ 1\.' \
         && { echo "EVENT worker-menu (protocol slip — redirect to bus)"; exit 0; }
       [ "$elapsed" -ge "$max" ] && { echo "EVENT heartbeat (no event in ${max}s — reassess worker liveness)"; exit 0; }

@@ -99,6 +99,14 @@ PIPELINE.md (esp. §5 gates, §6 verified-done, §7 governance), the relevant AD
 orchestration/docs/adr/, and the feature spec in orchestration/docs/specs/. Escalate
 ONLY what the docs do not answer (§5.2 / §7.2 citation test).
 
+## Bus — route a genuine DESIGN fork UP (don't guess in your box, don't hard-block)
+If a design decision appears that the spec/chunk/docs do NOT settle — and it is NOT a §5.2 gate —
+ask the conductor (Jimmy, who sits above all workers) instead of deciding alone in your box:
+  printf '<question + options + YOUR recommendation + rationale>' | bash orchestration/bin/conveyor-ask.sh ${FEATURE} <seam-slug>
+Then end your turn with the single line "WAITING q#<id>" and STOP; Jimmy writes the answer to
+orchestration/.conveyor/bus/a/<id>.md and nudges you to continue. GENUINE design forks only —
+mechanical / spec-determined choices: just build. (The bus is the run-rung channel, PIPELINE §11.4.)
+
 ## Gates (PIPELINE §5.2, narrowed 2026-06-06)
 - Proceed autonomously through the plan UNLESS the §7.2 citation test fires (the plan
   cites a frozen conflict, introduces new scope, or hits a real blocker).

@@ -3,10 +3,12 @@ import { tmpdir } from "node:os";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
+import { TokenStore } from "./memory/token-store.js";
 
 let dataDir: string;
 let server: ReturnType<typeof import("./index.js").startDaemon>;
 let PORT: number;
+let token: string;
 const ORIGIN = "tauri://localhost";
 
 beforeAll(async () => {
@@ -16,6 +18,7 @@ beforeAll(async () => {
   const { startDaemon } = await import("./index.js");
   server = startDaemon(0);
   PORT = server.port!;
+  token = new TokenStore(dataDir).token();
 });
 afterAll(() => server.stop(true));
 
@@ -63,7 +66,8 @@ function turnOver(ws: WebSocket, text: string, threadId?: string): Promise<strin
 
 function openSocket(): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${PORT}`, { headers: { Origin: ORIGIN } });
+    // chunk-02 step-3: present token as Sec-WebSocket-Protocol subprotocol (layer-1 gate).
+    const ws = new WebSocket(`ws://127.0.0.1:${PORT}`, { headers: { Origin: ORIGIN }, protocols: [token] });
     ws.addEventListener("open", () => resolve(ws));
     ws.addEventListener("error", () => reject(new Error("ws error")));
     setTimeout(() => reject(new Error("open timeout")), 3000);

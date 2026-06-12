@@ -6,7 +6,11 @@
 - **Chunk:** `orchestration/chunks-todo/security-hardening/02-ws-conn-token-subprotocol.md`
 - **Spec:** `orchestration/docs/specs/2026-06-12-security-hardening.md` §3.2 / §3.3 / §3.6 / §3.8 / §4 (status: accepted)
 - **ADR worthy:** no (executes accepted ADR-0003 p.5 + Amendment; discharges accepted ADR-0014 regret-(a) rider; authors no new contract)
-- **Step tracker:** Step 1 ☐ · Step 2 ☐ · Step 3 ☐ · Review ☐
+- **Step tracker:** Step 1 ☑ · Step 2 ☑ · Step 3 ☐ · Review ☐
+
+> **Step 2 done (orchestrator-verified):** Rust `read_auth_token` command (`std::fs`, mirrors daemon dataDir resolution, NO new Cargo dep — Cargo.toml/lock byte-unchanged → no ADR); `WebSocketFactory` gains `protocols`; `ConnectionManager(factory, token)` passes `[token]` in `openSocket()` (re-presented on every reconnect + dismiss re-connect); `main.ts` boot-reads via `invoke`, array-form factory (DOM-lib correct), stale comment rewritten. typecheck 0 · lint:strict 0 · cargo check 0 · connection-manager.test.ts 20/20 · protocol diff EMPTY. (`realio.test.ts` got a placeholder `"STEP3-TOKEN"` to keep the branch compiling — Step 3 finalizes it.) Rust+WKWebView file-read at runtime = behavioral (DoD #1/#2), Lior §6.1.
+
+> **Step 1 done (orchestrator-verified):** token-store timing-safe (`safeEqual` core + `verify`/`verifyToken`); daemon WS-upgrade gate (token layer-1 → origin layer-2, 401/403); `origin.ts` comment → layer-2. typecheck 0 · lint:strict 0 · protocol+mock diff EMPTY. **2 runtime findings (worker, verified):** (a) Bun 1.3.4 auto-echoes `Sec-WebSocket-Protocol` — manual header in `server.upgrade` causes close-1002, so the daemon relies on Bun's auto-echo (NOT a q#002 escalation — echo confirmed via raw-HTTP probe); (b) Bun `ws.protocol` buffer-aliasing → test reads `ws.protocol` in the `open` handler before any message. Expected: the 9 pre-existing WS test files (25 tests) now fail "no token" — repaired in Step 3.
 
 **Goal:** Require the per-install token on the WS upgrade via the `Sec-WebSocket-Protocol` subprotocol (verify-before-`server.upgrade()` + echo on 101), make `TokenStore.verify` timing-safe, thread the token through the overlay's real WS factory + reconnect path (read Rust-side), and discharge the ADR-0014 thread-adoption rider at the connection gate — with the frozen 6-variant envelope byte-untouched.
 

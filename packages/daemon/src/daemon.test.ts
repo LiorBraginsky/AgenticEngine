@@ -5,8 +5,19 @@ import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { TokenStore } from "./memory/token-store.js";
 
-const server = startDaemon(0); // ephemeral port — avoids clashing with a running dev daemon
-const PORT = server.port;
+let server: ReturnType<typeof startDaemon>;
+let PORT: number;
+let topToken: string;
+let topDataDir: string;
+
+beforeAll(() => {
+  topDataDir = mkdtempSync(join(tmpdir(), "daemon-top-"));
+  process.env.AGENTIC_DATA_DIR = topDataDir;
+  process.env.LLM_PROVIDER = process.env.LLM_PROVIDER ?? "mock";
+  server = startDaemon(0); // ephemeral port — avoids clashing with a running dev daemon
+  PORT = server.port!;
+  topToken = new TokenStore(topDataDir).token();
+});
 afterAll(() => server.stop(true));
 
 const TAURI_ORIGIN = "tauri://localhost";
@@ -22,7 +33,8 @@ test("ALLOWED origin: full session round-trip (start → ack → tool_call)", as
   // chunk-02a supersede: session_start now opens a session (ack + tool_call),
   // it no longer ends immediately. The old chunk-01 placeholder (ack + session_end)
   // is intentionally replaced — this is not a regression.
-  const ws = new WebSocket(`ws://127.0.0.1:${PORT}`, { headers: { Origin: TAURI_ORIGIN } });
+  // chunk-02 step-3: token presented as Sec-WebSocket-Protocol subprotocol (layer 1 gate).
+  const ws = new WebSocket(`ws://127.0.0.1:${PORT}`, { headers: { Origin: TAURI_ORIGIN }, protocols: [topToken] });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const messages: any[] = [];
   await new Promise<void>((resolve, reject) => {
@@ -46,7 +58,8 @@ test("ALLOWED origin: full session round-trip (start → ack → tool_call)", as
 });
 
 test("REJECTED origin: arbitrary cross-site origin cannot connect", async () => {
-  const ws = new WebSocket(`ws://127.0.0.1:${PORT}`, { headers: { Origin: "https://evil.example.com" } });
+  // Token is valid; origin is not — layer-2 gate rejects after layer-1 passes.
+  const ws = new WebSocket(`ws://127.0.0.1:${PORT}`, { headers: { Origin: "https://evil.example.com" }, protocols: [topToken] });
   const rejected = await new Promise<boolean>((resolve) => {
     ws.addEventListener("open", () => resolve(false)); // should NOT open
     ws.addEventListener("error", () => resolve(true));
@@ -57,7 +70,8 @@ test("REJECTED origin: arbitrary cross-site origin cannot connect", async () => 
 });
 
 test("REJECTED origin: missing origin cannot connect", async () => {
-  const ws = new WebSocket(`ws://127.0.0.1:${PORT}`); // no Origin header
+  // No Origin header — layer-2 origin gate rejects (token alone is not enough).
+  const ws = new WebSocket(`ws://127.0.0.1:${PORT}`, { protocols: [topToken] }); // no Origin header
   const rejected = await new Promise<boolean>((resolve) => {
     ws.addEventListener("open", () => resolve(false));
     ws.addEventListener("error", () => resolve(true));

@@ -1,15 +1,31 @@
-import { test, expect, afterAll } from "bun:test";
+import { test, expect, afterAll, beforeAll } from "bun:test";
 import { startDaemon } from "./index.js";
+import { tmpdir } from "node:os";
+import { mkdtempSync } from "node:fs";
+import { join } from "node:path";
+import { TokenStore } from "./memory/token-store.js";
 
-const server = startDaemon(0); // ephemeral port
-const PORT = server.port;
+let server: ReturnType<typeof startDaemon>;
+let PORT: number;
+let token: string;
+let dataDir: string;
+
+beforeAll(() => {
+  dataDir = mkdtempSync(join(tmpdir(), "mock-agent-"));
+  process.env.AGENTIC_DATA_DIR = dataDir;
+  process.env.LLM_PROVIDER = process.env.LLM_PROVIDER ?? "mock";
+  server = startDaemon(0); // ephemeral port
+  PORT = server.port!;
+  token = new TokenStore(dataDir).token();
+});
 afterAll(() => server.stop(true));
 const ORIGIN = "tauri://localhost";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Msg = any;
 
 function open(): Promise<WebSocket> {
-  const ws = new WebSocket(`ws://127.0.0.1:${PORT}`, { headers: { Origin: ORIGIN } });
+  // chunk-02 step-3: present token as Sec-WebSocket-Protocol subprotocol (layer-1 gate).
+  const ws = new WebSocket(`ws://127.0.0.1:${PORT}`, { headers: { Origin: ORIGIN }, protocols: [token] });
   return new Promise((res, rej) => {
     ws.addEventListener("open", () => res(ws));
     ws.addEventListener("error", () => rej(new Error("ws error")));

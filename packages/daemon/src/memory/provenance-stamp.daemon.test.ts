@@ -40,12 +40,14 @@ import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { MemoryStore } from "./store.js";
 import type { AgentProvider } from "../providers/provider.js";
+import { TokenStore } from "./token-store.js";
 
 const ORIGIN = "tauri://localhost";
 
 let dataDir: string;
 let server: ReturnType<typeof import("../index.js").startDaemon>;
 let PORT: number;
+let token: string;
 
 /** A fake Anthropic client returning a fixed text reply synchronously. */
 interface FakeClient {
@@ -103,6 +105,8 @@ beforeAll(async () => {
   // Inject the fake Anthropic provider so the daemon emits show_text envelopes.
   server = startDaemon(0, fakeProvider);
   PORT = server.port!;
+  // chunk-02 step-3: read the per-install token minted by the daemon at boot.
+  token = new TokenStore(dataDir).token();
 });
 
 afterAll(() => server.stop(true));
@@ -114,7 +118,8 @@ function runTurn(
 ): Promise<Array<{ type: string; [key: string]: unknown }>> {
   return new Promise((resolve, reject) => {
     const envelopes: Array<{ type: string; [key: string]: unknown }> = [];
-    const ws = new WebSocket(`ws://127.0.0.1:${PORT}`, { headers: { Origin: ORIGIN } });
+    // chunk-02 step-3: present token as Sec-WebSocket-Protocol subprotocol (layer-1 gate).
+    const ws = new WebSocket(`ws://127.0.0.1:${PORT}`, { headers: { Origin: ORIGIN }, protocols: [token] });
     ws.addEventListener("open", () =>
       ws.send(
         JSON.stringify({
@@ -239,7 +244,8 @@ function newestThreadId(): string {
 test("T2.3a-C: persistent socket — turn 1 (new-thread) stamped; turn 2 (same-thread) NOT stamped — injectedMemory does not leak across turns", async () => {
   // Open ONE socket and keep it open for both turns.
   const ws = await new Promise<WebSocket>((resolve, reject) => {
-    const sock = new WebSocket(`ws://127.0.0.1:${PORT}`, { headers: { Origin: ORIGIN } });
+    // chunk-02 step-3: present token as Sec-WebSocket-Protocol subprotocol (layer-1 gate).
+    const sock = new WebSocket(`ws://127.0.0.1:${PORT}`, { headers: { Origin: ORIGIN }, protocols: [token] });
     sock.addEventListener("open", () => resolve(sock));
     sock.addEventListener("error", () => reject(new Error("ws error")));
     setTimeout(() => reject(new Error("open timeout")), 3000);

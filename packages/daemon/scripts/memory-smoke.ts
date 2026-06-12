@@ -5,6 +5,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
+import { TokenStore } from "../src/memory/token-store.js";
 
 const dataDir = mkdtempSync(join(tmpdir(), "mf01-smoke-"));
 process.env.AGENTIC_DATA_DIR = dataDir;
@@ -13,6 +14,8 @@ process.env.LLM_PROVIDER = process.env.LLM_PROVIDER ?? "mock";
 const { startDaemon } = await import("../src/index.js");
 const server = startDaemon(0);
 const port = server.port!;
+// chunk-02 step-3: read the per-install token minted by the daemon at boot.
+const token = new TokenStore(dataDir).token();
 
 function fail(msg: string): never {
   console.error(`[memory-smoke] FAIL: ${msg}`);
@@ -21,7 +24,8 @@ function fail(msg: string): never {
 }
 
 await new Promise<void>((resolve, reject) => {
-  const ws = new WebSocket(`ws://127.0.0.1:${port}`, { headers: { Origin: "tauri://localhost" } });
+  // chunk-02 step-3: present token as Sec-WebSocket-Protocol subprotocol (layer-1 gate).
+  const ws = new WebSocket(`ws://127.0.0.1:${port}`, { headers: { Origin: "tauri://localhost" }, protocols: [token] });
   let pickerSeen = false;
   ws.addEventListener("open", () =>
     ws.send(JSON.stringify({ type: "session_start", trigger: "user", text: "smoke probe", client_session_id: "smoke" })),

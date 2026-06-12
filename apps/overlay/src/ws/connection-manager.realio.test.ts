@@ -27,12 +27,16 @@ import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { ConnectionManager } from "./connection-manager.js";
 import type { WebSocketLike } from "./types.js";
+import { TokenStore } from "../../../../packages/daemon/src/memory/token-store.js";
 
 // ── Shared helper: adapt a real WebSocket to WebSocketLike ───────────────────
-// Passes Origin header for the daemon's CSWSH origin-gate (ADR-0003).
-// Identical logic to main.ts factory, but with headers for the daemon test.
-function realFactory(url: string): WebSocketLike {
-  const s = new WebSocket(url, { headers: { Origin: "tauri://localhost" } });
+// Passes the per-install token as Sec-WebSocket-Protocol (layer-1 gate, ADR-0003 p.5
+// un-deferred) AND the Origin header (layer-2 CSWSH gate, ADR-0003 Amendment).
+// This is the Bun-runtime object form: { headers, protocols } — correct here because
+// this file is typechecked under the Bun lib (root tsconfig, no DOM), unlike main.ts
+// which is DOM-only and must use the array form (Reality check 7-A).
+function realFactory(url: string, token: string): WebSocketLike {
+  const s = new WebSocket(url, { headers: { Origin: "tauri://localhost" }, protocols: [token] });
   return {
     send: (d) => s.send(d),
     close: () => s.close(),
@@ -49,13 +53,11 @@ function realFactory(url: string): WebSocketLike {
  * at module load and runSession() is called on user input — the socket is always
  * open by then. Tests must replicate that timing explicitly.
  */
-// NOTE (Step 3): replace "STEP3-TOKEN" with `new TokenStore(dataDir).token()` once
-// the daemon gate is wired in Step 3. The placeholder keeps Step 2 typecheck-clean.
-function makeManagerWithOpenWait(urlOverride: string, token = "STEP3-TOKEN"): { mgr: ConnectionManager; opened: Promise<void> } {
+function makeManagerWithOpenWait(urlOverride: string, token: string): { mgr: ConnectionManager; opened: Promise<void> } {
   let resolveOpen!: () => void;
   const opened = new Promise<void>((resolve) => { resolveOpen = resolve; });
   const mgr = new ConnectionManager(() => {
-    const ws = realFactory(urlOverride);
+    const ws = realFactory(urlOverride, token);
     // Wrap addEventListener to intercept the "open" event and signal readiness.
     const origAddEventListener = ws.addEventListener.bind(ws);
     ws.addEventListener = (t, cb) => {
@@ -73,6 +75,7 @@ function makeManagerWithOpenWait(urlOverride: string, token = "STEP3-TOKEN"): { 
 let dataDir: string;
 let daemon: ReturnType<typeof import("../../../../packages/daemon/src/index.js").startDaemon>;
 let DAEMON_PORT: number;
+let daemonToken: string;
 
 beforeAll(async () => {
   dataDir = mkdtempSync(join(tmpdir(), "cm02-overlay-realio-"));
@@ -81,11 +84,13 @@ beforeAll(async () => {
   const { startDaemon } = await import("../../../../packages/daemon/src/index.js");
   daemon = startDaemon(0);
   DAEMON_PORT = daemon.port!;
+  // chunk-02 step-3: read the per-install token minted by the daemon at boot.
+  daemonToken = new TokenStore(dataDir).token();
 });
 afterAll(() => daemon.stop(true));
 
 test("real-I/O: picker round-trip over the ConnectionManager against the real mock daemon", async () => {
-  const { mgr, opened } = makeManagerWithOpenWait(`ws://127.0.0.1:${DAEMON_PORT}`);
+  const { mgr, opened } = makeManagerWithOpenWait(`ws://127.0.0.1:${DAEMON_PORT}`, daemonToken);
   mgr.connect();
   await opened; // wait for WebSocket to be in OPEN state before calling runSession
   let pickerSeen = false;
@@ -148,7 +153,8 @@ beforeAll(() => {
 afterAll(() => scripted.stop(true));
 
 test("real-I/O: show_text flow over the ConnectionManager against a scripted loopback server", async () => {
-  const { mgr, opened } = makeManagerWithOpenWait(`ws://127.0.0.1:${SCRIPT_PORT}`);
+  // The scripted loopback server does not verify the token — any non-empty string suffices.
+  const { mgr, opened } = makeManagerWithOpenWait(`ws://127.0.0.1:${SCRIPT_PORT}`, daemonToken);
   mgr.connect();
   await opened; // wait for WebSocket to be in OPEN state before calling runSession
   let shown: string | undefined;
@@ -168,7 +174,8 @@ test("real-I/O: two sequential turns on ONE manager against the scripted server 
   // NOTE: the scripted server uses a fixed session_id "scripted-session" for both turns.
   // The manager's pending Map keyed by session_id is already cleared after settle(), so
   // the second turn correctly picks up the second ack/tool_call/session_end sequence.
-  const { mgr, opened } = makeManagerWithOpenWait(`ws://127.0.0.1:${SCRIPT_PORT}`);
+  // The scripted loopback server does not verify the token — any non-empty string suffices.
+  const { mgr, opened } = makeManagerWithOpenWait(`ws://127.0.0.1:${SCRIPT_PORT}`, daemonToken);
   mgr.connect();
   await opened; // wait for WebSocket to be in OPEN state before calling runSession
   const r1 = await mgr.runSession("q1", { handshakeTimeoutMs: 4000, onShowText: () => {} });
@@ -200,6 +207,8 @@ test("real-I/O (Fix 2): daemon killed+restarted → manager AUTO-reconnects → 
   let testDaemon = startDaemon(0);
   const PORT = testDaemon.port!;
   const url = `ws://127.0.0.1:${PORT}`;
+  // chunk-02 step-3: read the per-install token minted by the daemon at boot.
+  const testToken = new TokenStore(testDataDir).token();
 
   // --- Step 2: build ConnectionManager with fast deterministic backoff ---
   // Real setTimeout is NOT no-op'd; the auto-reconnect must actually fire.
@@ -207,10 +216,9 @@ test("real-I/O (Fix 2): daemon killed+restarted → manager AUTO-reconnects → 
   let resolveFirstOpen!: () => void;
   const firstOpened = new Promise<void>((r) => { resolveFirstOpen = r; });
   let firstOpenFired = false;
-  // NOTE (Step 3): replace "STEP3-TOKEN" with `new TokenStore(dataDir).token()`.
   const mgr = new ConnectionManager(
     () => {
-      const ws = realFactory(url);
+      const ws = realFactory(url, testToken);
       const origAddEL = ws.addEventListener.bind(ws);
       ws.addEventListener = (t, cb) => {
         origAddEL(t, (ev) => {
@@ -220,7 +228,7 @@ test("real-I/O (Fix 2): daemon killed+restarted → manager AUTO-reconnects → 
       };
       return ws;
     },
-    "STEP3-TOKEN",
+    testToken,
     { baseMs: 10, capMs: 50, random: () => 0.5 },
   );
   mgr.connect();

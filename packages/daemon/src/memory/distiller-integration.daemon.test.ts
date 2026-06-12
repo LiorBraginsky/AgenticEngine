@@ -16,11 +16,13 @@ import { ThreadLifecycle } from "./thread-lifecycle.js";
 import { DumbTailProvider } from "./providers/dumb-tail-provider.js";
 import { FixedMarkerProvider } from "./providers/fixed-marker-provider.js";
 import { registerDistiller } from "./distiller-registration.js";
+import { TokenStore } from "./token-store.js";
 
 // ─── Shared daemon (tests 5.1, 5.2, 5.3 drive WS turns) ───────────────────
 let sharedDataDir: string;
 let server: ReturnType<typeof import("../index.js").startDaemon>;
 let PORT: number;
+let token: string;
 const ORIGIN = "tauri://localhost";
 
 beforeAll(async () => {
@@ -30,6 +32,8 @@ beforeAll(async () => {
   const { startDaemon } = await import("../index.js");
   server = startDaemon(0);
   PORT = server.port!;
+  // chunk-02 step-3: read the per-install token minted by the daemon at boot.
+  token = new TokenStore(sharedDataDir).token();
 });
 
 afterAll(() => server.stop(true));
@@ -44,7 +48,8 @@ afterAll(() => server.stop(true));
  * accounting for the production dismiss's own writes. */
 function runTurn(text: string, threadId?: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${PORT}`, { headers: { Origin: ORIGIN } });
+    // chunk-02 step-3: present token as Sec-WebSocket-Protocol subprotocol (layer-1 gate).
+    const ws = new WebSocket(`ws://127.0.0.1:${PORT}`, { headers: { Origin: ORIGIN }, protocols: [token] });
     ws.addEventListener("open", () =>
       ws.send(JSON.stringify({
         type: "session_start", trigger: "user", text, client_session_id: "c",

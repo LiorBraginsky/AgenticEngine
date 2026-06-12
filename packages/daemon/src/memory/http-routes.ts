@@ -5,9 +5,11 @@
  * Wired into index.ts BEFORE the origin gate so loopback browsers can reach it
  * without an allowlisted Origin header (ADR-0013 Option B).
  *
- * T2.1a: read routes (open on loopback, no auth).
+ * T2.1a: read routes — GET /memory/threads + GET /memory/thread/:id, bearer-token gated
+ *   (ADR-0013 read-token rider / spec §3.5 Option A end-state; 401 on missing/bad token).
  * T2.1c: write routes — POST /memory/edit + POST /memory/forget, bearer-token gated.
- * GET /history.html is T2.2a (not built yet).
+ * GET /history.html is T2.2a: static shell open on loopback (Host-guard only); all data
+ *   rendering is gated in-page (token in a JS var, paste-UX).
  *
  * ctx is FIXED server-side for all write routes: { actor: "user", authored_by: "human" }.
  * Every HTTP-originated mutation is treated as a human operator action (the point of the
@@ -54,24 +56,15 @@ export async function handleMemoryHttp(
 ): Promise<Response> {
   const { pathname } = url;
 
-  // GET /memory/threads
+  // GET /memory/threads — token-gated read (ADR-0013 Option A end-state; spec §3.5)
   if (pathname === "/memory/threads" && req.method === "GET") {
-    const threads = deps.store.listThreads();
-    return Response.json({ threads });
+    return handleThreads(req, url, deps);
   }
 
-  // GET /memory/thread/:id
+  // GET /memory/thread/:id — token-gated read
   const threadMatch = pathname.match(/^\/memory\/thread\/(.+)$/);
   if (threadMatch && req.method === "GET") {
-    let id: string;
-    try {
-      id = decodeURIComponent(threadMatch[1]!);
-    } catch {
-      // Malformed percent-sequence in thread-id (e.g. "%ZZ") → reject before touching store.
-      return Response.json({ error: "bad_target_shape" }, { status: 400 });
-    }
-    const result = await deps.hatch.view(id);
-    return Response.json(result);
+    return handleThread(req, url, threadMatch[1]!, deps);
   }
 
   // POST /memory/forget — token-gated (ADR-0013 Option B)
@@ -95,12 +88,46 @@ export async function handleMemoryHttp(
   return new Response("Not Found", { status: 404 });
 }
 
+// ─── Read route helpers (token-gated; ADR-0013 Option A end-state) ───────────
+
+function rejectRead(url: URL): Response {
+  // spec §3.8: log path + reason, NEVER the credential value (DoD: no token in logs).
+  console.error("[memory-http] read rejected:", { path: url.pathname, reason: "bad-or-missing-token" });
+  return Response.json({ error: "Unauthorized" }, { status: 401 });
+}
+
+function handleThreads(req: Request, url: URL, deps: MemoryHttpDeps): Response {
+  if (!deps.tokenStore.verify(req.headers.get("authorization"))) return rejectRead(url);
+  const threads = deps.store.listThreads();
+  return Response.json({ threads });
+}
+
+async function handleThread(
+  req: Request,
+  url: URL,
+  rawId: string,
+  deps: MemoryHttpDeps,
+): Promise<Response> {
+  // Decode guard FIRST so a malformed target → 400 regardless of auth (preserves the
+  // tokenless %ZZ guard test; the target shape is not a secret).
+  let id: string;
+  try {
+    id = decodeURIComponent(rawId);
+  } catch {
+    // Malformed percent-sequence in thread-id (e.g. "%ZZ") → reject before touching store.
+    return Response.json({ error: "bad_target_shape" }, { status: 400 });
+  }
+  if (!deps.tokenStore.verify(req.headers.get("authorization"))) return rejectRead(url);
+  const result = await deps.hatch.view(id);
+  return Response.json(result);
+}
+
 // ─── Write route helpers ──────────────────────────────────────────────────────
 
 async function handleForget(req: Request, deps: MemoryHttpDeps): Promise<Response> {
-  // Token gate (ADR-0013 Option B — writes require bearer token)
+  // Token gate (ADR-0013 Option A end-state — writes require bearer token; harmonized to 401)
   if (!deps.tokenStore.verify(req.headers.get("authorization"))) {
-    return Response.json({ error: "Unauthorized" }, { status: 403 });
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   // Parse + validate body
@@ -124,9 +151,9 @@ async function handleForget(req: Request, deps: MemoryHttpDeps): Promise<Respons
 }
 
 async function handleEdit(req: Request, deps: MemoryHttpDeps): Promise<Response> {
-  // Token gate (ADR-0013 Option B — writes require bearer token)
+  // Token gate (ADR-0013 Option A end-state — writes require bearer token; harmonized to 401)
   if (!deps.tokenStore.verify(req.headers.get("authorization"))) {
-    return Response.json({ error: "Unauthorized" }, { status: 403 });
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   // Parse + validate body

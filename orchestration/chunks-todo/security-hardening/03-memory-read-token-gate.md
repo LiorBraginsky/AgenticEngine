@@ -1,6 +1,6 @@
 # Chunk 03: Token-gate `/memory/*` reads + history.html paste-extend (ADR-0013 rider)
 
-**Status:** todo
+**Status:** in-progress
 **Created:** 2026-06-12
 **Phase:** Security hardening pass (pre-public-release gate)
 **Estimated size:** ~0.5–1 day

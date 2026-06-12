@@ -41,6 +41,7 @@ function makeTextClient(replyText: string): FakeClient {
 const { createAnthropicApiProvider } = await import(
   "./anthropic-api-provider.js"
 );
+const { _resetMemo } = await import("../secrets/cloud-secrets.js");
 
 const SESSION_START_INBOUND: Extract<ProviderInput, { type: "session_start" }> =
   {
@@ -263,7 +264,8 @@ describe("missing/empty apiKey", () => {
 
     if (!result!.ok) {
       expect(result!.error.kind).toBe("provider_failure");
-      expect(result!.error.detail).toContain("ANTHROPIC_API_KEY not set");
+      // Detail is the loud named form: mentions ANTHROPIC_API_KEY and the empty-key condition
+      expect(result!.error.detail).toContain("ANTHROPIC_API_KEY");
     }
 
     // outbound: [session_ack, session_end{error}]
@@ -285,22 +287,17 @@ describe("missing/empty apiKey", () => {
 
 // ── (v) regression: lazy getClient() receives the RESOLVED key, not "" ────
 //
-// This test exercises the path where opts.apiKey is undefined but
-// ANTHROPIC_API_KEY is present in the environment.  The pre-fix code called
-// new Anthropic({ apiKey: opts.apiKey ?? "" }) — i.e. always "" — which made
-// the SDK throw a plain Error("Could not resolve authentication method…")
-// that classifyAnthropicError masked as "provider unavailable".
-//
-// Post-fix: getClient(resolvedKey) passes the same key the guard resolved,
-// so the clientFactory spy receives the real, non-empty key.
+// This test exercises the path where opts.apiKey is undefined but the resolver
+// returns a key from the Keychain (injected via resolverOpts.keychainGet).
+// Pre-fix: getClient() was called with "" because opts.apiKey was always used.
+// Post-fix: getClient(resolvedKey) passes the key from the resolver (Keychain or .env).
 
 describe("lazy getClient() path: resolved key reaches client construction", () => {
-  test("clientFactory is called with the env key, not empty string", async () => {
+  test("clientFactory is called with the resolved key, not empty string", async () => {
     const FAKE_KEY = "sk-ant-regression-test-key";
 
-    // Save and inject ANTHROPIC_API_KEY into the process env
-    const prior = process.env.ANTHROPIC_API_KEY;
-    process.env.ANTHROPIC_API_KEY = FAKE_KEY;
+    // Reset the secrets memo so the injected getter runs fresh
+    _resetMemo();
 
     let factoryCalledWith: string | undefined;
 
@@ -313,34 +310,33 @@ describe("lazy getClient() path: resolved key reaches client construction", () =
       },
     };
 
-    try {
-      const provider = createAnthropicApiProvider({
-        // deliberately NO apiKey — production singleton pattern
-        clientFactory: (apiKey: string) => {
-          factoryCalledWith = apiKey;
-          return stubClient as never;
-        },
-      });
+    const provider = createAnthropicApiProvider({
+      // deliberately NO apiKey — production singleton pattern
+      clientFactory: (apiKey: string) => {
+        factoryCalledWith = apiKey;
+        return stubClient as never;
+      },
+      // Inject a fake Keychain getter so no shell-out occurs
+      resolverOpts: {
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        keychainGet: (_s, _a) => ({ ok: true, value: FAKE_KEY }),
+      },
+    });
 
-      const result = await provider.advance(undefined, SESSION_START_INBOUND);
+    const result = await provider.advance(undefined, SESSION_START_INBOUND);
 
-      // The factory must have been invoked with the real resolved key
-      expect(factoryCalledWith).toBe(FAKE_KEY);
-      expect(factoryCalledWith).not.toBe("");
+    // The factory must have been invoked with the real resolved key
+    expect(factoryCalledWith).toBe(FAKE_KEY);
+    expect(factoryCalledWith).not.toBe("");
 
-      // And the advance must succeed end-to-end
-      expect(result.ok).toBe(true);
-      if (result.ok) {
-        expect(result.finalText).toBe("hi there");
-      }
-    } finally {
-      // Restore env regardless of test outcome
-      if (prior === undefined) {
-        delete process.env.ANTHROPIC_API_KEY;
-      } else {
-        process.env.ANTHROPIC_API_KEY = prior;
-      }
+    // And the advance must succeed end-to-end
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.finalText).toBe("hi there");
     }
+
+    // Reset memo after test
+    _resetMemo();
   });
 });
 

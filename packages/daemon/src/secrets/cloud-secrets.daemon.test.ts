@@ -1,5 +1,5 @@
 /**
- * Real-I/O Keychain round-trip test (Step 6a — DoD #2).
+ * Real-I/O Keychain round-trip test.
  *
  * NO mocks. Writes a key to the real macOS Keychain, reads it back via
  * resolveAnthropicKey(), asserts round-trip, and cleans up.
@@ -18,15 +18,14 @@
  * the test skips with a clear reason rather than hard-failing. The real login
  * Keychain is unavailable in headless CI environments (no login session).
  *
- * ─── Injection seam used ─────────────────────────────────────────────────
- * resolveAnthropicKey accepts a ResolveOpts.keychainGet override. The test
- * injects a custom keychainGet that reads from the test service/account pair
- * (NOT from the production pair). This keeps the test isolated without
- * modifying the production default pair.
+ * ─── Production classifier is under test ─────────────────────────────────
+ * resolveAnthropicKey is called WITHOUT a keychainGet override — it runs the
+ * PRODUCTION keychainGetMacOS classifier against real /usr/bin/security output.
+ * The service/account override seam (ResolveOpts.service/account) lets us target
+ * the test namespace without touching the production pair.
  */
 import { describe, test, expect, afterEach } from "bun:test";
 import { _resetMemo } from "./cloud-secrets.js";
-import type { KeychainResult } from "./cloud-secrets.js";
 import { resolveAnthropicKey } from "./cloud-secrets.js";
 
 // ── Test constants ─────────────────────────────────────────────────────────
@@ -80,44 +79,6 @@ function keychainDelete(service: string, account: string): void {
   }
 }
 
-/**
- * Read a password from the Keychain. Returns the raw KeychainResult.
- * Used as the injectable keychainGet for resolveAnthropicKey so we can
- * resolve from the TEST service/account pair without touching the production pair.
- */
-function makeTestKeychainGet(service: string, account: string): () => KeychainResult {
-  return () => {
-    try {
-      const proc = Bun.spawnSync(
-        ["/usr/bin/security", "find-generic-password", "-s", service, "-a", account, "-w"],
-        { stderr: "pipe" },
-      );
-      if (proc.exitCode === 0) {
-        const raw = new TextDecoder().decode(proc.stdout).trim();
-        if (raw.length > 0) return { ok: true, value: raw };
-        return { ok: false, reason: "missing" };
-      }
-      const stderr = new TextDecoder().decode(proc.stderr).trim().toLowerCase();
-      if (
-        stderr.includes("could not be found") ||
-        stderr.includes("errsecitemnotfound")
-      ) {
-        return { ok: false, reason: "missing" };
-      }
-      if (
-        stderr.includes("user interaction not allowed") ||
-        stderr.includes("acl") ||
-        stderr.includes("denied")
-      ) {
-        return { ok: false, reason: "acl_denied" };
-      }
-      return { ok: false, reason: "acl_denied" };
-    } catch {
-      return { ok: false, reason: "cli_not_found" };
-    }
-  };
-}
-
 // ── Lifecycle ─────────────────────────────────────────────────────────────
 
 // Track per-test account so afterEach can clean up
@@ -133,8 +94,8 @@ afterEach(() => {
 
 // ── Tests ──────────────────────────────────────────────────────────────────
 
-describe("Keychain real-I/O round-trip (agentic-engine-test)", () => {
-  test("write → resolveAnthropicKey → value round-trips; source='keychain'", () => {
+describe("Keychain real-I/O round-trip via production classifier (agentic-engine-test)", () => {
+  test("write → resolveAnthropicKey (production keychainGetMacOS) → value round-trips; source='keychain'", () => {
     // Use a unique account per run to avoid test-pollution between parallel runs
     const testAccount = crypto.randomUUID();
     currentTestAccount = testAccount;
@@ -171,10 +132,13 @@ describe("Keychain real-I/O round-trip (agentic-engine-test)", () => {
       return;
     }
 
-    // ── Write succeeded — now resolve via the module ─────────────────────────
-    // Inject a custom keychainGet that reads from the TEST pair (not the prod pair).
-    const testGet = makeTestKeychainGet(TEST_SERVICE, testAccount);
-    const result = resolveAnthropicKey({ keychainGet: testGet });
+    // ── Write succeeded — resolve via the PRODUCTION classifier ──────────────
+    // NO keychainGet override — production keychainGetMacOS runs against real
+    // /usr/bin/security output. service/account override targets the test namespace.
+    const result = resolveAnthropicKey({
+      service: TEST_SERVICE,
+      account: testAccount,
+    });
 
     // ── Assertions ────────────────────────────────────────────────────────────
     expect(result.ok).toBe(true);
@@ -186,7 +150,7 @@ describe("Keychain real-I/O round-trip (agentic-engine-test)", () => {
     }
   });
 
-  test("deleted item → resolveAnthropicKey returns ok:false with reason='missing'", () => {
+  test("deleted item → production keychainGetMacOS classifies real errSecItemNotFound as reason='missing'", () => {
     const testAccount = crypto.randomUUID();
     currentTestAccount = testAccount;
 
@@ -214,9 +178,12 @@ describe("Keychain real-I/O round-trip (agentic-engine-test)", () => {
     keychainDelete(TEST_SERVICE, testAccount);
     currentTestAccount = ""; // afterEach needn't re-delete
 
-    // Resolve should report missing
-    const testGet = makeTestKeychainGet(TEST_SERVICE, testAccount);
-    const result = resolveAnthropicKey({ keychainGet: testGet });
+    // Resolve should report missing — exercises the production classifier against
+    // a real "SecKeychainSearchCopyNext: The specified item could not be found" stderr.
+    const result = resolveAnthropicKey({
+      service: TEST_SERVICE,
+      account: testAccount,
+    });
 
     expect(result.ok).toBe(false);
     if (!result.ok) {

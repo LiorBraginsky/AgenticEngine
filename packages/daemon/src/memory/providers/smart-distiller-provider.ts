@@ -114,8 +114,6 @@ export interface DigestResult {
  *
  * Per-thread: if the surviving message count > M, take the LAST M and
  * emit a loud console.warn. NEVER silently drop the whole thread.
- *
- * Tracks validProvenanceIds: all message ids that made it into the digest.
  */
 export function buildDigest(store: MemoryStore): DigestResult {
   const threads = store.listThreads();

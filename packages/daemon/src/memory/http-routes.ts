@@ -54,24 +54,15 @@ export async function handleMemoryHttp(
 ): Promise<Response> {
   const { pathname } = url;
 
-  // GET /memory/threads
+  // GET /memory/threads — token-gated read (ADR-0013 Option A end-state; spec §3.5)
   if (pathname === "/memory/threads" && req.method === "GET") {
-    const threads = deps.store.listThreads();
-    return Response.json({ threads });
+    return handleThreads(req, url, deps);
   }
 
-  // GET /memory/thread/:id
+  // GET /memory/thread/:id — token-gated read
   const threadMatch = pathname.match(/^\/memory\/thread\/(.+)$/);
   if (threadMatch && req.method === "GET") {
-    let id: string;
-    try {
-      id = decodeURIComponent(threadMatch[1]!);
-    } catch {
-      // Malformed percent-sequence in thread-id (e.g. "%ZZ") → reject before touching store.
-      return Response.json({ error: "bad_target_shape" }, { status: 400 });
-    }
-    const result = await deps.hatch.view(id);
-    return Response.json(result);
+    return handleThread(req, url, threadMatch[1]!, deps);
   }
 
   // POST /memory/forget — token-gated (ADR-0013 Option B)
@@ -93,6 +84,40 @@ export async function handleMemoryHttp(
 
   // All other /memory/* paths fall through to 404.
   return new Response("Not Found", { status: 404 });
+}
+
+// ─── Read route helpers (token-gated; ADR-0013 Option A end-state) ───────────
+
+function rejectRead(url: URL): Response {
+  // spec §3.8: log path + reason, NEVER the credential value (DoD: no token in logs).
+  console.error("[memory-http] read rejected:", { path: url.pathname, reason: "bad-or-missing-token" });
+  return Response.json({ error: "Unauthorized" }, { status: 401 });
+}
+
+function handleThreads(req: Request, url: URL, deps: MemoryHttpDeps): Response {
+  if (!deps.tokenStore.verify(req.headers.get("authorization"))) return rejectRead(url);
+  const threads = deps.store.listThreads();
+  return Response.json({ threads });
+}
+
+async function handleThread(
+  req: Request,
+  url: URL,
+  rawId: string,
+  deps: MemoryHttpDeps,
+): Promise<Response> {
+  // Decode guard FIRST so a malformed target → 400 regardless of auth (preserves the
+  // tokenless %ZZ guard test; the target shape is not a secret).
+  let id: string;
+  try {
+    id = decodeURIComponent(rawId);
+  } catch {
+    // Malformed percent-sequence in thread-id (e.g. "%ZZ") → reject before touching store.
+    return Response.json({ error: "bad_target_shape" }, { status: 400 });
+  }
+  if (!deps.tokenStore.verify(req.headers.get("authorization"))) return rejectRead(url);
+  const result = await deps.hatch.view(id);
+  return Response.json(result);
 }
 
 // ─── Write route helpers ──────────────────────────────────────────────────────

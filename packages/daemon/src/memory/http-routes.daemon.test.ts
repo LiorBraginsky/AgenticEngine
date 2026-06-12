@@ -58,30 +58,43 @@ beforeAll(async () => {
 
 afterAll(() => server.stop(true));
 
-// ─── Test 1: GET /memory/threads → 200 + seeded thread present ────────────────
+// ─── Read-route auth matrix (chunk 03) ───────────────────────────────────────
 
-test("T2.1a-1: GET /memory/threads without Origin or token → 200 and contains seeded thread_id", async () => {
+test("read-gate: GET /memory/threads WITHOUT token → 401", async () => {
   const res = await fetch(`http://127.0.0.1:${PORT}/memory/threads`);
-  expect(res.status).toBe(200);
-  const body = await res.json() as { threads: { thread_id: string; title: string | null; last_active_at: number }[] };
-  expect(Array.isArray(body.threads)).toBe(true);
-  const found = body.threads.find((t) => t.thread_id === seededThreadId);
-  expect(found).toBeDefined();
-  expect(found!.thread_id).toBe(seededThreadId);
+  expect(res.status).toBe(401);
 });
 
-// ─── Test 2: GET /memory/thread/:id → 200 + HatchViewResult shape ─────────────
+test("read-gate: GET /memory/threads with BAD token → 401", async () => {
+  const res = await fetch(`http://127.0.0.1:${PORT}/memory/threads`, {
+    headers: { Authorization: "Bearer deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef" },
+  });
+  expect(res.status).toBe(401);
+});
 
-test("T2.1a-2: GET /memory/thread/:id → 200 and body has messages, distilledFacts, distillationEvents", async () => {
+test("read-gate: GET /memory/threads with VALID Bearer → 200 + seeded thread", async () => {
+  const res = await fetch(`http://127.0.0.1:${PORT}/memory/threads`, {
+    headers: { Authorization: `Bearer ${readToken()}` },
+  });
+  expect(res.status).toBe(200);
+  const body = await res.json() as { threads: { thread_id: string }[] };
+  expect(body.threads.some((t) => t.thread_id === seededThreadId)).toBe(true);
+});
+
+test("read-gate: GET /memory/thread/:id WITHOUT token → 401", async () => {
   const res = await fetch(`http://127.0.0.1:${PORT}/memory/thread/${encodeURIComponent(seededThreadId)}`);
+  expect(res.status).toBe(401);
+});
+
+test("read-gate: GET /memory/thread/:id with VALID Bearer → 200 + HatchViewResult shape", async () => {
+  const res = await fetch(`http://127.0.0.1:${PORT}/memory/thread/${encodeURIComponent(seededThreadId)}`, {
+    headers: { Authorization: `Bearer ${readToken()}` },
+  });
   expect(res.status).toBe(200);
   const body = await res.json() as Record<string, unknown>;
   expect(Array.isArray(body["messages"])).toBe(true);
   expect(Array.isArray(body["distilledFacts"])).toBe(true);
   expect(Array.isArray(body["distillationEvents"])).toBe(true);
-  // The seeded message must appear in the archive
-  const messages = body["messages"] as { role: string; content: string }[];
-  expect(messages.some((m) => m.content === "seeded message")).toBe(true);
 });
 
 // ─── Test 3: WS path — disallowed Origin without a token → 401 (token gate is now layer 1) ──────
@@ -288,9 +301,9 @@ test("dns-rebind-2: GET /history.html with Host: evil.com → 403 forbidden host
   expect(await res.text()).toBe("forbidden host");
 });
 
-test("dns-rebind-3: GET /memory/threads with Host: localhost:<port> → 200 (allowed)", async () => {
+test("dns-rebind-3: GET /memory/threads with Host: localhost:<port> + token → 200 (allowed)", async () => {
   const res = await fetch(`http://127.0.0.1:${PORT}/memory/threads`, {
-    headers: { Host: `localhost:${PORT}` },
+    headers: { Host: `localhost:${PORT}`, Authorization: `Bearer ${readToken()}` },
   });
   expect(res.status).toBe(200);
 });

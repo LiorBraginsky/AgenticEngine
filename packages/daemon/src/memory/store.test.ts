@@ -717,3 +717,120 @@ test("v2-02 fetchCandidates returns at most CANDIDATE_TOP_K rows and tolerates p
   expect(candidates.length).toBeGreaterThan(0);
   store.close();
 });
+
+// ── v2-02: Task 5 — count-equality SYNC GATE (one test per delete path) + mutation marker ──
+
+function assertDerivedInSync(store: MemoryStore): void {
+  const db = store.rawDb();
+  const dfCount = (db.query("SELECT COUNT(*) AS n FROM distilled_facts").get() as { n: number }).n;
+  const ftsCount = (db.query("SELECT COUNT(*) AS n FROM fact_fts").get() as { n: number }).n;
+  expect(ftsCount).toBe(dfCount);
+  const orphans = (db.query(
+    "SELECT COUNT(*) AS n FROM fact_topics WHERE fact_id NOT IN (SELECT id FROM distilled_facts)",
+  ).get() as { n: number }).n;
+  expect(orphans).toBe(0);
+}
+
+function seedTwoFacts(store: MemoryStore): { a: string; b: string } {
+  const a = store.insertFact({ fact: "fact A", canonical: "fact a", provenance: "thread:tA",
+    scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: ["x"] }, "smart-v2");
+  const b = store.insertFact({ fact: "fact B", canonical: "fact b", provenance: "thread:tB",
+    scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: ["y", "z"] }, "smart-v2");
+  return { a, b };
+}
+
+test("v2-02 SYNC GATE: deleteFactById keeps fact_fts == distilled_facts, no orphan topics", () => {
+  const { store } = freshStore();
+  const { a } = seedTwoFacts(store);
+  store.deleteFactById(a);
+  assertDerivedInSync(store);
+  store.close();
+});
+
+test("v2-02 SYNC GATE: dropDistilledFactsByProvenance keeps derived tables in sync", () => {
+  const { store } = freshStore();
+  seedTwoFacts(store);
+  store.dropDistilledFactsByProvenance("thread:tA");
+  assertDerivedInSync(store);
+  store.close();
+});
+
+test("v2-02 SYNC GATE: dropDistilledFactsForThread keeps derived tables in sync", () => {
+  const { store } = freshStore();
+  seedTwoFacts(store);
+  store.dropDistilledFactsForThread("tB");
+  assertDerivedInSync(store);
+  store.close();
+});
+
+test("v2-02 SYNC GATE: dropAllDistilledFacts (migration wipe) keeps derived tables in sync", () => {
+  const { store } = freshStore();
+  seedTwoFacts(store);
+  store.dropAllDistilledFacts();
+  assertDerivedInSync(store);
+  store.close();
+});
+
+test("v2-02 SYNC GATE: purgeLiveMachineFactsByForget keeps derived tables in sync", () => {
+  const { store } = freshStore();
+  const { a } = seedTwoFacts(store);
+  store.purgeLiveMachineFactsByForget("thread:tA", "no-text-match");
+  assertDerivedInSync(store);
+  expect(store.rawDb().query("SELECT 1 FROM distilled_facts WHERE id = ?").get(a)).toBeNull();
+  store.close();
+});
+
+test("v2-02 SYNC GATE: updateFactById REPLACE leaves exactly one fact_fts row (no desync)", () => {
+  const { store } = freshStore();
+  const { a } = seedTwoFacts(store);
+  store.updateFactById(a, { fact: "fact A2", canonical: "fact a2", confidence: 1, topics: ["x", "w"] },
+    { actor: "machine", reason: "test" }, "smart-v2");
+  assertDerivedInSync(store);
+  store.close();
+});
+
+test("v2-02 mutation marker: appendMessages bumps marker; bumpThreadMarker also bumps", () => {
+  const { store } = freshStore();
+  const t = store.createThread();
+  expect(store.readThreadMarker(t)).toBe(0);
+  store.appendMessages(t, [{ role: "user", content: "hi" }], "s1");
+  expect(store.readThreadMarker(t)).toBe(1);
+  store.appendMessages(t, [{ role: "user", content: "again" }], "s2");
+  expect(store.readThreadMarker(t)).toBe(2);
+  store.bumpThreadMarker(t); // simulates the edit/forget bump site
+  expect(store.readThreadMarker(t)).toBe(3);
+  store.close();
+});
+
+test("v2-02 distilled_through: advanceDistilledThrough records the marker the distiller covered", () => {
+  const { store } = freshStore();
+  const t = store.createThread();
+  store.appendMessages(t, [{ role: "user", content: "hi" }], "s1");
+  store.advanceDistilledThrough(t, store.readThreadMarker(t));
+  const state = store.readThreadDistillState(t);
+  expect(state.marker).toBe(1);
+  expect(state.distilled_through).toBe(1);
+  store.close();
+});
+
+test("v2-02 write-gate integration: edit bumps the thread marker", () => {
+  const { store } = freshStore();
+  const gate = new WriteGate(store, new RuleBasedScanner());
+  const t = store.createThread();
+  const [mid] = store.appendMessages(t, [{ role: "user", content: "original" }], "s1");
+  const markerAfterAppend = store.readThreadMarker(t);
+  gate.edit(mid!, "revised content", { actor: "user", authored_by: "human" });
+  expect(store.readThreadMarker(t)).toBe(markerAfterAppend + 1);
+  store.close();
+});
+
+test("v2-02 write-gate integration: forget bumps the thread marker", () => {
+  const { store } = freshStore();
+  const gate = new WriteGate(store, new RuleBasedScanner());
+  const t = store.createThread();
+  const [mid] = store.appendMessages(t, [{ role: "user", content: "to forget" }], "s1");
+  const markerAfterAppend = store.readThreadMarker(t);
+  gate.forget(mid!, { actor: "user", authored_by: "human" });
+  expect(store.readThreadMarker(t)).toBe(markerAfterAppend + 1);
+  store.close();
+});

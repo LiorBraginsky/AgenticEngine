@@ -194,6 +194,12 @@ export class MemoryStore {
         this.mirror(threadId, { event: "message", id, turn_index: base + i, role: m.role, content: m.content, session_id: sessionId, created_at: now });
       });
       this.db.query("UPDATE threads SET last_active_at = ? WHERE thread_id = ?").run(now, threadId);
+      // v2-02: bump the per-thread mutation marker atomically with the message insert
+      // (NOT tied to last_active_at — the marker tracks ALL mutations: append/edit/forget)
+      this.db.query(
+        `INSERT INTO thread_distill_state (thread_id, marker, distilled_through) VALUES (?, 1, 0)
+         ON CONFLICT(thread_id) DO UPDATE SET marker = marker + 1`,
+      ).run(threadId);
     });
     tx();
     return ids;

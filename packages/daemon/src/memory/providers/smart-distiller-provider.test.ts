@@ -37,6 +37,8 @@ import {
   normalizeFactText,
   SMART_SYSTEM_PROMPT,
   SMART_DELTA_SYSTEM_PROMPT,
+  parseOps,
+  parseFacts,
 } from "./smart-distiller-provider.js";
 import { REMEMBERED_LABEL } from "../../providers/system-prompt.js";
 import type { Anthropic } from "@anthropic-ai/sdk";
@@ -498,6 +500,118 @@ test("SmartDistillerProvider.retrieve skips tombstoned fact provenances (defense
 // The isForgottenNormalizedText filter in retrieve() was removed in v2-04:
 // under durable-delete, forgotten facts are gone from distilled_facts — the
 // purge window that the backstop defended no longer exists.
+
+// ── v2-06 D: robust JSON-array extraction — parseOps + parseFacts wrapper tolerance ──────────
+//
+// Real-Haiku non-deterministically wraps its JSON output in fences, single-backticks,
+// prose preambles, or trailing prose, DESPITE the prompt forbidding it.
+// The current anchored-only strip (`/^```(?:json)?\s*/i` + `/\s*```\s*$/`) only handles
+// an exactly-anchored triple-fence; everything else falls through to JSON.parse → throws.
+// Fix: extractJsonArray(raw) — locate first `[` and last `]`, slice — strips any wrapper.
+
+describe("v2-06 D — robust JSON-array extraction (parseOps)", () => {
+  const goodOp = { op: "new", fact: "Test fact", canonical: "test fact", topics: ["#about-user"] };
+  const goodOpsJson = JSON.stringify([goodOp]);
+
+  // ── Regression-lock: anchored triple-fence still works after fix ──────────
+  test("anchored triple-fence ```json\\n[...]\\n``` — still parsed correctly", () => {
+    const wrapped = "```json\n" + goodOpsJson + "\n```";
+    const ops = parseOps(wrapped);
+    expect(ops).toHaveLength(1);
+    expect(ops[0]!.fact).toBe("Test fact");
+  });
+
+  // ── v2-06 RED cases — fail on current anchored-only strip ────────────────
+
+  test("leading single-backtick before array — tolerantly extracted", () => {
+    // e.g. "`[{\"op\":\"new\",...}]`" — real LLM inline-backtick wrapping
+    const wrapped = "`" + goodOpsJson + "`";
+    const ops = parseOps(wrapped);
+    expect(ops).toHaveLength(1);
+    expect(ops[0]!.fact).toBe("Test fact");
+  });
+
+  test("prose preamble before array — tolerantly extracted", () => {
+    // e.g. "Here are the ops:\n[{...}]"
+    const wrapped = "Here are the ops:\n" + goodOpsJson;
+    const ops = parseOps(wrapped);
+    expect(ops).toHaveLength(1);
+    expect(ops[0]!.fact).toBe("Test fact");
+  });
+
+  test("array then trailing prose — tolerantly extracted", () => {
+    // e.g. "[{...}]\n\nLet me know if you need anything else."
+    const wrapped = goodOpsJson + "\n\nLet me know if you need anything else.";
+    const ops = parseOps(wrapped);
+    expect(ops).toHaveLength(1);
+    expect(ops[0]!.fact).toBe("Test fact");
+  });
+
+  test("clean bare array — unchanged (baseline, must still work)", () => {
+    const ops = parseOps(goodOpsJson);
+    expect(ops).toHaveLength(1);
+    expect(ops[0]!.fact).toBe("Test fact");
+  });
+
+  test("genuinely non-array / non-JSON body — still throws SmartDistillError", () => {
+    // regression-lock: a truly bad response still throws (never silently drops)
+    expect(() => parseOps("This is not JSON at all!")).toThrow(SmartDistillError);
+  });
+
+  test("non-array JSON object body — still throws SmartDistillError (non-array)", () => {
+    // {"op":"new"} is valid JSON but not an array → throw
+    expect(() => parseOps('{"op":"new","fact":"x"}')).toThrow(SmartDistillError);
+  });
+});
+
+describe("v2-06 D — robust JSON-array extraction (parseFacts)", () => {
+  const goodFact = {
+    fact: "User lives in Tel Aviv",
+    provenance: "thread:abc",
+    scope: "cross-thread",
+    expiry: null,
+    confidence: 0.9,
+  };
+  const goodFactsJson = JSON.stringify([goodFact]);
+
+  test("anchored triple-fence ```json\\n[...]\\n``` — still parsed correctly", () => {
+    const wrapped = "```json\n" + goodFactsJson + "\n```";
+    const facts = parseFacts(wrapped);
+    expect(facts).toHaveLength(1);
+    expect(facts[0]!.fact).toBe("User lives in Tel Aviv");
+  });
+
+  test("leading single-backtick before array — tolerantly extracted", () => {
+    const wrapped = "`" + goodFactsJson + "`";
+    const facts = parseFacts(wrapped);
+    expect(facts).toHaveLength(1);
+    expect(facts[0]!.fact).toBe("User lives in Tel Aviv");
+  });
+
+  test("prose preamble before array — tolerantly extracted", () => {
+    const wrapped = "Here are the facts I found:\n" + goodFactsJson;
+    const facts = parseFacts(wrapped);
+    expect(facts).toHaveLength(1);
+    expect(facts[0]!.fact).toBe("User lives in Tel Aviv");
+  });
+
+  test("array then trailing prose — tolerantly extracted", () => {
+    const wrapped = goodFactsJson + "\n\nLet me know if you need anything else.";
+    const facts = parseFacts(wrapped);
+    expect(facts).toHaveLength(1);
+    expect(facts[0]!.fact).toBe("User lives in Tel Aviv");
+  });
+
+  test("clean bare array — unchanged (baseline, must still work)", () => {
+    const facts = parseFacts(goodFactsJson);
+    expect(facts).toHaveLength(1);
+    expect(facts[0]!.fact).toBe("User lives in Tel Aviv");
+  });
+
+  test("genuinely non-array / non-JSON body — still throws SmartDistillError", () => {
+    expect(() => parseFacts("This is not JSON at all!")).toThrow(SmartDistillError);
+  });
+});
 
 // ── normalizeFactText unit tests ───────────────────────────────────────────
 

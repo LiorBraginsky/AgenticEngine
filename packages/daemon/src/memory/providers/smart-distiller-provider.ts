@@ -216,10 +216,38 @@ export function buildDigest(store: MemoryStore): DigestResult {
 // ── Parse contract (D10 — defensive) ──────────────────────────────────────
 
 /**
+ * Extract the JSON array substring from raw LLM output, tolerating any wrapper.
+ *
+ * v2-06 D — real LLM non-deterministically wraps its JSON array in markdown
+ * fences (any backtick count), inline single-backticks, prose preambles, or
+ * trailing prose DESPITE the prompt forbidding it. The anchored-fence strip
+ * only handles an exactly-anchored triple-fence; any other wrapper falls
+ * through to JSON.parse → throws.
+ *
+ * Strategy: locate the FIRST '[' and the LAST ']'; if both exist and first < last,
+ * return raw.slice(first, last+1). This strips fences of any backtick count,
+ * language tags, leading prose, and trailing prose in one move.
+ * If no '[' ... ']' bracket pair is found, return the trimmed input so the
+ * existing "not valid JSON" / "not an array" SmartDistillError still fires for
+ * genuinely-bad output — the never-drop failure path is preserved.
+ */
+export function extractJsonArray(raw: string): string {
+  const trimmed = raw.trim();
+  const first = trimmed.indexOf("[");
+  const last = trimmed.lastIndexOf("]");
+  if (first !== -1 && last !== -1 && first < last) {
+    return trimmed.slice(first, last + 1);
+  }
+  // No bracket pair found — return as-is so the caller's JSON.parse throws
+  return trimmed;
+}
+
+/**
  * Parse the raw LLM response into DistilledFact[].
  *
  * Defensive steps:
- *   1. Strip optional ```json ... ``` fence.
+ *   1. extractJsonArray: locate first '[' / last ']' to strip any wrapper
+ *      (fences, inline backticks, prose preamble/trailer — v2-06 D).
  *   2. JSON.parse in try/catch → throw SmartDistillError on failure.
  *   3. Assert top-level is an array → throw SmartDistillError if not.
  *   4. Per-element: validate shape; drop bad elements (one bad ≠ whole failure).
@@ -231,10 +259,8 @@ export function buildDigest(store: MemoryStore): DigestResult {
  * Returns [] (empty array) if all elements are malformed — acceptable (5b).
  */
 export function parseFacts(raw: string): DistilledFact[] {
-  // Step 1: strip optional ```json ... ``` fence (and bare ``` ... ``` fence)
-  let cleaned = raw.trim();
-  cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "");
-  cleaned = cleaned.trim();
+  // Step 1: extract JSON array (tolerates any wrapper shape — v2-06 D)
+  const cleaned = extractJsonArray(raw);
 
   // Step 2: JSON.parse
   let parsed: unknown;
@@ -298,7 +324,8 @@ export function parseFacts(raw: string): DistilledFact[] {
  * Parse the raw LLM response into FactOp[].
  *
  * Defensive steps:
- *   1. Strip optional ```json ... ``` fence.
+ *   1. extractJsonArray: locate first '[' / last ']' to strip any wrapper
+ *      (fences, inline backticks, prose preamble/trailer — v2-06 D).
  *   2. JSON.parse in try/catch → throw SmartDistillError on failure.
  *   3. Assert top-level is an array → throw SmartDistillError if not.
  *   4. Per-element: validate shape; drop malformed ops (one bad ≠ whole failure).
@@ -311,10 +338,8 @@ export function parseFacts(raw: string): DistilledFact[] {
  * Returns [] if all elements are malformed.
  */
 export function parseOps(raw: string): FactOp[] {
-  // Step 1: strip optional ```json ... ``` fence (and bare ``` ... ``` fence)
-  let cleaned = raw.trim();
-  cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "");
-  cleaned = cleaned.trim();
+  // Step 1: extract JSON array (tolerates any wrapper shape — v2-06 D)
+  const cleaned = extractJsonArray(raw);
 
   // Step 2: JSON.parse
   let parsed: unknown;

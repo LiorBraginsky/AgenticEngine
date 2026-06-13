@@ -1,6 +1,6 @@
 # Chunk v2-01: Self-concept "cannot self-forget" + language-preservation prompt
 
-**Status:** todo
+**Status:** in-progress
 **Created:** 2026-06-13
 **Phase:** memory-distiller-v2 (spec `docs/specs/2026-06-13-memory-distiller-v2.md` §3.6 D-V6d/D-V6e)
 **Estimated size:** ~0.5 day (prompt-only; ships value first, de-risks the series)

@@ -5,7 +5,7 @@ import { resolveAnthropicKey, type ResolveResult } from "../secrets/cloud-secret
 
 const REGISTRY = new Map<string, MemoryProvider>([
   ["dumb-tail", new DumbTailProvider()],
-  // fixed-marker retired in v2-03 (spec §6). Default stays dumb-tail; flip to smart is v2-05.
+  // fixed-marker retired in v2-03 (spec §6). Default IS "smart" as of the v2-05 cutover; keyless falls back to "dumb-tail" with a loud log.
 ]);
 
 /** Options accepted by buildMemoryProvider.

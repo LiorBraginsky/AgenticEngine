@@ -22,6 +22,8 @@ import type { SessionMessage } from "../../providers/provider.js";
 import { REDACTION_MARKER } from "../schema.js";
 import { REMEMBERED_LABEL } from "../../providers/system-prompt.js";
 import { resolveAnthropicKey, type ResolveOpts } from "../../secrets/cloud-secrets.js";
+// Re-exported from the shared module to avoid a store→provider import cycle.
+export { normalizeFactText } from "../normalize-fact-text.js";
 
 // ── Tunable constants (exported for unit tests) ────────────────────────────
 
@@ -62,7 +64,12 @@ export class SmartDistillError extends Error {
   }
 }
 
-// ── Text normalization (best-effort layer 2 — MITIGATION, not a guarantee) ─
+// ── Text normalization (re-exported from normalize-fact-text.ts) ─────────────
+//
+// The single canonical definition lives in memory/normalize-fact-text.ts to avoid
+// a store→provider import cycle (store.ts needs normalizeFactText for the
+// forgotten_facts primitives). All callers import from this file (the re-export
+// above keeps the public API address unchanged: "from ./smart-distiller-provider.js").
 //
 // Algorithm: NFKC → lowercase → strip REMEMBERED_LABEL prefix →
 //   collapse whitespace runs to one space + trim →
@@ -70,27 +77,6 @@ export class SmartDistillError extends Error {
 //
 // Conservative exact-after-normalize match. A generative distiller can defeat
 // this by rephrasing the fact. Never call this a hard guarantee.
-
-export function normalizeFactText(s: string): string {
-  // NFKC normalization (e.g. fi ligature → fi, full-width chars → ASCII)
-  let n = s.normalize("NFKC");
-  // Lowercase
-  n = n.toLowerCase();
-  // Strip REMEMBERED_LABEL prefix if present (lower-cased)
-  const label = REMEMBERED_LABEL.toLowerCase();
-  if (n.startsWith(label)) {
-    n = n.slice(label.length);
-  }
-  // Collapse whitespace runs to a single space and trim
-  n = n.replace(/\s+/g, " ").trim();
-  // Strip trailing sentence punctuation (. ! ? ; ,) repeatedly
-  n = n.replace(/[.!?;,]+$/, "");
-  // Strip surrounding quotes (single or double)
-  n = n.replace(/^["']+|["']+$/g, "");
-  // Final trim
-  n = n.trim();
-  return n;
-}
 
 // ── Digest builder (D8) ────────────────────────────────────────────────────
 

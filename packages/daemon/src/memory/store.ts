@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { SCHEMA_DDL, REDACTION_MARKER } from "./schema.js";
 import type { SessionMessage } from "../providers/provider.js";
 import type { DistilledFact } from "./memory-provider.js";
+import { normalizeFactText } from "./normalize-fact-text.js";
 
 export interface MemoryStoreOptions {
   /** Directory for the SQLite file + the threads/ JSONL mirror. */
@@ -14,6 +15,22 @@ export interface MemoryStoreOptions {
 export interface QuarantineMarkerInput {
   target_id: string;
   rule: string;
+}
+
+/** Minimal input to record a forgotten fact (chunk 04 — ADR-0015 decision 2). */
+export interface ForgottenFactInput {
+  raw_text: string;
+  provenance: string | null;
+  actor: string;
+  reason?: string;
+  authored_by: "human" | "machine";
+}
+
+/** Row returned by readForgottenFacts — the suppression layer's read surface. */
+export interface ForgottenFactRow {
+  normalized_text: string;
+  raw_text: string;
+  provenance: string | null;
 }
 
 interface TailRow {
@@ -189,40 +206,208 @@ export class MemoryStore {
       .all(limit) as DistilledFactRow[];
   }
 
+  // ---- chunk 04: forgotten_facts primitives (ADR-0015 decision 2/3) ----
+
+  /**
+   * Record a durable fact-forget entry in `forgotten_facts`.
+   * Keyed on `normalizeFactText(raw_text)` — the load-bearing match key for Layer-T.
+   * The provenance is stored as-forgotten for Layer-P (opportunistic) + audit.
+   * This is the FACT-suppression artifact — it NEVER touches `messages` or `mutations`.
+   */
+  recordForgottenFact(e: ForgottenFactInput): void {
+    const normalized = normalizeFactText(e.raw_text);
+    this.db
+      .query(
+        "INSERT INTO forgotten_facts (id, normalized_text, raw_text, provenance, actor, reason, authored_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      )
+      .run(
+        crypto.randomUUID(),
+        normalized,
+        e.raw_text,
+        e.provenance ?? null,
+        e.actor,
+        e.reason ?? null,
+        e.authored_by,
+        Date.now(),
+      );
+  }
+
+  /**
+   * Read all forgotten facts — used by the smart distiller's suppression layers.
+   * Returns normalized_text (Layer-T match key), raw_text (Layer-X nudge), provenance (Layer-P).
+   */
+  readForgottenFacts(): ForgottenFactRow[] {
+    return this.db
+      .query("SELECT normalized_text, raw_text, provenance FROM forgotten_facts")
+      .all() as ForgottenFactRow[];
+  }
+
+  /**
+   * Returns true if ANY forgotten_facts row has the given normalized text.
+   * Used by the smart distiller (Layer-T) and retrieve() backstop.
+   */
+  isForgottenNormalizedText(norm: string): boolean {
+    const row = this.db
+      .query("SELECT 1 FROM forgotten_facts WHERE normalized_text = ? LIMIT 1")
+      .get(norm);
+    return row !== null;
+  }
+
+  /**
+   * Remove all forgotten_facts rows with the given normalized text.
+   * Used by the un-forget mechanism (human re-authorship / edit clears the row).
+   * Returns the number of rows deleted.
+   */
+  clearForgottenByNormalizedText(norm: string): number {
+    const result = this.db
+      .query("DELETE FROM forgotten_facts WHERE normalized_text = ? RETURNING id")
+      .all(norm);
+    return result.length;
+  }
+
+  /**
+   * Purge live machine-authored distilled_facts whose provenance OR normalized fact text
+   * matches the given arguments (AND authored_by != 'human' — 5e guard).
+   *
+   * SQLite cannot call normalizeFactText in SQL, so the text match happens in code:
+   * read all machine rows, delete those that match by provenance OR by normalized text.
+   * Wrapped in one db.transaction for atomicity. Returns the count deleted.
+   *
+   * Both provenance match and text match are checked so a re-derived fact with a
+   * DIFFERENT provenance shape (unstable across re-projections) is still caught by text.
+   */
+  purgeLiveMachineFactsByForget(provenance: string, normalizedText: string): number {
+    const tx = this.db.transaction((): number => {
+      const candidates = this.db
+        .query("SELECT id, fact, provenance FROM distilled_facts WHERE authored_by != 'human'")
+        .all() as { id: string; fact: string; provenance: string }[];
+
+      const toDelete = candidates.filter(
+        (c) => c.provenance === provenance || normalizeFactText(c.fact) === normalizedText,
+      );
+
+      if (toDelete.length === 0) return 0;
+
+      // Delete by id (batch delete inside the same tx)
+      for (const row of toDelete) {
+        this.db.query("DELETE FROM distilled_facts WHERE id = ?").run(row.id);
+      }
+      return toDelete.length;
+    });
+    return tx();
+  }
+
+  /**
+   * Returns true if ANY human-authored distilled_fact has a normalized text matching `norm`.
+   * Used by Layer-T's 5e-aware filter: a human-pinned fact with the same text must NOT
+   * be suppressed (human precedence: D6 ▷ machine fact-forget record).
+   */
+  hasHumanFactWithNormalizedText(norm: string): boolean {
+    const rows = this.db
+      .query("SELECT id, fact FROM distilled_facts WHERE authored_by = 'human'")
+      .all() as { id: string; fact: string }[];
+    return rows.some((r) => normalizeFactText(r.fact) === norm);
+  }
+
+  /**
+   * Given a provenance string, return the set of origin thread ids.
+   * MINOR-1 helper (D-D): resolves comma-joined message-id provenances in code
+   * rather than via the m.id = df.provenance SQL join that fails for multi-source provenance.
+   *   - "thread:<id>"       → [id]
+   *   - "msgId1,msgId2,…"  → look up thread_id for each isMessageId component, dedupe
+   */
+  originThreadsForProvenance(provenance: string): string[] {
+    if (provenance.startsWith("thread:")) {
+      return [provenance.slice("thread:".length)];
+    }
+    const components = provenance
+      .split(",")
+      .map((p) => p.trim())
+      .filter((p) => isMessageId(p));
+    if (components.length === 0) return [];
+    const seen = new Set<string>();
+    for (const msgId of components) {
+      const row = this.db
+        .query("SELECT thread_id FROM messages WHERE id = ?")
+        .get(msgId) as { thread_id: string } | null;
+      if (row) seen.add(row.thread_id);
+    }
+    return Array.from(seen);
+  }
+
+  /**
+   * Count the number of OTHER distilled facts (machine-authored) whose provenance
+   * comma-set intersects `messageIds`, excluding the fact with the given `excludeFactText`.
+   * Used by the option-B confirm to surface "how many other facts these source messages feed".
+   */
+  countFactsFedByMessages(messageIds: string[], excludeFactText: string): number {
+    const facts = this.db
+      .query("SELECT fact, provenance FROM distilled_facts WHERE authored_by != 'human'")
+      .all() as { fact: string; provenance: string }[];
+    const idSet = new Set(messageIds);
+    let count = 0;
+    for (const f of facts) {
+      if (f.fact === excludeFactText) continue;
+      const components = f.provenance.split(",").map((p) => p.trim());
+      if (components.some((c) => idSet.has(c))) count++;
+    }
+    return count;
+  }
+
   /**
    * MF-04 (5f, spec §3.3; ADR-0012 decision 5f). Scope-filtered projection read —
    * the thread-isolation enforcement point. A fact is injectable into `forThreadId` iff:
    *   scope IN ('cross-thread','global')                              -- shared facts cross
    *   OR (scope = 'thread-local' AND originThread(fact) = forThreadId) -- private stays home
-   * originThread is derived from provenance with NO new column (frozen write-path):
-   *   - message-level provenance (a messages.id): JOIN messages → thread_id
-   *   - thread-level provenance ('thread:<id>'): substr after the prefix
+   *
+   * MINOR-1 (D-D, chunk 04): origin-thread is now resolved IN CODE via
+   * `originThreadsForProvenance`, handling comma-joined multi-source provenances
+   * that the old `m.id = df.provenance` JOIN could not match.
+   * The `thread:<id>` shape is handled uniformly via the same helper.
+   *
+   * Two-phase: SELECT candidates with expiry filter + ordering (preserving D6 ordering and
+   * existing LIMIT semantics), then filter thread-local rows in code. LIMIT is applied AFTER
+   * in-code filter so the returned slice is full.
+   *
    * NULL/unknown scope defaults to cross-thread (the v0 reality; never throws).
    * `readDistilledFacts` (all-rows) is intentionally kept for swap-proof / non-injection callers.
    */
   readDistilledFactsForThread(forThreadId: string, limit: number): DistilledFactRow[] {
-    return this.db
+    // Phase 1: fetch all non-expired candidates (no thread-local filtering in SQL).
+    // The large fetch is acceptable: the projection is bounded (chunk 02 RETRIEVE_SLICE_N).
+    // We over-fetch and apply in-code filter, then re-apply limit.
+    const now = Date.now();
+    const candidates = this.db
       .query(
         `SELECT df.fact AS fact, df.provenance AS provenance, df.scope AS scope,
                 df.expiry AS expiry, df.confidence AS confidence, df.authored_by AS authored_by
          FROM distilled_facts df
-         LEFT JOIN messages m ON m.id = df.provenance
-         WHERE
-           (df.expiry IS NULL OR df.expiry > ?)
-           AND (
-             COALESCE(df.scope, 'cross-thread') IN ('cross-thread', 'global')
-             OR (
-               df.scope = 'thread-local'
-               AND (
-                 m.thread_id = ?
-                 OR (df.provenance LIKE 'thread:%' AND substr(df.provenance, 8) = ?)
-               )
-             )
-           )
-         ORDER BY (df.authored_by = 'human') DESC, df.derived_at DESC, df.rowid ASC
-         LIMIT ?`,
+         WHERE (df.expiry IS NULL OR df.expiry > ?)
+         ORDER BY (df.authored_by = 'human') DESC, df.derived_at DESC, df.rowid ASC`,
       )
-      .all(Date.now(), forThreadId, forThreadId, limit) as DistilledFactRow[];
+      .all(now) as DistilledFactRow[];
+
+    // Phase 2: in-code thread-local filter (MINOR-1).
+    const filtered: DistilledFactRow[] = [];
+    for (const row of candidates) {
+      const scope = row.scope ?? "cross-thread";
+      if (scope === "cross-thread" || scope === "global" || scope === null) {
+        filtered.push(row);
+      } else if (scope === "thread-local") {
+        // Resolve origin threads in code (handles comma-joined provenances)
+        const origins = this.originThreadsForProvenance(row.provenance ?? "");
+        if (origins.includes(forThreadId)) {
+          filtered.push(row);
+        }
+      }
+      // Unknown scopes treated as cross-thread (defensive default)
+      else {
+        filtered.push(row);
+      }
+      if (filtered.length >= limit) break;
+    }
+
+    return filtered;
   }
 
   /** Returns true if a tombstone mutation exists for the given messageId. */

@@ -10,17 +10,31 @@ let server: ReturnType<typeof import("./index.js").startDaemon>;
 let PORT: number;
 let token: string;
 const ORIGIN = "tauri://localhost";
+// chunk-06: pin MEMORY_PROVIDER so afterAll can restore it
+let prevMemoryProvider: string | undefined;
 
 beforeAll(async () => {
   dataDir = mkdtempSync(join(tmpdir(), "cm03-dismiss-"));
   process.env.AGENTIC_DATA_DIR = dataDir;
   process.env.LLM_PROVIDER = "mock";
+  // This test exercises the PROVIDER-AGNOSTIC dismiss→reprojection→distillation_events mechanics
+  // (chunk-02 contract). chunk-06 flipped the default to "smart", so pin "dumb-tail" here to keep
+  // the pre-flip behavior + avoid the bun test SDK browser-guard trip on key-present machines. No network.
+  prevMemoryProvider = process.env["MEMORY_PROVIDER"];
+  process.env["MEMORY_PROVIDER"] = "dumb-tail";
   const { startDaemon } = await import("./index.js");
   server = startDaemon(0);
   PORT = server.port!;
   token = new TokenStore(dataDir).token();
 });
-afterAll(() => server.stop(true));
+afterAll(() => {
+  server.stop(true);
+  if (prevMemoryProvider === undefined) {
+    delete process.env["MEMORY_PROVIDER"];
+  } else {
+    process.env["MEMORY_PROVIDER"] = prevMemoryProvider;
+  }
+});
 
 function openSocket(): Promise<WebSocket> {
   return new Promise((resolve, reject) => {

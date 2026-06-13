@@ -1,6 +1,6 @@
 # Chunk v2-03: The incremental distiller — delta port + asymmetric-risk apply
 
-**Status:** todo
+**Status:** in-progress
 **Created:** 2026-06-13
 **Phase:** memory-distiller-v2 (spec `docs/specs/2026-06-13-memory-distiller-v2.md` §3.1/§3.2/§3.3, §6)
 **Estimated size:** ~2 day (the heart of the re-architecture; the §7.1 port change)

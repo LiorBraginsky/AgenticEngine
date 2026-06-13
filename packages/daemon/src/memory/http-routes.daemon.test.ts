@@ -131,20 +131,19 @@ function readToken(): string {
   return readFileSync(join(sharedDataDir, "auth-token"), "utf8").trim();
 }
 
-// Test 4: POST /memory/forget without token → 401 (harmonized from 403; B1 decision)
+// Test 4: POST /memory/forget without token → 401
 test("T2.1c-1: POST /memory/forget without Authorization header → 401", async () => {
   const res = await fetch(`http://127.0.0.1:${PORT}/memory/forget`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ target: seededMessageId }),
+    body: JSON.stringify({ target_type: "message", target: seededMessageId }),
   });
   expect(res.status).toBe(401);
 });
 
 // Test 5: POST /memory/forget WITH token on seeded human message → 204; disk shows REDACTION_MARKER.
-// This is the "refusal-does-not-fire-on-HTTP" proof: human-authored content + human ctx →
-// always applied (5e only refuses machine ctx, which the route never sends).
-test("T2.1c-2: POST /memory/forget with Bearer token on seeded message → 204 and disk content is REDACTION_MARKER", async () => {
+// Uses the new target_type:"message" dispatch (chunk 04 additive body fields).
+test("T2.1c-2: POST /memory/forget target_type=message with Bearer token → 204 and disk content is REDACTION_MARKER", async () => {
   const token = readToken();
   const res = await fetch(`http://127.0.0.1:${PORT}/memory/forget`, {
     method: "POST",
@@ -152,7 +151,7 @@ test("T2.1c-2: POST /memory/forget with Bearer token on seeded message → 204 a
       "Content-Type": "application/json",
       Authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify({ target: seededMessageId, reason: "test-forget" }),
+    body: JSON.stringify({ target_type: "message", target: seededMessageId, reason: "test-forget" }),
   });
   expect(res.status).toBe(204);
 
@@ -165,9 +164,9 @@ test("T2.1c-2: POST /memory/forget with Bearer token on seeded message → 204 a
   expect(msg!.content).toBe(REDACTION_MARKER);
 });
 
-// Test 6: POST /memory/forget with token, unknown UUID-shaped target → 404 (not 500).
-// Unknown UUID goes to WriteGate.forget → threadOf throws "not found" → route maps to 404.
-test("T2.1c-3: POST /memory/forget with token, unknown UUID target → 404 not_found (not 500)", async () => {
+// Test 6: POST /memory/forget target_type=message with unknown UUID → 404.
+// Unknown UUID → WriteGate.forget → threadOf throws "not found" → route maps to 404.
+test("T2.1c-3: POST /memory/forget target_type=message with unknown UUID target → 404 not_found", async () => {
   const token = readToken();
   const unknownId = crypto.randomUUID();
   const res = await fetch(`http://127.0.0.1:${PORT}/memory/forget`, {
@@ -176,11 +175,80 @@ test("T2.1c-3: POST /memory/forget with token, unknown UUID target → 404 not_f
       "Content-Type": "application/json",
       Authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify({ target: unknownId }),
+    body: JSON.stringify({ target_type: "message", target: unknownId }),
   });
   expect(res.status).toBe(404);
   const body = await res.json() as { error: string };
   expect(body.error).toBe("target_not_found");
+});
+
+// Test: POST /memory/forget target_type=fact → 204, message content intact.
+// B1 at the HTTP boundary: fact-forget must not scrub the source message.
+test("T2.1c-6: POST /memory/forget target_type=fact does NOT scrub the source message", async () => {
+  const token = readToken();
+  // Seed a fresh message for the fact-forget test (seeded message may be tombstoned)
+  const setupStore = new MemoryStore({ dataDir: sharedDataDir });
+  const factTestThread = setupStore.createThread("fact-forget-test-thread");
+  const [factTestMsgId] = setupStore.appendMessages(factTestThread, [{ role: "user", content: "fact source content" }], "fact-test");
+  setupStore.close();
+
+  const res = await fetch(`http://127.0.0.1:${PORT}/memory/forget`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ target_type: "fact", fact_text: "fav colour blue", provenance: factTestMsgId!, reason: "test" }),
+  });
+  expect(res.status).toBe(204);
+
+  // Assert source message content is byte-intact (B1 — fact-forget never scrubs)
+  const verifyStore = new MemoryStore({ dataDir: sharedDataDir });
+  const archive = verifyStore.readThreadArchive(factTestThread);
+  verifyStore.close();
+  const msg = archive.find((m) => m.id === factTestMsgId);
+  expect(msg).toBeDefined();
+  expect(msg!.content).toBe("fact source content"); // NOT scrubbed
+});
+
+// Test: POST /memory/forget with missing/invalid target_type → 400 bad_body.
+test("T2.1c-7: POST /memory/forget with missing target_type → 400 bad_body", async () => {
+  const token = readToken();
+  const res = await fetch(`http://127.0.0.1:${PORT}/memory/forget`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ target: seededMessageId }), // old shape — missing target_type
+  });
+  expect(res.status).toBe(400);
+  const body = await res.json() as { error: string };
+  expect(body.error).toBe("bad_body");
+});
+
+// Test: POST /memory/cofed returns exact co-fed count.
+test("T2.1c-8: GET /memory/cofed returns exact count of other facts fed by given provenance", async () => {
+  const token = readToken();
+  // Seed facts into the store
+  const setupStore = new MemoryStore({ dataDir: sharedDataDir });
+  const cofedThread = setupStore.createThread("cofed-test");
+  const [c1] = setupStore.appendMessages(cofedThread, [{ role: "user", content: "cofed1" }], "cs");
+  const [c2] = setupStore.appendMessages(cofedThread, [{ role: "user", content: "cofed2" }], "cs");
+  // fact F1 depends on both c1 and c2
+  setupStore.insertDistilledFacts([
+    { fact: "co-fed fact F1", provenance: `${c1},${c2}`, scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
+    { fact: "the self-fact", provenance: c1!, scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
+  ], "smart");
+  setupStore.close();
+
+  // ask: how many other facts do messages [c1] feed, excluding "the self-fact"?
+  const res = await fetch(`http://127.0.0.1:${PORT}/memory/cofed?provenance=${encodeURIComponent(c1!)}&exclude=${encodeURIComponent("the self-fact")}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  expect(res.status).toBe(200);
+  const body = await res.json() as { count: number };
+  expect(body.count).toBe(1); // F1 feeds on c1 and is NOT the excluded fact
 });
 
 // Test 7: POST /memory/edit with token → 204 and correction row on disk (authored_by:human).
@@ -317,7 +385,7 @@ test("dns-rebind-4: POST /memory/forget with valid token but bad Host → 403 (H
       Authorization: `Bearer ${token}`,
       Host: `evil.com:${PORT}`,
     },
-    body: JSON.stringify({ target: seededMessageId }),
+    body: JSON.stringify({ target_type: "message", target: seededMessageId }),
   });
   expect(res.status).toBe(403);
   expect(await res.text()).toBe("forbidden host");

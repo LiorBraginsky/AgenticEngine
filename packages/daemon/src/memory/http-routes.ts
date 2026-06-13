@@ -77,6 +77,12 @@ export async function handleMemoryHttp(
     return handleEdit(req, deps);
   }
 
+  // GET /memory/cofed — token-gated read (chunk 04 / ADR-0015 decision 5)
+  // Returns exact count of other machine-authored facts fed by the given provenance.
+  if (pathname === "/memory/cofed" && req.method === "GET") {
+    return handleCofed(req, url, deps);
+  }
+
   // GET /history.html — T2.2a (minimal static History page)
   if (pathname === "/history.html" && req.method === "GET") {
     return new Response(HISTORY_HTML, {
@@ -134,17 +140,39 @@ async function handleForget(req: Request, deps: MemoryHttpDeps): Promise<Respons
   const parsed = await parseBody(req);
   if (!parsed.ok) return Response.json({ error: "bad_body" }, { status: 400 });
 
-  const { target, reason } = parsed.data;
-  if (typeof target !== "string" || !target) {
-    return Response.json({ error: "bad_body" }, { status: 400 });
-  }
+  const { target_type, target, fact_text, provenance, also_forget_sources, reason } = parsed.data;
   // reason is optional
   const reasonStr = typeof reason === "string" ? reason : undefined;
 
-  // Execute forget — ctx fixed as human (5e refusal cannot fire; 409 unreachable here)
+  // Dispatch by target_type (chunk 04 / ADR-0015 — intent-based dispatch).
+  // Body fields target_type/fact_text/provenance/also_forget_sources are ADDITIVE —
+  // not a frozen-wire change (ADR-0015 relationship §; ADR-0013 token-gated write surface).
   try {
-    deps.hatch.forget(target, HTTP_CTX, reasonStr);
-    return new Response(null, { status: 204 });
+    if (target_type === "message") {
+      // HARD scrub path — isMessageId assert inside WriteGate.forget
+      if (typeof target !== "string" || !target) {
+        return Response.json({ error: "bad_body" }, { status: 400 });
+      }
+      deps.hatch.forgetMessage(target, HTTP_CTX, reasonStr);
+      return new Response(null, { status: 204 });
+    } else if (target_type === "fact") {
+      // FACT path — writes only forgotten_facts, never scrubs (B1 structural invariant)
+      if (typeof fact_text !== "string" || !fact_text) {
+        return Response.json({ error: "bad_body" }, { status: 400 });
+      }
+      if (typeof provenance !== "string" || !provenance) {
+        return Response.json({ error: "bad_body" }, { status: 400 });
+      }
+      if (also_forget_sources === true) {
+        deps.hatch.forgetFactAndSources(fact_text, provenance, HTTP_CTX, reasonStr);
+      } else {
+        deps.hatch.forgetFact(fact_text, provenance, HTTP_CTX, reasonStr);
+      }
+      return new Response(null, { status: 204 });
+    } else {
+      // missing or unrecognised target_type → 400
+      return Response.json({ error: "bad_body" }, { status: 400 });
+    }
   } catch (err: unknown) {
     return mapWriteError(err);
   }
@@ -178,6 +206,20 @@ async function handleEdit(req: Request, deps: MemoryHttpDeps): Promise<Response>
   }
 }
 
+// ─── Co-fed count route (chunk 04 / ADR-0015 decision 5) ─────────────────────
+
+function handleCofed(req: Request, url: URL, deps: MemoryHttpDeps): Response {
+  // Token-gated read (same gate as other read routes)
+  if (!deps.tokenStore.verify(req.headers.get("authorization"))) return rejectRead(url);
+  const prov = url.searchParams.get("provenance") ?? "";
+  const exclude = url.searchParams.get("exclude") ?? "";
+  if (!prov) return Response.json({ error: "bad_body" }, { status: 400 });
+  // Split the comma-joined provenance into message-id components
+  const messageIds = prov.split(",").map((p) => p.trim()).filter(Boolean);
+  const count = deps.store.countFactsFedByMessages(messageIds, exclude);
+  return Response.json({ count });
+}
+
 // ─── Shared utilities ─────────────────────────────────────────────────────────
 
 type ParseResult =
@@ -197,21 +239,24 @@ async function parseBody(req: Request): Promise<ParseResult> {
 }
 
 /**
- * Map thrown errors from Hatch.edit / Hatch.forget to HTTP responses.
+ * Map thrown errors from Hatch write operations to HTTP responses.
  *
- * Two real error conditions (plan §Refused-forget HTTP semantics, BINDING):
+ * Real error conditions:
  *   1. "not found" throw from WriteGate.threadOf → 404 target_not_found
- *   2. UUID-shape seam invariant throw from WriteGate.forgetFact → 400 bad_target_shape
- *      (normally unreachable via Hatch.forget routing — defensive mapping)
+ *      (forgetMessage path, when target message UUID is not in messages table)
+ *   2. UUID-shape seam invariant throw from store.tombstoneFact → 400 bad_target_shape
+ *      (defensive — normally unreachable via intent-dispatch: the fact path never calls
+ *      tombstoneFact; the message path routes through WriteGate.forget which calls threadOf)
  *   3. Everything else → log + 500 internal
+ *
+ * NOTE: these regexes are coupled to the exact throw messages in write-gate.ts / store.ts:
+ *   "not found"                           — thrown by WriteGate.threadOf
+ *   "use forget() to tombstone+scrub..."  — thrown by store.tombstoneFact UUID-guard
+ * If more throw sites are added, typed error codes (a discriminated Error subclass or
+ * an error-code enum) are the upgrade path — avoid multiplying regex fragments.
  */
 function mapWriteError(err: unknown): Response {
   const msg = err instanceof Error ? err.message : String(err);
-  // NOTE: these regexes are coupled to the exact throw messages in write-gate.ts:
-  //   "not found"                           — thrown by WriteGate.threadOf
-  //   "use forget() to tombstone+scrub..."  — thrown by WriteGate.forgetFact UUID-guard
-  // If more throw sites are added, typed error codes (a discriminated Error subclass or
-  // an error-code enum) are the upgrade path — avoid multiplying regex fragments.
   if (/not found/i.test(msg)) {
     return Response.json({ error: "target_not_found" }, { status: 404 });
   }

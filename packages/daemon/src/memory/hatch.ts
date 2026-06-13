@@ -6,11 +6,17 @@
  * (HTTP routes, WS) is Tranche 2.
  *
  * Constructed over a real MemoryStore + WriteGate — no mocks, no DI bypass.
- * The three operations dispatch as follows:
- *   view(threadId)       → archive + distilledFacts + distillationEvents
- *   edit(messageId, ...) → existing WriteGate.edit (appends authored_by:human correction)
- *   forget(target, ...)  → message-id  → existing WriteGate.forget
- *                          provenance  → WriteGate.forgetFact (projection-tombstone, T1.2)
+ *
+ * INTENT-NAMED FORGET OPERATIONS (chunk 04 / ADR-0015 decision 1):
+ * The old shape-routing `forget(target)` heuristic is REPLACED by three explicit methods:
+ *   forgetMessage(messageId, ctx, reason?) → WriteGate.forget (HARD scrub + tombstone)
+ *   forgetFact(factText, provenance, ctx, reason?) → WriteGate.forgetFact (BEST-EFFORT; no scrub)
+ *   forgetFactAndSources(factText, provenance, ctx, reason?) → WriteGate.forgetFactAndSources (opt-in HARD escape)
+ *
+ * The separate-artifact invariant (ADR-0015 decision 2) is structural:
+ *   - message-forget writes mutations tombstone + scrubs messages.content
+ *   - fact-forget writes ONLY forgotten_facts, never touches messages or mutations
+ *   No target_type value can downgrade a message scrub to a fact-forget.
  */
 
 /**
@@ -23,7 +29,6 @@
  */
 export const HATCH_VIEW_FACT_CAP = 1000;
 import type { MemoryStore, DistilledFactRow, DistillationEventRow } from "./store.js";
-import { isMessageId } from "./store.js";
 import type { WriteGate, WriteContext } from "./write-gate.js";
 
 export interface HatchViewResult {
@@ -70,20 +75,28 @@ export class Hatch {
   }
 
   /**
-   * Forget a target:
-   *   - If the target looks like a messages.id (UUID format) → WriteGate.forget.
-   *   - If the target looks like a distilled-fact provenance (incl. "thread:<uuid>")
-   *     → WriteGate.forgetFact (projection-tombstone, T1.2).
-   *
-   * The dispatch heuristic: a UUID-shaped string (8-4-4-4-12 hex) → message path;
-   * anything else (e.g. "thread:<uuid>") → fact-provenance path.
+   * Forget a MESSAGE — HARD scrub + mutations tombstone (unchanged message path).
+   * Delegates to WriteGate.forget. The isMessageId assert lives INSIDE the message path.
    */
-  forget(target: string, ctx: WriteContext, reason?: string): void {
-    if (isMessageId(target)) {
-      this.gate.forget(target, ctx, reason);
-    } else {
-      this.gate.forgetFact(target, ctx, reason);
-    }
+  forgetMessage(messageId: string, ctx: WriteContext, reason?: string): void {
+    this.gate.forget(messageId, ctx, reason);
+  }
+
+  /**
+   * Forget a FACT — durable forgotten_facts record + live purge, NO scrub.
+   * Delegates to WriteGate.forgetFact. Never touches messages or mutations (B1 invariant).
+   */
+  forgetFact(factText: string, provenance: string, ctx: WriteContext, reason?: string): void {
+    this.gate.forgetFact(factText, provenance, ctx, reason);
+  }
+
+  /**
+   * Forget a FACT + its source messages — fact-forget record + option-B hard escape.
+   * Delegates to WriteGate.forgetFactAndSources.
+   * thread:<id> provenance → no-op on source scrub (never a whole-thread scrub).
+   */
+  forgetFactAndSources(factText: string, provenance: string, ctx: WriteContext, reason?: string): void {
+    this.gate.forgetFactAndSources(factText, provenance, ctx, reason);
   }
 }
 

@@ -1,6 +1,6 @@
 # Chunk 4: Forget-flow contract — intent dispatch + durable fact-forget + option B
 
-**Status:** todo
+**Status:** in-progress
 **Created:** 2026-06-13
 **Phase:** memory-quality (spec `docs/specs/2026-06-13-forget-flow.md`; ADR-0015 `proposed`)
 **Estimated size:** ~1.5 day (the headline corrective chunk; widest blast radius of the pass)

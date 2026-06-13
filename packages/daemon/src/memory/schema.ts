@@ -8,6 +8,14 @@
  * `distilled_facts` and `distillation_events` are CREATED here with full columns
  * but UNPOPULATED in MF-01 (the distiller is MF-02) — present so MF-02 fills them
  * with no schema migration.
+ *
+ * TWO SEPARATE FORGET ARTIFACTS (ADR-0015 decision 2 / spec §0):
+ *   `mutations` (kind='tombstone') — the MESSAGE-redaction artifact. Written by
+ *     WriteGate.forget; hard-scrubs messages.content. The isMessageId throw in
+ *     store.tombstoneFact stays as the defensive seam guard.
+ *   `forgotten_facts` — the FACT-suppression artifact. Written by WriteGate.forgetFact;
+ *     keyed on normalized fact text (not a messages.id). The smart distiller's
+ *     Layer-T suppression reads from this table. These two artifacts NEVER cross.
  */
 export const REDACTION_MARKER = "[forgotten]";
 
@@ -71,4 +79,16 @@ CREATE TABLE IF NOT EXISTS quarantine_markers (
   created_at   INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_quarantine_target ON quarantine_markers(target_id);
+
+CREATE TABLE IF NOT EXISTS forgotten_facts (
+  id               TEXT PRIMARY KEY,
+  normalized_text  TEXT NOT NULL,   -- normalizeFactText(raw) — the load-bearing match key (Layer-T)
+  raw_text         TEXT NOT NULL,   -- what the user saw + forgot (Layer-X exclusion + display)
+  provenance       TEXT,            -- as-forgotten (opportunistic Layer-P + audit)
+  actor            TEXT,
+  reason           TEXT,
+  authored_by      TEXT NOT NULL,
+  created_at       INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_forgotten_norm ON forgotten_facts(normalized_text);
 `;

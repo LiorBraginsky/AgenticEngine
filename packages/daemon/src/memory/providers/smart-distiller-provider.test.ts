@@ -21,6 +21,7 @@ import {
 } from "./smart-distiller-provider.js";
 import { REMEMBERED_LABEL } from "../../providers/system-prompt.js";
 import type { Anthropic } from "@anthropic-ai/sdk";
+import type { DistilledFact } from "../memory-provider.js";
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -374,24 +375,14 @@ test("best-effort layer 2 (MITIGATION): normalized text of tombstoned fact cause
   // Append a message so digest is non-empty
   store.appendMessages(threadId, [{ role: "user", content: "hello" }], "s1");
 
-  // Tombstone a fact at a non-UUID provenance so we can track its text
+  // Record a forgotten fact directly in forgotten_facts (chunk 04 path — not via tombstoneFact)
   const tombstonedProvenance = "thread:layer2-test";
-
-  // First insert a distilled fact with a known text, then tombstone it
-  store.insertDistilledFacts(
-    [
-      {
-        fact: "Favourite colour: Blue.",
-        provenance: tombstonedProvenance,
-        scope: "cross-thread",
-        expiry: null,
-        confidence: 1,
-        authored_by: "machine",
-      },
-    ],
-    "smart",
-  );
-  store.tombstoneFact(tombstonedProvenance, { actor: "user", authored_by: "human" });
+  store.recordForgottenFact({
+    raw_text: "Favourite colour: Blue.",
+    provenance: tombstonedProvenance,
+    actor: "user",
+    authored_by: "human",
+  });
 
   // The LLM returns a fact with DIFFERENT case/punctuation but same normalized text,
   // and a DIFFERENT provenance (so layer 1 won't catch it)
@@ -583,22 +574,14 @@ test("layer-3 (MITIGATION): with tombstoned fact present, system prompt contains
   // Non-empty archive so distill proceeds
   store.appendMessages(threadId, [{ role: "user", content: "hello" }], "s1");
 
-  // Insert a distilled fact then tombstone it so layer-3 can recover its text
+  // Record a forgotten fact directly in forgotten_facts (chunk 04 path — Layer-X reads raw_text)
   const tombstonedProvenance = "thread:layer3-test";
-  store.insertDistilledFacts(
-    [
-      {
-        fact: "User dislikes cats",
-        provenance: tombstonedProvenance,
-        scope: "cross-thread",
-        expiry: null,
-        confidence: 1,
-        authored_by: "machine",
-      },
-    ],
-    "smart",
-  );
-  store.tombstoneFact(tombstonedProvenance, { actor: "user", authored_by: "human" });
+  store.recordForgottenFact({
+    raw_text: "User dislikes cats",
+    provenance: tombstonedProvenance,
+    actor: "user",
+    authored_by: "human",
+  });
 
   const { client, getCapturedSystem } = capturingClient("[]");
   const provider = new SmartDistillerProvider({ client });
@@ -634,6 +617,72 @@ test("layer-3 (MITIGATION): with NO tombstoned facts, system prompt equals stati
 
   // Without tombstoned facts, must be byte-identical to the static base
   expect(systemText).toBe(SMART_SYSTEM_PROMPT);
+
+  store.close();
+});
+
+// ── chunk 04 Step 5: forgotten_facts-sourced suppression layers ────────────
+
+/** Echo stub: returns a single fact with given text and provenance.
+ * Used to simulate a re-derived fact after a fact-forget. */
+function echoFactClient(factText: string, provenance: string): Anthropic {
+  const raw = JSON.stringify([{
+    fact: factText,
+    provenance,
+    scope: "cross-thread",
+    expiry: null,
+    confidence: 1,
+  }] satisfies Omit<DistilledFact, "authored_by">[]);
+  return echoClient(raw);
+}
+
+// Layer-T — the ONE real suppression layer (re-sourced from forgotten_facts)
+test("Layer-T: a forgotten smart fact is suppressed on re-projection via forgotten_facts.normalized_text", async () => {
+  const store = freshStore();
+  const gate = new WriteGate(store, new RuleBasedScanner());
+  const t = store.createThread();
+  store.appendMessages(t, [{ role: "user", content: "favourite colour: blue" }], "s1");
+  // forget the FACT (durable record; provenance differs from any re-derived provenance)
+  gate.forgetFact("favourite colour: blue", "some-old-prov", { actor: "user", authored_by: "human" });
+
+  // echo-stub re-emits the same normalized text under a FRESH provenance → Layer-T must drop it
+  const smart = new SmartDistillerProvider({ client: echoFactClient("favourite colour: blue", "fresh-prov") });
+  const result = await smart.distill(store, t);
+  expect(result.facts.some((f) => normalizeFactText(f.fact) === normalizeFactText("favourite colour: blue"))).toBe(false);
+
+  store.close();
+});
+
+test("5e-aware: Layer-T does NOT suppress when a human-authored fact with the same normalized text exists", async () => {
+  const store = freshStore();
+  const gate = new WriteGate(store, new RuleBasedScanner());
+  const t = store.createThread();
+  store.appendMessages(t, [{ role: "user", content: "likes tea" }], "s1");
+  gate.forgetFact("likes tea", "p", { actor: "user", authored_by: "human" });
+  // a human pinned the same fact
+  store.rawDb().query(
+    "INSERT INTO distilled_facts (id, fact, provenance, scope, expiry, confidence, authored_by, derived_at, distiller_version) VALUES (?,?,?,?,?,?,?,?,?)",
+  ).run(crypto.randomUUID(), "likes tea", "human-pin", "cross-thread", null, 1, "human", Date.now(), "manual");
+
+  const smart = new SmartDistillerProvider({ client: echoFactClient("likes tea", "fresh") });
+  const result = await smart.distill(store, t);
+  // candidate NOT suppressed because a human fact with the same normalized text exists
+  expect(result.facts.some((f) => normalizeFactText(f.fact) === normalizeFactText("likes tea"))).toBe(true);
+
+  store.close();
+});
+
+test("retrieve() backstop: a forgotten fact still in distilled_facts is filtered by the forgotten_facts text check", async () => {
+  const store = freshStore();
+  // a live machine row whose text was forgotten but (hypothetically) survived the purge window
+  store.insertDistilledFacts([
+    { fact: "fav colour blue", provenance: "thread:zzz", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
+  ], "smart");
+  store.recordForgottenFact({ raw_text: "fav colour blue", provenance: "thread:zzz", actor: "u", authored_by: "human" });
+
+  const smart = new SmartDistillerProvider({ client: echoClient("[]") });
+  const slice = await smart.retrieve(store, store.createThread());
+  expect(slice.some((m) => m.content.includes("fav colour blue"))).toBe(false);
 
   store.close();
 });

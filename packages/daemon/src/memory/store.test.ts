@@ -6,6 +6,7 @@ import { MemoryStore } from "./store.js";
 import { WriteGate } from "./write-gate.js";
 import { RuleBasedScanner } from "./scanner/memory-scanner.js";
 import { REDACTION_MARKER } from "./schema.js";
+import { normalizeFactText } from "./providers/smart-distiller-provider.js";
 
 function freshStore() {
   const dir = mkdtempSync(join(tmpdir(), "mf01-"));
@@ -459,5 +460,117 @@ test("replaceProjection: readDistilledFactsForThread LIMIT 20 returns the NEWEST
   expect(idx19).toBeGreaterThanOrEqual(0);
   expect(idx0).toBeLessThan(idx19);
 
+  store.close();
+});
+
+// ---- chunk 04: forgotten_facts store primitives (Step 2 — RED first) ----
+
+test("recordForgottenFact inserts a row keyed on normalized text", () => {
+  const { store } = freshStore();
+  store.recordForgottenFact({ raw_text: "Favourite Colour: Blue.", provenance: "m1,m2", actor: "user", reason: "hatch-forget", authored_by: "human" });
+  expect(store.isForgottenNormalizedText(normalizeFactText("favourite colour: blue"))).toBe(true);
+  store.close();
+});
+
+test("readForgottenFacts returns normalized + raw + provenance for the layers", () => {
+  const { store } = freshStore();
+  store.recordForgottenFact({ raw_text: "X", provenance: "p", actor: "u", authored_by: "human" });
+  const rows = store.readForgottenFacts();
+  expect(rows[0]!.normalized_text).toBe(normalizeFactText("X"));
+  expect(rows[0]!.raw_text).toBe("X");
+  expect(rows[0]!.provenance).toBe("p");
+  store.close();
+});
+
+test("clearForgottenByNormalizedText removes the un-forget row(s)", () => {
+  const { store } = freshStore();
+  store.recordForgottenFact({ raw_text: "likes tea", provenance: "p", actor: "u", authored_by: "human" });
+  const removed = store.clearForgottenByNormalizedText(normalizeFactText("likes tea"));
+  expect(removed).toBeGreaterThan(0);
+  expect(store.isForgottenNormalizedText(normalizeFactText("likes tea"))).toBe(false);
+  store.close();
+});
+
+test("purgeLiveMachineFactsByForget deletes by provenance OR normalized text, never a human row", () => {
+  const { store } = freshStore();
+  store.insertDistilledFacts([
+    { fact: "fav colour: blue", provenance: "m1,m2", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
+  ], "smart");
+  // Insert a human row with same text directly (bypassing insertDistilledFacts authored_by forcing)
+  store.rawDb().query(
+    "INSERT INTO distilled_facts (id, fact, provenance, scope, expiry, confidence, authored_by, derived_at, distiller_version) VALUES (?,?,?,?,?,?,?,?,?)",
+  ).run(crypto.randomUUID(), "fav colour: blue", "different", "cross-thread", null, 1, "human", Date.now(), "manual");
+  const n = store.purgeLiveMachineFactsByForget("m1,m2", normalizeFactText("fav colour: blue"));
+  expect(n).toBe(1); // machine row gone
+  const rows = store.readDistilledFacts(50);
+  expect(rows.some((r) => r.authored_by === "human")).toBe(true); // human row survives
+  store.close();
+});
+
+test("purgeLiveMachineFactsByForget catches a comma-joined row by TEXT when provenance differs (no purge-miss)", () => {
+  const { store } = freshStore();
+  store.insertDistilledFacts([
+    { fact: "User favourite colour is blue", provenance: "x,y,z", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
+  ], "smart");
+  // forgotten with a DIFFERENT provenance shape but the same normalized text
+  const n = store.purgeLiveMachineFactsByForget("m1", normalizeFactText("User favourite colour is blue"));
+  expect(n).toBe(1);
+  store.close();
+});
+
+test("hasHumanFactWithNormalizedText returns true only when a human fact matches", () => {
+  const { store } = freshStore();
+  store.rawDb().query(
+    "INSERT INTO distilled_facts (id, fact, provenance, scope, expiry, confidence, authored_by, derived_at, distiller_version) VALUES (?,?,?,?,?,?,?,?,?)",
+  ).run(crypto.randomUUID(), "likes tea", "h-prov", "cross-thread", null, 1, "human", Date.now(), "manual");
+  expect(store.hasHumanFactWithNormalizedText(normalizeFactText("likes tea"))).toBe(true);
+  expect(store.hasHumanFactWithNormalizedText(normalizeFactText("no such fact"))).toBe(false);
+  store.close();
+});
+
+test("countFactsFedByMessages returns how many OTHER distilled facts a set of source messages feed", () => {
+  const { store } = freshStore();
+  store.insertDistilledFacts([
+    { fact: "f1", provenance: "m1,m2", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
+    { fact: "f2", provenance: "m2,m3", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
+    { fact: "self", provenance: "m1", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
+  ], "smart");
+  // facts fed by {m1} excluding the fact being forgotten ("self")
+  expect(store.countFactsFedByMessages(["m1"], "self")).toBe(1); // f1 also feeds on m1
+  store.close();
+});
+
+// ---- MINOR-2 NIT: countFactsFedByMessages null-provenance guard ----
+
+test("m2.2 RED: countFactsFedByMessages throws when a machine row has NULL provenance (f.provenance.split on null)", () => {
+  const { store } = freshStore();
+  // Seed a NULL-provenance machine row via rawDb (bypasses insertDistilledFacts typed input)
+  store.rawDb().query(
+    "INSERT INTO distilled_facts (id, fact, provenance, scope, expiry, confidence, authored_by, derived_at, distiller_version) VALUES (?,?,?,?,?,?,?,?,?)",
+  ).run(crypto.randomUUID(), "null-prov fact", null, "cross-thread", null, 1, "machine", Date.now(), "v0");
+
+  // This should NOT throw after the fix (m2.3: null-provenance guard)
+  // Without the fix: f.provenance.split is called on null → TypeError
+  expect(() => store.countFactsFedByMessages(["m1"], "other")).not.toThrow();
+  store.close();
+});
+
+// ---- MINOR-1: readDistilledFactsForThread origin-thread resolved in code ----
+
+test("MINOR-1: a thread-local fact with comma-joined provenance injects into its origin thread (resolved in code)", () => {
+  const { store } = freshStore();
+  const tOrigin = store.createThread();
+  const [a] = store.appendMessages(tOrigin, [{ role: "user", content: "alpha" }], "s");
+  const [b] = store.appendMessages(tOrigin, [{ role: "assistant", content: "beta" }], "s");
+  store.insertDistilledFacts([
+    { fact: "thread-local agg", provenance: `${a},${b}`, scope: "thread-local", expiry: null, confidence: 1, authored_by: "machine" },
+  ], "smart");
+
+  const here = store.readDistilledFactsForThread(tOrigin, 20);
+  expect(here.some((f) => f.fact === "thread-local agg")).toBe(true);
+
+  const other = store.createThread();
+  const there = store.readDistilledFactsForThread(other, 20);
+  expect(there.some((f) => f.fact === "thread-local agg")).toBe(false); // private stays home
   store.close();
 });

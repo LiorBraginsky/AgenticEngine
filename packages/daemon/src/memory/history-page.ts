@@ -85,6 +85,8 @@ export const HISTORY_HTML = `<!DOCTYPE html>
     .btn:hover { background: #f0f0f0; }
     .btn-forget { border-color: #e07070; color: #c03030; }
     .btn-forget:hover { background: #fff0f0; }
+    .btn-forget[disabled] { border-color: #ddd; color: #aaa; cursor: default; }
+    .btn-forget[disabled]:hover { background: #fff; }
     .btn-edit { border-color: #70a0e0; color: #2060b0; }
     .btn-edit:hover { background: #f0f4ff; }
     .btn-danger { border-color: #c03030; color: #c03030; background: #fff0f0; }
@@ -326,8 +328,11 @@ export const HISTORY_HTML = `<!DOCTYPE html>
         var forgetBtn = document.createElement("button");
         forgetBtn.className = "btn btn-forget";
         forgetBtn.textContent = "Forget";
+        // chunk 04: intent-per-button — message forget sends target_type:"message"
         forgetBtn.addEventListener("click", (function (msgId, btn) {
-          return function () { doForget(msgId, threadId, btn); };
+          return function () {
+            doForget({ target_type: "message", target: msgId, reason: "hatch-forget" }, threadId, btn, "Forget");
+          };
         })(m.id, forgetBtn));
 
         var editBtn = document.createElement("button");
@@ -375,14 +380,43 @@ export const HISTORY_HTML = `<!DOCTYPE html>
         var forgetBtn = document.createElement("button");
         forgetBtn.className = "btn btn-forget";
         forgetBtn.textContent = "Forget fact";
-        // Per-fact forget uses the provenance value as the target
-        forgetBtn.addEventListener("click", (function (provenance, btn) {
-          return function () { doForget(provenance, _currentThreadId, btn); };
-        })(f.provenance, forgetBtn));
+        // chunk 04: intent-per-button — fact forget sends target_type:"fact" + fact_text + provenance
+        forgetBtn.addEventListener("click", (function (factText, provenance, btn) {
+          return function () {
+            doForget(
+              { target_type: "fact", fact_text: factText, provenance: provenance, reason: "hatch-forget" },
+              _currentThreadId, btn, "Forget fact"
+            );
+          };
+        })(f.fact, f.provenance, forgetBtn));
+
+        // Option-B control: "also delete source messages"
+        // Only meaningful when the provenance contains message-id(s), not just thread:<id>
+        var optionBBtn = document.createElement("button");
+        optionBBtn.className = "btn btn-forget";
+        optionBBtn.style.marginLeft = "4px";
+        var sourceCount = (f.provenance || "").split(",").map(function(p) { return p.trim(); })
+          .filter(function(p) { return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(p); }).length;
+        if (sourceCount === 0) {
+          // thread:<id> provenance — disable with explanatory copy
+          optionBBtn.textContent = "no source messages to delete";
+          optionBBtn.disabled = true;
+          optionBBtn.style.color = "#aaa";
+          optionBBtn.style.borderColor = "#ddd";
+        } else {
+          optionBBtn.textContent = "⚠ also delete " + sourceCount + " source message(s)";
+          // chunk 04 option-B confirm: fetch co-fed count then show armed confirm
+          optionBBtn.addEventListener("click", (function (factText, provenance, btn) {
+            return function () {
+              doForgetFactAndSources(factText, provenance, _currentThreadId, btn, sourceCount);
+            };
+          })(f.fact, f.provenance, optionBBtn));
+        }
 
         row.appendChild(factEl);
         row.appendChild(metaEl);
         row.appendChild(forgetBtn);
+        row.appendChild(optionBBtn);
         factsContainer.appendChild(row);
       });
     }
@@ -429,7 +463,9 @@ export const HISTORY_HTML = `<!DOCTYPE html>
     // doForget: two-step inline confirm.
     // First click arms the button (danger style + "Confirm forget?" label + Cancel).
     // Second click (or timeout) executes or resets.
-    function doForget(target, threadId, forgetBtn) {
+    // chunk 04: bodyObj is the full POST body (target_type:"message" or target_type:"fact").
+    // originalLabel is the button's resting text (so reset restores the right label).
+    function doForget(bodyObj, threadId, forgetBtn, originalLabel) {
       if (!_authToken) {
         showUnlockHint(forgetBtn);
         return;
@@ -454,9 +490,10 @@ export const HISTORY_HTML = `<!DOCTYPE html>
       parent.insertBefore(cancelBtn, forgetBtn.nextSibling);
       parent.insertBefore(hint, cancelBtn.nextSibling);
 
+      var label = originalLabel || "Forget";
       var resetForget = function () {
         forgetBtn.dataset.armed = "";
-        forgetBtn.textContent = "Forget";
+        forgetBtn.textContent = label;
         forgetBtn.className = "btn btn-forget";
         if (cancelBtn.parentNode) cancelBtn.parentNode.removeChild(cancelBtn);
         if (hint.parentNode) hint.parentNode.removeChild(hint);
@@ -482,7 +519,7 @@ export const HISTORY_HTML = `<!DOCTYPE html>
             "Content-Type": "application/json",
             "Authorization": "Bearer " + _authToken,
           },
-          body: JSON.stringify({ target: target, reason: "hatch-forget" }),
+          body: JSON.stringify(bodyObj),
         }).then(function (r) {
           if (r.status === 204) {
             loadThread(threadId);
@@ -495,6 +532,90 @@ export const HISTORY_HTML = `<!DOCTYPE html>
           }
         });
       }, { once: true });
+    }
+
+    // doForgetFactAndSources: option-B two-step confirm.
+    // Fetches the exact co-fed count via GET /memory/cofed before showing the confirm.
+    // Shows: "Confirm? Delete Nsrc source message(s). Ncofed other fact(s) also use these messages."
+    function doForgetFactAndSources(factText, provenance, threadId, btn, sourceCount) {
+      if (!_authToken) {
+        showUnlockHint(btn);
+        return;
+      }
+      if (btn.dataset.armed === "1") return;
+      btn.dataset.armed = "1";
+      btn.textContent = "Fetching…";
+      btn.disabled = true;
+
+      // Fetch exact co-fed count from the daemon
+      fetch("/memory/cofed?provenance=" + encodeURIComponent(provenance) + "&exclude=" + encodeURIComponent(factText), {
+        headers: { "Authorization": "Bearer " + _authToken },
+      }).then(function(r) {
+        return r.ok ? r.json() : { count: "?" };
+      }).then(function(data) {
+        btn.disabled = false;
+        var cofedCount = data.count;
+        btn.textContent = "Confirm? Delete " + sourceCount + " source msg(s). " + cofedCount + " other fact(s) also use these messages.";
+        btn.className = "btn btn-danger";
+
+        var cancelBtn = document.createElement("button");
+        cancelBtn.className = "btn btn-cancel inline-confirm";
+        cancelBtn.textContent = "Cancel";
+
+        var hint = document.createElement("span");
+        hint.className = "inline-hint";
+        hint.textContent = "This also scrubs the source messages";
+
+        var parent = btn.parentNode;
+        parent.insertBefore(cancelBtn, btn.nextSibling);
+        parent.insertBefore(hint, cancelBtn.nextSibling);
+
+        var resetBtn = function() {
+          btn.dataset.armed = "";
+          btn.textContent = "⚠ also delete " + sourceCount + " source message(s)";
+          btn.className = "btn btn-forget";
+          if (cancelBtn.parentNode) cancelBtn.parentNode.removeChild(cancelBtn);
+          if (hint.parentNode) hint.parentNode.removeChild(hint);
+          clearTimeout(timer);
+        };
+
+        cancelBtn.addEventListener("click", resetBtn);
+        var timer = setTimeout(resetBtn, 7000);
+
+        btn.addEventListener("click", function executeOptionB() {
+          btn.removeEventListener("click", executeOptionB);
+          clearTimeout(timer);
+          if (cancelBtn.parentNode) cancelBtn.parentNode.removeChild(cancelBtn);
+          if (hint.parentNode) hint.parentNode.removeChild(hint);
+          btn.disabled = true;
+          btn.textContent = "Deleting…";
+
+          fetch("/memory/forget", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": "Bearer " + _authToken,
+            },
+            body: JSON.stringify({ target_type: "fact", fact_text: factText, provenance: provenance, also_forget_sources: true, reason: "hatch-forget" }),
+          }).then(function (r) {
+            if (r.status === 204) {
+              loadThread(threadId);
+            } else if (r.status === 401) {
+              setStatus("401 — unlock first or bad token.", false);
+              resetBtn();
+            } else {
+              setStatus("Error: " + r.status, false);
+              resetBtn();
+            }
+          });
+        }, { once: true });
+
+      }).catch(function() {
+        btn.dataset.armed = "";
+        btn.textContent = "⚠ also delete " + sourceCount + " source message(s)";
+        btn.disabled = false;
+        setStatus("Error fetching co-fed count.", false);
+      });
     }
 
     // doEdit: inline textarea editor.

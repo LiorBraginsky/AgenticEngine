@@ -1,10 +1,11 @@
-import { test, expect } from "bun:test";
+import { test, expect, spyOn } from "bun:test";
 import { tmpdir } from "node:os";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { MemoryStore } from "./store.js";
 import { WriteGate, REDACTION_MARKER } from "./write-gate.js";
 import { RuleBasedScanner } from "./scanner/memory-scanner.js";
+import { normalizeFactText } from "./normalize-fact-text.js";
 
 function fresh() {
   const dir = mkdtempSync(join(tmpdir(), "mf01-wg-"));
@@ -196,5 +197,108 @@ test("S2: recording a quarantine marker twice for the same target stays at 1 row
   store.recordQuarantine({ target_id: "msg-abc", rule: "injection-directive" }); // repeat
   const rows = store.readQuarantineMarkers();
   expect(rows.filter((r) => r.target_id === "msg-abc").length).toBe(1);
+  store.close();
+});
+
+// ---- chunk 04 Step 3: WriteGate.forgetFact (new semantics) + un-forget ----
+
+test("forgetFact writes a forgotten_facts row and purges the live machine row — NO scrub, NO mutations", () => {
+  const { store, gate } = fresh();
+  const t = store.createThread();
+  const [mid] = store.appendMessages(t, [{ role: "user", content: "source msg" }], "s");
+  store.insertDistilledFacts([
+    { fact: "favourite colour: blue", provenance: mid!, scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
+  ], "smart");
+
+  gate.forgetFact("favourite colour: blue", mid!, { actor: "user", authored_by: "human" }, "hatch-forget");
+
+  // durable record present
+  expect(store.isForgottenNormalizedText(normalizeFactText("favourite colour: blue"))).toBe(true);
+  // live machine row purged
+  expect(store.readDistilledFacts(50).some((f) => f.fact === "favourite colour: blue")).toBe(false);
+  // message byte-intact, no mutations row (B1 at the gate)
+  const db = store.rawDb();
+  expect((db.query("SELECT content FROM messages WHERE id=?").get(mid!) as { content: string }).content).toBe("source msg");
+  expect(db.query("SELECT id FROM mutations WHERE target_message_id=?").get(mid!)).toBeNull();
+  store.close();
+});
+
+test("forgetFact never calls tombstoneFact even for a comma-joined provenance", () => {
+  const { store, gate } = fresh();
+  const spy = spyOn(store, "tombstoneFact");
+  gate.forgetFact("agg fact", "id1,id2", { actor: "user", authored_by: "human" });
+  expect(spy).not.toHaveBeenCalled();
+  store.close();
+});
+
+test("un-forget: a human edit whose normalized content matches a forgotten row clears it", () => {
+  const { store, gate } = fresh();
+  const t = store.createThread();
+  const [mid] = store.appendMessages(t, [{ role: "user", content: "likes tea" }], "s");
+  store.recordForgottenFact({ raw_text: "likes tea", provenance: "p", actor: "u", authored_by: "human" });
+  expect(store.isForgottenNormalizedText(normalizeFactText("likes tea"))).toBe(true);
+
+  gate.edit(mid!, "likes tea", { actor: "user", authored_by: "human" }); // human re-authorship
+
+  expect(store.isForgottenNormalizedText(normalizeFactText("likes tea"))).toBe(false); // un-forgotten
+  store.close();
+});
+
+// ── MINOR-1 RED: option-B atomicity ──────────────────────────────────────────
+// forgetFactAndSources with id1 valid + id2 unknown currently scrubs id1 THEN
+// throws on id2 → partial irreversible scrub. Fix: pre-validate ALL components
+// before any mutation (all-or-nothing).
+
+test("MINOR-1: forgetFactAndSources with one valid + one unknown id throws AND leaves NOTHING changed (all-or-nothing)", () => {
+  const { store, gate } = fresh();
+  const t = store.createThread();
+  const [m1] = store.appendMessages(t, [{ role: "user", content: "valid source content" }], "s");
+  const unknownId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"; // valid UUID shape but unknown
+
+  // Act — must throw (unknown id)
+  expect(() =>
+    gate.forgetFactAndSources("agg fact", `${m1},${unknownId}`, { actor: "user", authored_by: "human" }),
+  ).toThrow();
+
+  // Assert: m1 content BYTE-INTACT (no partial scrub)
+  const db = store.rawDb();
+  const row = db.query("SELECT content FROM messages WHERE id=?").get(m1!) as { content: string };
+  expect(row.content).toBe("valid source content");
+
+  // Assert: NO mutations row for m1
+  const mut = db.query("SELECT id FROM mutations WHERE target_message_id=?").get(m1!);
+  expect(mut).toBeNull();
+
+  // Assert: NO forgotten_facts row written
+  const forgotten = db.query("SELECT id FROM forgotten_facts").all();
+  expect(forgotten.length).toBe(0);
+
+  store.close();
+});
+
+// ── MINOR-2 known limit: un-forget clears on coincidental normalized-text collision ──
+// This documents the CURRENT intentional behavior (per plan addendum MINOR-2).
+// A human edit whose normalized text coincidentally matches a forgotten fact's text
+// clears the forgotten_facts row regardless of any relational connection.
+// This is named as a known limit — do NOT tighten in chunk 04; scope: 2c.
+
+test("KNOWN LIMIT — un-forget clears on coincidental normalized-text collision", () => {
+  const { store, gate } = fresh();
+  const t = store.createThread();
+
+  // Forget a fact for some unrelated reason
+  store.recordForgottenFact({ raw_text: "likes tea", provenance: "some-prov", actor: "u", authored_by: "human" });
+  expect(store.isForgottenNormalizedText(normalizeFactText("likes tea"))).toBe(true);
+
+  // An UNRELATED message happens to have the same normalized text
+  const [mid] = store.appendMessages(t, [{ role: "user", content: "unrelated message" }], "s");
+  // Human edits it with content that normalizes to "likes tea"
+  gate.edit(mid!, "likes tea", { actor: "user", authored_by: "human" });
+
+  // KNOWN LIMIT: the forgotten_facts row is cleared even though this edit has no
+  // relation to the original forget. This is intentional behavior in v0 (edit path
+  // is the only un-forget trigger; provenance-relation scoping is deferred to 2c).
+  expect(store.isForgottenNormalizedText(normalizeFactText("likes tea"))).toBe(false);
+
   store.close();
 });

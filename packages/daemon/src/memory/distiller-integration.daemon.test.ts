@@ -516,6 +516,134 @@ test("smart forget-survives-re-derive (D12): tombstoned message absent from dige
   store.close();
 });
 
+// ─── Test §7.1: forget-during-distill interleave ────────────────────────────
+//
+// Verifies the eventually-consistent forget guarantee when forgetFact fires
+// WHILE a distill call is in-flight (i.e., between _getForgottenSuppression
+// snapshot and replaceProjection commit).
+//
+// Gap being exercised:
+//   _getForgottenSuppression is called BEFORE the LLM await, so if forgetFact
+//   lands DURING the LLM call the stale snapshot means Layer-T does NOT suppress
+//   the forgotten fact in THIS run — it gets re-committed to distilled_facts.
+//
+// Guarantee being documented:
+//   (a) retrieve() backstop (isForgottenNormalizedText) catches the stale row at
+//       read time, so the forgotten fact NEVER surfaces in an injected slice.
+//   (b) A subsequent distill (fresh snapshot) drops it via Layer-T.
+//   (c) The safe fact is never affected by either path.
+//
+// The pause mechanism: the stub's `create` awaits a Promise<void> deferred we
+// hold. We start `smart.distill()` (don't await), which suspends at the LLM
+// call. While it's suspended, we fire `gate.forgetFact`. Then we resolve the
+// deferred and await the distill + replaceProjection.
+
+test("§7.1: forget interleaved with in-flight distill does not corrupt the projection (fact stays gone, prior projection intact)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mq04-71-interleave-"));
+  const store = new MemoryStore({ dataDir: dir });
+  const gate = new WriteGate(store, new RuleBasedScanner());
+
+  // ── Seed: two messages that the echo-stub will emit as two separate facts ──
+  const t = store.createThread();
+  store.appendMessages(t, [{ role: "user", content: "fact A keep" }], "s1");
+  const [midB] = store.appendMessages(t, [{ role: "user", content: "fact B forget-me" }], "s2");
+
+  // ── Build a pausable echo-stub ─────────────────────────────────────────────
+  // deferred: resolve() unpauses the in-flight LLM call.
+  let resolveLlm!: () => void;
+  const llmGate = new Promise<void>((res) => { resolveLlm = res; });
+
+  const pausingClient = {
+    messages: {
+      create: async (params: { messages: { role: string; content: string }[] }) => {
+        // Wait until the test resolves the gate (simulates an in-flight LLM call)
+        await llmGate;
+        // Then echo exactly like makeEchoStub
+        const digestText = params.messages[0]?.content ?? "";
+        const lines = digestText.split("\n");
+        const facts: { fact: string; provenance: string; scope: string; expiry: null; confidence: number }[] = [];
+        for (const line of lines) {
+          const m = line.match(/^\[([^\|]+)\|([^\]]+)\]\s+(.+)$/);
+          if (m) {
+            facts.push({ fact: m[3]!, provenance: m[2]!, scope: "cross-thread", expiry: null, confidence: 0.8 });
+          }
+        }
+        return { content: [{ type: "text", text: JSON.stringify(facts) }] };
+      },
+    },
+  } as unknown as Anthropic;
+
+  const smart = new SmartDistillerProvider({ client: pausingClient });
+
+  // ── Step 1: start distill — it suspends at the LLM call ──────────────────
+  // Smart reads _getForgottenSuppression BEFORE the await, so the snapshot is EMPTY here.
+  const distillPromise = smart.distill(store, t);
+
+  // ── Step 2: fire forgetFact while distill is in-flight ───────────────────
+  // forgotten_facts INSERT is synchronous (no transaction on the await seam).
+  // purgeLiveMachineFactsByForget is a no-op here (distilled_facts still empty — distill
+  // hasn't committed yet). This is the gap: the stale snapshot won't catch this forget.
+  gate.forgetFact("fact B forget-me", midB!, { actor: "user", authored_by: "human" }, "§7.1 test");
+
+  // Confirm the durable record landed
+  const forgottenRows = store.readForgottenFacts();
+  expect(forgottenRows.some((r) => r.raw_text === "fact B forget-me")).toBe(true);
+
+  // ── Step 3: resolve the LLM gate → distill completes ─────────────────────
+  resolveLlm();
+  const result = await distillPromise;
+
+  // The stale snapshot means Layer-T DID NOT suppress "fact B forget-me" this run.
+  // The distill result contains both facts (the gap we are documenting).
+  expect(result.facts.some((f) => f.fact === "fact A keep")).toBe(true);
+  // "fact B forget-me" slipped through Layer-T due to the stale snapshot.
+  // This is expected — the eventually-consistent guarantee relies on retrieve() backstop + next distill.
+  expect(result.facts.some((f) => f.fact === "fact B forget-me")).toBe(true);
+
+  // Commit the stale projection (exactly what distiller-registration.ts does via replaceProjection)
+  store.replaceProjection(result.facts, "smart", [{ threadId: t, trigger: "reprojection", factsProduced: result.facts.length }]);
+
+  // After commit, the RAW distilled_facts table contains the stale row.
+  // We use rawDb() here (not readDistilledFacts) because readDistilledFacts now applies
+  // provider-agnostic read-side suppression (MAJOR-1 fix) which correctly hides the
+  // forgotten row. The replaceProjection tx is byte-for-byte unchanged — the stale row
+  // IS committed to the DB; it is just suppressed at the read surface.
+  // This is the correct eventually-consistent contract: stale snapshot → row lands in DB →
+  // read surface hides it immediately; next distill permanently drops it.
+  const rawDb = store.rawDb();
+  const rawFactsAll = rawDb.query("SELECT fact FROM distilled_facts").all() as { fact: string }[];
+  expect(rawFactsAll.some((f) => f.fact === "fact A keep")).toBe(true);
+  expect(rawFactsAll.some((f) => f.fact === "fact B forget-me")).toBe(true); // stale re-commit in raw DB
+
+  // ── Step 4: assert the retrieve() backstop catches the forgotten fact ─────
+  // retrieve() calls isForgottenNormalizedText() per row — this is the gap-closing filter.
+  const slice = await smart.retrieve(store, store.createThread());
+  const sliceContents = slice.map((m) => m.content);
+
+  // (a) safe fact IS present in the injected slice
+  expect(sliceContents.some((c) => c.includes("fact A keep"))).toBe(true);
+
+  // (b) forgotten fact is ABSENT from the injected slice (retrieve backstop closed the gap)
+  expect(sliceContents.some((c) => c.includes("fact B forget-me"))).toBe(false);
+
+  // ── Step 5: second distill (fresh snapshot) permanently drops the forgotten fact ─
+  const smart2 = new SmartDistillerProvider({ client: makeEchoStub() });
+  const result2 = await smart2.distill(store, t);
+  store.replaceProjection(result2.facts, "smart", [{ threadId: t, trigger: "reprojection", factsProduced: result2.facts.length }]);
+
+  // (c) after next distill, the forgotten fact is gone from distilled_facts too (Layer-T)
+  const factsAfterRedistill = store.readDistilledFacts(50);
+  expect(factsAfterRedistill.some((f) => f.fact === "fact A keep")).toBe(true);
+  expect(factsAfterRedistill.some((f) => f.fact === "fact B forget-me")).toBe(false);
+
+  // And retrieve() still correctly serves only the safe fact
+  const slice2 = await smart2.retrieve(store, store.createThread());
+  expect(slice2.some((m) => m.content.includes("fact A keep"))).toBe(true);
+  expect(slice2.some((m) => m.content.includes("fact B forget-me"))).toBe(false);
+
+  store.close();
+});
+
 // ─── Test: failure-keeps-projection (smart) ───────────────────────────────────
 
 test("smart failure-keeps-projection: throwing stub => prior projection INTACT, reprojection-failed rows, console.error", async () => {
@@ -560,6 +688,110 @@ test("smart failure-keeps-projection: throwing stub => prior projection INTACT, 
 
   // Error was rethrown (WS handler must catch it)
   expect(caughtError).not.toBeNull();
+
+  store.close();
+});
+
+// ─── MAJOR-1 RED tests: provider-agnostic suppression ────────────────────────
+//
+// M1.1: DumbTail re-projection should suppress a forgotten fact, but currently
+//       readDistilledFacts/readDistilledFactsForThread do NOT filter forgotten_facts.
+//       A re-derived fact from the intact source REAPPEARS after replaceProjection.
+//
+// M1.2: FixedMarker mirror — same defect via the thread:<id> provenance shape.
+//
+// These tests are RED on the current code (no read-side suppression in store.ts).
+// They turn GREEN after the M1.3 fix (suppressForgottenMachineRows added to both
+// readDistilledFacts and readDistilledFactsForThread in store.ts).
+
+import { Hatch } from "./hatch.js";
+import { normalizeFactText } from "./providers/smart-distiller-provider.js";
+
+test("M1.1 MAJOR-1: DumbTail — forgotten fact stays GONE from both injection slice and hatch view after re-projection (source byte-intact)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mq04-major1-dumb-"));
+  const store = new MemoryStore({ dataDir: dir });
+  const gate = new WriteGate(store, new RuleBasedScanner());
+  const hatch = new Hatch(store, gate);
+
+  // 1. Seed: thread + message
+  const tId = store.createThread();
+  const [mid] = store.appendMessages(tId, [{ role: "user", content: "favourite colour: blue" }], "s");
+  if (!mid) throw new Error("no message id");
+
+  // 2. DumbTail distill → produces fact "favourite colour: blue" from the message
+  const dumb = new DumbTailProvider();
+  const result = await dumb.distill(store, tId);
+  store.replaceProjection(result.facts, "dumb-tail", [{ threadId: tId, trigger: "distill", factsProduced: result.facts.length }]);
+
+  // Confirm fact is initially present in BOTH surfaces
+  const sliceBefore = await dumb.retrieve(store, tId);
+  expect(sliceBefore.some((m) => m.content.includes("favourite colour: blue"))).toBe(true);
+  const viewBefore = await hatch.view(tId);
+  expect(viewBefore.distilledFacts.some((f) => f.fact === "favourite colour: blue")).toBe(true);
+
+  // 3. Forget the fact (durable forgotten_facts record + live purge)
+  hatch.forgetFact("favourite colour: blue", mid, { actor: "user", authored_by: "human" }, "M1.1-test");
+
+  // 4. Re-project: DumbTail re-derives from the INTACT source message
+  const result2 = await dumb.distill(store, tId);
+  store.replaceProjection(result2.facts, "dumb-tail", [{ threadId: tId, trigger: "reprojection", factsProduced: result2.facts.length }]);
+
+  // 5. Assert: fact GONE from injection slice (readDistilledFactsForThread)
+  const sliceAfter = await dumb.retrieve(store, tId);
+  expect(sliceAfter.some((m) => m.content.includes("favourite colour: blue"))).toBe(false);
+
+  // 6. Assert: fact GONE from hatch view (readDistilledFacts)
+  const viewAfter = await hatch.view(tId);
+  expect(viewAfter.distilledFacts.some((f) => normalizeFactText(f.fact) === normalizeFactText("favourite colour: blue"))).toBe(false);
+
+  // 7. Assert: source message content BYTE-INTACT (B1 — no scrub on fact-forget path)
+  const rawRow = store.rawDb().query<{ content: string }, string>("SELECT content FROM messages WHERE id = ?").get(mid);
+  expect(rawRow?.content).toBe("favourite colour: blue");
+
+  store.close();
+});
+
+test("M1.2 MAJOR-1: FixedMarker — forgotten thread-provenance fact stays GONE from both surfaces after re-projection (source intact)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mq04-major1-fixed-"));
+  const store = new MemoryStore({ dataDir: dir });
+  const gate = new WriteGate(store, new RuleBasedScanner());
+  const hatch = new Hatch(store, gate);
+
+  // 1. Seed: thread + message
+  const tId = store.createThread();
+  const [mid] = store.appendMessages(tId, [{ role: "user", content: "the quick brown fox" }], "s");
+  if (!mid) throw new Error("no message id");
+
+  // 2. FixedMarker distill → produces "thread:<tId> has 1 live messages" with provenance "thread:<tId>"
+  const fixed = new FixedMarkerProvider();
+  const result = await fixed.distill(store, tId);
+  store.replaceProjection(result.facts, "fixed-marker", [{ threadId: tId, trigger: "distill", factsProduced: result.facts.length }]);
+
+  const expectedFact = `thread:${tId} has 1 live message`;
+
+  // Confirm fact is present initially
+  const viewBefore = await hatch.view(tId);
+  expect(viewBefore.distilledFacts.some((f) => f.fact === expectedFact)).toBe(true);
+
+  // 3. Forget the fact (provenance = "thread:<tId>")
+  hatch.forgetFact(expectedFact, `thread:${tId}`, { actor: "user", authored_by: "human" }, "M1.2-test");
+
+  // 4. Re-project: FixedMarker re-derives from the intact thread
+  //    FixedMarker only skips if isFactTombstoned — NOT forgotten_facts — so it re-derives.
+  const result2 = await fixed.distill(store, tId);
+  store.replaceProjection(result2.facts, "fixed-marker", [{ threadId: tId, trigger: "reprojection", factsProduced: result2.facts.length }]);
+
+  // 5. Assert: fact GONE from hatch view (readDistilledFacts)
+  const viewAfter = await hatch.view(tId);
+  expect(viewAfter.distilledFacts.some((f) => normalizeFactText(f.fact) === normalizeFactText(expectedFact))).toBe(false);
+
+  // 6. Assert: fact GONE from injection slice (readDistilledFactsForThread)
+  const sliceAfter = await fixed.retrieve(store, tId);
+  expect(sliceAfter.some((m) => m.content.includes(expectedFact))).toBe(false);
+
+  // 7. Source message BYTE-INTACT
+  const rawRow = store.rawDb().query<{ content: string }, string>("SELECT content FROM messages WHERE id = ?").get(mid);
+  expect(rawRow?.content).toBe("the quick brown fox");
 
   store.close();
 });

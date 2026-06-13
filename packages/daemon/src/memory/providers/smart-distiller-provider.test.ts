@@ -5,7 +5,7 @@
  * Real SQLite everywhere else (mkdtempSync fresh store per test).
  */
 
-import { test, expect, spyOn } from "bun:test";
+import { test, expect, spyOn, describe } from "bun:test";
 import { tmpdir } from "node:os";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
@@ -727,8 +727,6 @@ test("SmartDistillError.truncated defaults to false for ordinary parse failures"
 });
 
 // ── D-V6e — distiller language preservation (spec §3.6 D-V6e) ─────────────
-
-import { describe } from "bun:test";
 
 describe("D-V6e — distiller language preservation", () => {
   test('SMART_SYSTEM_PROMPT contains "user\'s language" instruction (case-insensitive)', () => {

@@ -7,6 +7,7 @@
  *   (3) never-claim-stateless / "nothing relevant" framing when no [remembered] messages
  *   (4) user can view/edit/delete via the History page
  *   (5) no-fabricated-links rule (link attached automatically post-reply)
+ *   (6) cannot-self-forget (spec §3.6 D-V6d)
  */
 import { test, expect, describe } from "bun:test";
 import {

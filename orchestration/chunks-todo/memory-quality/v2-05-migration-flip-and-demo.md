@@ -1,6 +1,6 @@
 # Chunk v2-05: Migration + default cutover + feature-closing live demo
 
-**Status:** todo
+**Status:** in-progress
 **Created:** 2026-06-13
 **Phase:** memory-distiller-v2 (spec `docs/specs/2026-06-13-memory-distiller-v2.md` §3.8, §5, §6)
 **Estimated size:** ~1 day

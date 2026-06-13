@@ -77,12 +77,6 @@ export async function handleMemoryHttp(
     return handleEdit(req, deps);
   }
 
-  // GET /memory/cofed — token-gated read (chunk 04 / ADR-0015 decision 5)
-  // Returns exact count of other machine-authored facts fed by the given provenance.
-  if (pathname === "/memory/cofed" && req.method === "GET") {
-    return handleCofed(req, url, deps);
-  }
-
   // GET /history.html — T2.2a (minimal static History page)
   if (pathname === "/history.html" && req.method === "GET") {
     return new Response(HISTORY_HTML, {
@@ -140,37 +134,26 @@ async function handleForget(req: Request, deps: MemoryHttpDeps): Promise<Respons
   const parsed = await parseBody(req);
   if (!parsed.ok) return Response.json({ error: "bad_body" }, { status: 400 });
 
-  const { target_type, target, fact_text, provenance, also_forget_sources, reason } = parsed.data;
+  const { target_type, fact_text, provenance, reason } = parsed.data;
   // reason is optional
   const reasonStr = typeof reason === "string" ? reason : undefined;
 
-  // Dispatch by target_type (chunk 04 / ADR-0015 — intent-based dispatch).
-  // Body fields target_type/fact_text/provenance/also_forget_sources are ADDITIVE —
-  // not a frozen-wire change (ADR-0015 relationship §; ADR-0013 token-gated write surface).
+  // v2-04: fact-forget is the ONLY user forget path (D-V6a-bis).
+  // target_type:"message" user route REMOVED — returns 400 bad_body.
+  // also_forget_sources (option B) REMOVED — plain forgetFact always called.
   try {
-    if (target_type === "message") {
-      // HARD scrub path — isMessageId assert inside WriteGate.forget
-      if (typeof target !== "string" || !target) {
-        return Response.json({ error: "bad_body" }, { status: 400 });
-      }
-      deps.hatch.forgetMessage(target, HTTP_CTX, reasonStr);
-      return new Response(null, { status: 204 });
-    } else if (target_type === "fact") {
-      // FACT path — writes only forgotten_facts, never scrubs (B1 structural invariant)
+    if (target_type === "fact") {
+      // FACT path — durable delete of the stable-id row, never scrubs (B1 structural invariant)
       if (typeof fact_text !== "string" || !fact_text) {
         return Response.json({ error: "bad_body" }, { status: 400 });
       }
       if (typeof provenance !== "string" || !provenance) {
         return Response.json({ error: "bad_body" }, { status: 400 });
       }
-      if (also_forget_sources === true) {
-        deps.hatch.forgetFactAndSources(fact_text, provenance, HTTP_CTX, reasonStr);
-      } else {
-        deps.hatch.forgetFact(fact_text, provenance, HTTP_CTX, reasonStr);
-      }
+      deps.hatch.forgetFact(fact_text, provenance, HTTP_CTX, reasonStr);
       return new Response(null, { status: 204 });
     } else {
-      // missing or unrecognised target_type → 400
+      // target_type:"message", missing, or any unrecognised value → 400 bad_body
       return Response.json({ error: "bad_body" }, { status: 400 });
     }
   } catch (err: unknown) {
@@ -204,20 +187,6 @@ async function handleEdit(req: Request, deps: MemoryHttpDeps): Promise<Response>
   } catch (err: unknown) {
     return mapWriteError(err);
   }
-}
-
-// ─── Co-fed count route (chunk 04 / ADR-0015 decision 5) ─────────────────────
-
-function handleCofed(req: Request, url: URL, deps: MemoryHttpDeps): Response {
-  // Token-gated read (same gate as other read routes)
-  if (!deps.tokenStore.verify(req.headers.get("authorization"))) return rejectRead(url);
-  const prov = url.searchParams.get("provenance") ?? "";
-  const exclude = url.searchParams.get("exclude") ?? "";
-  if (!prov) return Response.json({ error: "bad_body" }, { status: 400 });
-  // Split the comma-joined provenance into message-id components
-  const messageIds = prov.split(",").map((p) => p.trim()).filter(Boolean);
-  const count = deps.store.countFactsFedByMessages(messageIds, exclude);
-  return Response.json({ count });
 }
 
 // ─── Shared utilities ─────────────────────────────────────────────────────────

@@ -40,9 +40,10 @@ afterEach(() => {
 
 // ── B1 NAMED GATE: a fact-forget can NEVER scrub a message or write a tombstone ──
 //
-// Step 1 (RED): Tests use the FINAL intent-dispatch API (forgetFact/forgetMessage) which
-// does NOT exist yet. This compile error is the correct RED — it pins the invariant before
-// any production code moves. These tests go GREEN in Step 4.
+// v2-04: Hatch.forgetMessage and Hatch.forgetFactAndSources removed (D-V6a-bis, Ruling 2).
+// The ONE user forget path is Hatch.forgetFact (durable delete, NO scrub).
+// WriteGate.forget (the hard-scrub PRIMITIVE) is retained for the future THREAD-forget;
+// its unit tests live in write-gate.test.ts.
 
 test("B1 no-downgrade: forgetFact on a bare message-UUID provenance leaves messages.content byte-INTACT and writes NO mutations row", async () => {
   const hatch = new Hatch(store, gate);
@@ -60,22 +61,9 @@ test("B1 no-downgrade: forgetFact on a bare message-UUID provenance leaves messa
   expect(mut).toBeNull(); // NO redaction tombstone written by the fact path
 });
 
-test("B1 no-downgrade: forgetMessage still scrubs (the message path is unchanged)", async () => {
-  const hatch = new Hatch(store, gate);
-  const threadId = store.createThread();
-  const [mid] = store.appendMessages(threadId, [{ role: "user", content: "scrub me" }], "s1");
-
-  hatch.forgetMessage(mid!, { actor: "user", authored_by: "human" });
-
-  const db = store.rawDb();
-  const msg = db.query("SELECT content FROM messages WHERE id = ?").get(mid!) as { content: string };
-  expect(msg.content).toBe(REDACTION_MARKER); // scrubbed
-  const mut = db.query("SELECT id FROM mutations WHERE target_message_id = ? AND kind='tombstone'").get(mid!);
-  expect(mut).not.toBeNull(); // redaction tombstone written
-});
-
-// v2-04: forgetFactAndSources tests removed. Option B (forgetFactAndSources) was removed
-// in v2-04 per Ruling 2. The WriteGate.forget primitive and its unit tests remain.
+// v2-04: "B1 no-downgrade: forgetMessage still scrubs" test removed — Hatch.forgetMessage
+// removed in v2-04 per Ruling 2. The WriteGate.forget primitive scrub coverage lives in
+// write-gate.test.ts (kept intact). forgetFactAndSources tests also removed.
 
 // ─── T1.1: Hatch.view — archive + distilled facts + distillation events ──────
 
@@ -133,38 +121,10 @@ test("T1.1: view distilledFacts includes facts from the real store", async () =>
   expect(result.distilledFacts.some((f) => f.fact === "deploy is yeet.sh")).toBe(true);
 });
 
-// ─── T1.2: Hatch.forget — message target → existing WriteGate.forget ─────────
-
-test("T1.2(c): Hatch.forgetMessage of a message id → tombstone + hard-scrub absent from next injection", async () => {
-  const hatch = new Hatch(store, gate);
-  const hook = new ConsolidationHook(store);
-  const dumbTail = new DumbTailProvider();
-  registerDistiller(hook, store, dumbTail, new RuleBasedScanner());
-
-  const threadId = store.createThread();
-  const [mid] = store.appendMessages(threadId, [{ role: "user", content: "secret fact" }], "s1");
-
-  // Dismiss → distill (so fact is live in distilled_facts)
-  await hook.dismiss([threadId]);
-  expect(store.readDistilledFacts(50).some((f) => f.fact === "secret fact")).toBe(true);
-
-  // Forget via Hatch (message-id route → existing WriteGate.forget)
-  hatch.forgetMessage(mid!, { actor: "user", authored_by: "human" });
-
-  // Immediately purged from live slice
-  expect(store.readDistilledFacts(50).some((f) => f.fact === "secret fact")).toBe(false);
-
-  // Re-derive: forgotten message should NOT re-appear (tombstoned → not in new tail)
-  // With incremental DumbTail, re-distill via a second dismiss (watermark already advanced
-  // past the tombstoned message, so it won't be re-read anyway).
-  // Directly verify the forgotten fact is gone from distilled_facts.
-  expect(store.readDistilledFacts(50).some((f) => f.fact === "secret fact")).toBe(false);
-
-  // Retrieve: injection slice must not contain the forgotten fact
-  const freshThread = store.createThread();
-  const slice = await dumbTail.retrieve(store, freshThread);
-  expect(slice.some((m) => m.content.includes("secret fact"))).toBe(false);
-});
+// ─── T1.2: Hatch.forgetFact + edit ───────────────────────────────────────────
+//
+// v2-04: T1.2(c) (Hatch.forgetMessage) removed — Hatch.forgetMessage removed (Ruling 2).
+// WriteGate.forget scrub+tombstone coverage lives in write-gate.test.ts (intact).
 
 test("T1.2(b): Hatch.edit → authored_by:human correction reflected in within-thread tail", async () => {
   const hatch = new Hatch(store, gate);
@@ -225,22 +185,10 @@ test("T1.2(a) LOAD-BEARING: forgetFact(thread-level provenance) — durable dele
   expect(store.readForgottenFacts().length).toBe(0);
 });
 
-// ─── T1.2(d): No regression — MF-02/03 forget via message id still works ──────
-
-test("T1.2(d) regression: Hatch.forget(messageId) → tombstone guard (5e) — machine cannot clobber human", async () => {
-  const hatch = new Hatch(store, gate);
-
-  const threadId = store.createThread();
-  const [mid] = store.appendMessages(threadId, [{ role: "user", content: "human authored" }], "s1");
-
-  // Machine attempt to forget a human-authored message: must be a no-op
-  hatch.forgetMessage(mid!, { actor: "agent", authored_by: "machine" });
-
-  // Content must be byte-intact
-  const db = store.rawDb();
-  const row = db.query("SELECT content FROM messages WHERE id = ?").get(mid!) as { content: string };
-  expect(row.content).toBe("human authored");
-});
+// ─── T1.2(d): No regression — WriteGate.forget primitive still works ─────────
+//
+// v2-04: Hatch.forget(messageId) tombstone-guard test removed (Hatch.forgetMessage removed).
+// The WriteGate.forget primitive regression (direct gate.forget) is kept below.
 
 test("T1.2(d) regression: WriteGate.forget(messageId) still tombstones and purges — existing path unchanged", async () => {
   const hook = new ConsolidationHook(store);

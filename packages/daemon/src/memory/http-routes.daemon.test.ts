@@ -25,7 +25,6 @@ import { tmpdir } from "node:os";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { MemoryStore } from "./store.js";
-import { REDACTION_MARKER } from "./schema.js";
 
 let sharedDataDir: string;
 let server: ReturnType<typeof import("../index.js").startDaemon>;
@@ -141,46 +140,10 @@ test("T2.1c-1: POST /memory/forget without Authorization header → 401", async 
   expect(res.status).toBe(401);
 });
 
-// Test 5: POST /memory/forget WITH token on seeded human message → 204; disk shows REDACTION_MARKER.
-// Uses the new target_type:"message" dispatch (chunk 04 additive body fields).
-test("T2.1c-2: POST /memory/forget target_type=message with Bearer token → 204 and disk content is REDACTION_MARKER", async () => {
-  const token = readToken();
-  const res = await fetch(`http://127.0.0.1:${PORT}/memory/forget`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({ target_type: "message", target: seededMessageId, reason: "test-forget" }),
-  });
-  expect(res.status).toBe(204);
-
-  // Verify on disk: open a fresh MemoryStore on the same dataDir and assert REDACTION_MARKER.
-  const verifyStore = new MemoryStore({ dataDir: sharedDataDir });
-  const archive = verifyStore.readThreadArchive(seededThreadId);
-  verifyStore.close();
-  const msg = archive.find((m) => m.id === seededMessageId);
-  expect(msg).toBeDefined();
-  expect(msg!.content).toBe(REDACTION_MARKER);
-});
-
-// Test 6: POST /memory/forget target_type=message with unknown UUID → 404.
-// Unknown UUID → WriteGate.forget → threadOf throws "not found" → route maps to 404.
-test("T2.1c-3: POST /memory/forget target_type=message with unknown UUID target → 404 not_found", async () => {
-  const token = readToken();
-  const unknownId = crypto.randomUUID();
-  const res = await fetch(`http://127.0.0.1:${PORT}/memory/forget`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({ target_type: "message", target: unknownId }),
-  });
-  expect(res.status).toBe(404);
-  const body = await res.json() as { error: string };
-  expect(body.error).toBe("target_not_found");
-});
+// v2-04: T2.1c-2 (POST /memory/forget target_type=message → 204) removed.
+// v2-04: T2.1c-3 (POST /memory/forget target_type=message unknown UUID → 404) removed.
+// The per-message message-forget user path was removed in v2-04 (D-V6a-bis).
+// The message-success path is now a 400. See v2-04 RED→GREEN tests below.
 
 // Test: POST /memory/forget target_type=fact → 204, message content intact.
 // B1 at the HTTP boundary: fact-forget must not scrub the source message.
@@ -398,4 +361,69 @@ test("T2.2a-2: GET /history.html — no native browser dialogs (confirm/prompt/a
   expect(body).not.toContain("confirm(");
   expect(body).not.toContain("prompt(");
   expect(body).not.toContain("alert(");
+});
+
+// ─── v2-04 Task 2 (RED → GREEN): option B + per-message user path removal ─────
+
+// 2.1a: POST /memory/forget target_type=message → 400 (user route removed in v2-04)
+test("v2-04: POST /memory/forget target_type=message → 400 (user route removed)", async () => {
+  const token = readToken();
+  const res = await fetch(`http://127.0.0.1:${PORT}/memory/forget`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ target_type: "message", target: seededMessageId }),
+  });
+  expect(res.status).toBe(400);
+});
+
+// 2.1b: GET /memory/cofed → 404 (route removed in v2-04)
+test("v2-04: GET /memory/cofed → 404 (route removed)", async () => {
+  const token = readToken();
+  const res = await fetch(`http://127.0.0.1:${PORT}/memory/cofed?provenance=abc`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  expect(res.status).toBe(404);
+});
+
+// 2.1c: POST /memory/forget target_type=fact with also_forget_sources:true behaves as
+// plain fact-forget (flag is ignored) → 204, source message content stays byte-intact.
+test("v2-04: POST /memory/forget target_type=fact with also_forget_sources:true → 204, source message intact", async () => {
+  const token = readToken();
+  // Seed a fresh message whose id is used as provenance for the fact.
+  const setupStore = new MemoryStore({ dataDir: sharedDataDir });
+  const atsThread = setupStore.createThread("also-forget-sources-test");
+  const [atsMsgId] = setupStore.appendMessages(
+    atsThread,
+    [{ role: "user", content: "source content stays intact" }],
+    "ats-session",
+  );
+  setupStore.close();
+
+  const res = await fetch(`http://127.0.0.1:${PORT}/memory/forget`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      target_type: "fact",
+      fact_text: "some fact to forget",
+      provenance: atsMsgId!,
+      also_forget_sources: true,
+      reason: "v2-04-test",
+    }),
+  });
+  // The flag is ignored → plain fact-forget → 204
+  expect(res.status).toBe(204);
+
+  // Source message content must be byte-intact (not scrubbed — fact-forget never scrubs)
+  const verifyStore = new MemoryStore({ dataDir: sharedDataDir });
+  const archive = verifyStore.readThreadArchive(atsThread);
+  verifyStore.close();
+  const msg = archive.find((m) => m.id === atsMsgId);
+  expect(msg).toBeDefined();
+  expect(msg!.content).toBe("source content stays intact");
 });

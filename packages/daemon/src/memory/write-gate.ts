@@ -3,6 +3,7 @@ import { isMessageId } from "./store.js";
 import type { SessionMessage } from "../providers/provider.js";
 import { REDACTION_MARKER } from "./schema.js";
 import type { MemoryScanner } from "./scanner/memory-scanner.js";
+import { normalizeFactText } from "./normalize-fact-text.js";
 
 export { REDACTION_MARKER };
 
@@ -98,40 +99,54 @@ export class WriteGate {
   }
 
   /**
-   * forgetFact — forget a distilled fact by its provenance string (MF-05 T1.2).
-   * Dispatched by Hatch.forget when the target is not a message UUID.
+   * forgetFact — forget a distilled fact by its text + provenance (chunk 04 / ADR-0015).
    *
-   * Three steps (additive, no re-plumb of write/inject path):
-   *   1. tombstoneFact in the store (appends a mutations row for the provenance)
-   *   2. dropDistilledFactsByProvenance (purge live slice — message-level provenance)
-   *   3. dropDistilledFactsForThread (purge live slice — thread-level provenance)
-   * Both drop calls are idempotent — only one will match depending on provenance shape.
+   * New signature: (factText, provenance, ctx, reason?) — intent-based.
+   * No longer receives a bare provenance as first arg; the caller provides the FACT TEXT
+   * so we can key the forgotten_facts record on normalized text (the load-bearing match key).
    *
-   * 5e guard: the store.tombstoneFact call refuses a machine tombstone of a
-   * human-authored fact and returns false; the live-slice purge is still applied
-   * (the projection is machine-authored by default; human facts survive per the
-   * authored_by != 'human' guard in dropDistilledFacts*).
+   * Three steps (SEPARATE-TABLE path — never touches messages or mutations):
+   *   1. recordForgottenFact: durable entry in forgotten_facts keyed on normalizeFactText(factText)
+   *   2. purgeLiveMachineFactsByForget: delete live machine rows by provenance OR normalized text
+   *      (both checks ensure a re-derived fact with different provenance is still caught)
+   *
+   * DOES NOT call tombstoneFact — the isMessageId throw stays on the message path (ADR-0015 decision 1).
+   * DOES NOT call dropDistilledFactsByProvenance/dropDistilledFactsForThread — those are message-path.
+   * NO scrub of messages.content, NO mutations row (B1 structural invariant).
+   *
+   * 5e guard: purgeLiveMachineFactsByForget carries authored_by != 'human' guard.
    */
-  forgetFact(provenance: string, ctx: WriteContext, reason?: string): void {
-    // Seam invariant: forgetFact is for distilled-fact provenances only.
-    // A UUID-shaped provenance is a messages.id — the caller must use forget() instead,
-    // which performs BOTH the tombstone AND the content hard-scrub atomically.
-    // Accepting a UUID here would tombstone without scrubbing → view-says-forgotten /
-    // disk-says-plaintext divergence (security invariant breach, #31 concern).
-    if (isMessageId(provenance)) {
-      throw new Error(
-        `[WriteGate] forgetFact received a UUID-shaped provenance ("${provenance}"). ` +
-        `Use forget() to tombstone+scrub a message; forgetFact is for distilled-fact provenances only (e.g. "thread:<uuid>").`,
-      );
-    }
-    // Append the fact-level tombstone (5e-guarded inside tombstoneFact)
-    this.store.tombstoneFact(provenance, ctx, reason);
-    // Purge the live slice immediately (grill S2 — no-window between tombstone + purge)
-    this.store.dropDistilledFactsByProvenance(provenance);
-    // For thread-level provenance ("thread:<id>"), also purge via thread id
-    if (provenance.startsWith("thread:")) {
-      const threadId = provenance.slice("thread:".length);
-      this.store.dropDistilledFactsForThread(threadId);
+  forgetFact(factText: string, provenance: string, ctx: WriteContext, reason?: string): void {
+    const norm = normalizeFactText(factText);
+    // 1. Durable record (keyed on normalized text — the Layer-T match key)
+    this.store.recordForgottenFact({
+      raw_text: factText,
+      provenance,
+      actor: ctx.actor,
+      reason,
+      authored_by: ctx.authored_by,
+    });
+    // 2. Immediate purge of live machine rows (no-window; 5e guard is inside purgeLiveMachineFactsByForget)
+    this.store.purgeLiveMachineFactsByForget(provenance, norm);
+  }
+
+  /**
+   * forgetFactAndSources — fact-forget + option-B hard escape (chunk 04 / ADR-0015 decision 3).
+   *
+   * 1. Same durable fact-forget record + purge (forgetFact above)
+   * 2. Option B: hard-scrub each message-id source via the existing message path.
+   *    thread:<id> provenance has no specific source messages → no-op (never a whole-thread scrub).
+   */
+  forgetFactAndSources(factText: string, provenance: string, ctx: WriteContext, reason?: string): void {
+    // Step 1: durable fact-forget record + live purge (no scrub of its own)
+    this.forgetFact(factText, provenance, ctx, reason);
+    // Step 2: option B — hard-scrub each isMessageId component via the existing message path.
+    // thread:<id> provenance → no specific source messages to scrub (never a whole-thread scrub).
+    if (provenance.startsWith("thread:")) return;
+    for (const comp of provenance.split(",").map((p) => p.trim())) {
+      if (isMessageId(comp)) {
+        this.forget(comp, ctx, reason); // reuse WriteGate.forget (HARD scrub)
+      }
     }
   }
 
@@ -159,6 +174,15 @@ export class WriteGate {
       "INSERT INTO mutations (id, target_message_id, kind, actor, reason, replacement_content, authored_by, created_at) VALUES (?, ?, 'correction', ?, ?, ?, ?, ?)",
     ).run(crypto.randomUUID(), messageId, ctx.actor, reason ?? null, replacement, ctx.authored_by, now);
     this.store.mirrorEvent(threadId, { event: "edit", target_message_id: messageId, replacement, actor: ctx.actor, created_at: now });
+    // Un-forget (ADR-0015 decision 4 — human precedence cuts both ways):
+    // when a human edits a message whose replacement text normalizes to the same text as
+    // a forgotten fact, clear that forgotten_facts row. This is the deliberate inverse of D6.
+    // Load-bearing un-forget path: human-fact authoring (human-pin route). The message-edit
+    // clear fires only when the edited content normalizes to a forgotten fact's text (rare,
+    // but correct per spec §2 D-B). It is always scoped to ctx.authored_by === 'human'.
+    if (ctx.authored_by === "human") {
+      this.store.clearForgottenByNormalizedText(normalizeFactText(replacement));
+    }
   }
 
   /**

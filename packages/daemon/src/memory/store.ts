@@ -889,6 +889,51 @@ export class MemoryStore {
     ).all(factId) as ReplacedFactRow[];
   }
 
+  /**
+   * v2-05 migration (§3.8): rebuild fact_fts + fact_topics for every SURVIVING
+   * human-authored fact. Human facts predate v2-02's derived tables, so they may
+   * have NO fact_fts/fact_topics rows → invisible to fetchCandidates (BM25). The
+   * AFTER DELETE trigger cannot ADD rows; only insertFact/updateFactById (private
+   * writeFactDerived) do, neither reached by the wipe. This is the public,
+   * migration-only path to (re)index human rows.
+   * Idempotent: clears then re-writes derived rows per human id. canonical =
+   * normalizeFactText(fact) (D-V4c: match on canonical; display stays the row's fact);
+   * topics = [] (human facts carry no LLM tags). Returns the count of human rows reindexed.
+   * _distillerVersion reserved for parity with other writers; not persisted (human rows
+   * have no LLM-assigned version to overwrite).
+   */
+  rebuildDerivedForHumanFacts(_distillerVersion: string): number {
+    const tx = this.db.transaction((): number => {
+      const humans = this.db
+        .query("SELECT id, fact FROM distilled_facts WHERE authored_by = 'human'")
+        .all() as { id: string; fact: string }[];
+      for (const h of humans) {
+        this.db.query("DELETE FROM fact_fts WHERE fact_id = ?").run(h.id);
+        this.db.query("DELETE FROM fact_topics WHERE fact_id = ?").run(h.id);
+        this.db.query("INSERT INTO fact_fts (fact_id, canonical, topic) VALUES (?, ?, ?)")
+          .run(h.id, normalizeFactText(h.fact), "");
+      }
+      return humans.length;
+    });
+    return tx();
+  }
+
+  /**
+   * v2-05 migration (§3.8) — the ONLY sanctioned live-store ALTER (spec §9 forbids
+   * ALTER on the per-dismiss path; this is the deliberate one-time migration touch
+   * v2-03's R2 forward-flag named). Adds `distilled_through_turn INTEGER NOT NULL
+   * DEFAULT -1` to a pre-v2-03 live thread_distill_state. Idempotent: PRAGMA-guards
+   * so a v2-03+ fresh store is a no-op. Returns true if the column was added. Resets
+   * the column-presence cache so subsequent reads see it.
+   */
+  ensureDistilledThroughTurnColumn(): boolean {
+    const cols = this.db.query("PRAGMA table_info(thread_distill_state)").all() as { name: string }[];
+    if (cols.some((c) => c.name === "distilled_through_turn")) return false;
+    this.db.exec("ALTER TABLE thread_distill_state ADD COLUMN distilled_through_turn INTEGER NOT NULL DEFAULT -1;");
+    this._distilledThroughTurnColumnPresent = null;
+    return true;
+  }
+
   /** Delete one fact by id. The AFTER DELETE trigger cleans fact_fts + fact_topics.
    * Returns true if a row was deleted. v2-04's fact-forget reuses this. */
   deleteFactById(id: string): boolean {

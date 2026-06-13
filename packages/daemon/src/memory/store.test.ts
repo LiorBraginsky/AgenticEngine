@@ -2,6 +2,7 @@ import { test, expect } from "bun:test";
 import { tmpdir } from "node:os";
 import { mkdtempSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { Database } from "bun:sqlite";
 import { MemoryStore } from "./store.js";
 import { WriteGate } from "./write-gate.js";
 import { RuleBasedScanner } from "./scanner/memory-scanner.js";
@@ -808,5 +809,49 @@ test("v2-02 write-gate integration: forget bumps the thread marker", () => {
   const markerAfterAppend = store.readThreadMarker(t);
   gate.forget(mid!, { actor: "user", authored_by: "human" });
   expect(store.readThreadMarker(t)).toBe(markerAfterAppend + 1);
+  store.close();
+});
+
+// ── v2-05: rebuildDerivedForHumanFacts + ensureDistilledThroughTurnColumn ────
+
+test("v2-05: rebuildDerivedForHumanFacts indexes a human fact that has no derived rows", () => {
+  const { store } = freshStore();
+  const db = store.rawDb();
+  db.query(
+    "INSERT INTO distilled_facts (id, fact, provenance, scope, expiry, confidence, authored_by, derived_at, distiller_version) VALUES ('h1','User pins: name is Lior','thread:t','cross-thread',NULL,1,'human',1,'pre-v2')",
+  ).run();
+  expect((db.query("SELECT COUNT(*) AS n FROM fact_fts").get() as { n: number }).n).toBe(0);
+  const n = store.rebuildDerivedForHumanFacts("v2-05-migration");
+  expect(n).toBe(1);
+  const dfCount = (db.query("SELECT COUNT(*) AS n FROM distilled_facts").get() as { n: number }).n;
+  const ftsCount = (db.query("SELECT COUNT(*) AS n FROM fact_fts").get() as { n: number }).n;
+  expect(ftsCount).toBe(dfCount);
+  expect(store.fetchCandidates("lior").some((c) => c.id === "h1")).toBe(true);
+  store.close();
+});
+
+test("v2-05: rebuildDerivedForHumanFacts is idempotent (no duplicate derived rows on re-run)", () => {
+  const { store } = freshStore();
+  const db = store.rawDb();
+  db.query(
+    "INSERT INTO distilled_facts (id, fact, provenance, scope, expiry, confidence, authored_by, derived_at, distiller_version) VALUES ('h1','name is Lior',NULL,'cross-thread',NULL,1,'human',1,'pre-v2')",
+  ).run();
+  store.rebuildDerivedForHumanFacts("v2-05-migration");
+  store.rebuildDerivedForHumanFacts("v2-05-migration");
+  expect((db.query("SELECT COUNT(*) AS n FROM fact_fts WHERE fact_id='h1'").get() as { n: number }).n).toBe(1);
+  store.close();
+});
+
+test("v2-05: ensureDistilledThroughTurnColumn adds the column to a pre-v2-03 shaped table, then no-ops", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mf-prev203-"));
+  const raw = new Database(join(dir, "memory.sqlite"));
+  raw.exec("CREATE TABLE thread_distill_state (thread_id TEXT PRIMARY KEY, marker INTEGER NOT NULL DEFAULT 0, distilled_through INTEGER NOT NULL DEFAULT 0);");
+  raw.query("INSERT INTO thread_distill_state (thread_id, marker, distilled_through) VALUES ('t', 3, 2)").run();
+  raw.close();
+  const store = new MemoryStore({ dataDir: dir });
+  expect(store.ensureDistilledThroughTurnColumn()).toBe(true);
+  expect(store.ensureDistilledThroughTurnColumn()).toBe(false);
+  const row = store.rawDb().query("SELECT distilled_through_turn FROM thread_distill_state WHERE thread_id='t'").get() as { distilled_through_turn: number };
+  expect(row.distilled_through_turn).toBe(-1);
   store.close();
 });

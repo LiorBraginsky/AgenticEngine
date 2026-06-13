@@ -21,6 +21,7 @@ import { FixedMarkerProvider } from "./providers/fixed-marker-provider.js";
 import { registerDistiller } from "./distiller-registration.js";
 import { Hatch } from "./hatch.js";
 import { REDACTION_MARKER } from "./schema.js";
+import { normalizeFactText } from "./providers/smart-distiller-provider.js";
 
 // ─── Test fixtures ────────────────────────────────────────────────────────────
 
@@ -36,6 +37,42 @@ beforeEach(() => {
 
 afterEach(() => {
   store.close();
+});
+
+// ── B1 NAMED GATE: a fact-forget can NEVER scrub a message or write a tombstone ──
+//
+// Step 1 (RED): Tests use the FINAL intent-dispatch API (forgetFact/forgetMessage) which
+// does NOT exist yet. This compile error is the correct RED — it pins the invariant before
+// any production code moves. These tests go GREEN in Step 4.
+
+test("B1 no-downgrade: forgetFact on a bare message-UUID provenance leaves messages.content byte-INTACT and writes NO mutations row", async () => {
+  const hatch = new Hatch(store, gate);
+  const threadId = store.createThread();
+  const [mid] = store.appendMessages(threadId, [{ role: "user", content: "real conversation content" }], "s1");
+
+  // Intent = forget a FACT whose (single-source smart) provenance is a bare UUID.
+  // The fact path must NOT scrub the message and must NOT write a mutations row.
+  hatch.forgetFact("favourite colour: blue", mid!, { actor: "user", authored_by: "human" });
+
+  const db = store.rawDb();
+  const msg = db.query("SELECT content FROM messages WHERE id = ?").get(mid!) as { content: string };
+  expect(msg.content).toBe("real conversation content"); // byte-INTACT — never scrubbed
+  const mut = db.query("SELECT id FROM mutations WHERE target_message_id = ?").get(mid!);
+  expect(mut).toBeNull(); // NO redaction tombstone written by the fact path
+});
+
+test("B1 no-downgrade: forgetMessage still scrubs (the message path is unchanged)", async () => {
+  const hatch = new Hatch(store, gate);
+  const threadId = store.createThread();
+  const [mid] = store.appendMessages(threadId, [{ role: "user", content: "scrub me" }], "s1");
+
+  hatch.forgetMessage(mid!, { actor: "user", authored_by: "human" });
+
+  const db = store.rawDb();
+  const msg = db.query("SELECT content FROM messages WHERE id = ?").get(mid!) as { content: string };
+  expect(msg.content).toBe(REDACTION_MARKER); // scrubbed
+  const mut = db.query("SELECT id FROM mutations WHERE target_message_id = ? AND kind='tombstone'").get(mid!);
+  expect(mut).not.toBeNull(); // redaction tombstone written
 });
 
 // ─── T1.1: Hatch.view — archive + distilled facts + distillation events ──────

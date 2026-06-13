@@ -1,6 +1,6 @@
 # Chunk v2-02: Incremental store foundation — FTS5 + fact_topics + stable-id delta primitives
 
-**Status:** todo
+**Status:** in-progress
 **Created:** 2026-06-13
 **Phase:** memory-distiller-v2 (spec `docs/specs/2026-06-13-memory-distiller-v2.md` §3.3/§3.4/§3.5)
 **Estimated size:** ~1.5 day (the store-layer groundwork; widest schema surface of the series)

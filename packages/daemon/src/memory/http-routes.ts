@@ -134,16 +134,25 @@ async function handleForget(req: Request, deps: MemoryHttpDeps): Promise<Respons
   const parsed = await parseBody(req);
   if (!parsed.ok) return Response.json({ error: "bad_body" }, { status: 400 });
 
-  const { target_type, fact_text, provenance, reason } = parsed.data;
+  const { target_type, fact_text, provenance, reason, fact_id } = parsed.data;
   // reason is optional
   const reasonStr = typeof reason === "string" ? reason : undefined;
 
   // v2-04: fact-forget is the ONLY user forget path (D-V6a-bis).
   // target_type:"message" user route REMOVED — returns 400 bad_body.
   // also_forget_sources (option B) REMOVED — plain forgetFact always called.
+  //
+  // v2-06 C-fix: if fact_id is present (uuid-shaped), route to forgetFactById (precise delete).
+  // Falls back to forgetFact (text+provenance) for back-compat when fact_id is absent.
   try {
     if (target_type === "fact") {
       // FACT path — durable delete of the stable-id row, never scrubs (B1 structural invariant)
+      if (typeof fact_id === "string" && fact_id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(fact_id)) {
+        // v2-06: forgetFactById — the precise intent path (fact_id present + uuid-shaped)
+        deps.hatch.forgetFactById(fact_id, HTTP_CTX, reasonStr);
+        return new Response(null, { status: 204 });
+      }
+      // Back-compat: fall through to text/provenance-based forgetFact
       if (typeof fact_text !== "string" || !fact_text) {
         return Response.json({ error: "bad_body" }, { status: 400 });
       }

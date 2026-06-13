@@ -86,6 +86,8 @@ interface TailRow {
 }
 
 export interface DistilledFactRow {
+  /** Stable uuid for this fact row — used by forgetFactById (v2-06 C-fix). */
+  id: string;
   fact: string;
   provenance: string;
   scope: string;
@@ -274,7 +276,7 @@ export class MemoryStore {
    */
   readDistilledFacts(limit: number): DistilledFactRow[] {
     const rows = this.db
-      .query("SELECT fact, provenance, scope, expiry, confidence, authored_by FROM distilled_facts ORDER BY derived_at DESC LIMIT ?")
+      .query("SELECT id, fact, provenance, scope, expiry, confidence, authored_by FROM distilled_facts ORDER BY derived_at DESC LIMIT ?")
       .all(limit) as DistilledFactRow[];
     return rows;
   }
@@ -443,7 +445,7 @@ export class MemoryStore {
     const now = Date.now();
     const candidates = this.db
       .query(
-        `SELECT df.fact AS fact, df.provenance AS provenance, df.scope AS scope,
+        `SELECT df.id AS id, df.fact AS fact, df.provenance AS provenance, df.scope AS scope,
                 df.expiry AS expiry, df.confidence AS confidence, df.authored_by AS authored_by
          FROM distilled_facts df
          WHERE (df.expiry IS NULL OR df.expiry > ?)

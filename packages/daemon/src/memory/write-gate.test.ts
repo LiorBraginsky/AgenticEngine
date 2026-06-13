@@ -310,3 +310,89 @@ test("B1: fact-forget touches neither messages nor mutations", () => {
 // v2-04: KNOWN LIMIT — un-forget collision test removed. The edit() un-forget block
 // was removed in v2-04 (dead code: durable-delete path never writes forgotten_facts,
 // so there is nothing to un-forget). The coincidental-collision limit is moot.
+
+// ---- v2-06 Step 3 (RED): forgetFactById intent path ----
+
+test("v2-06: forgetFactById deletes exactly one fact; facts 1+3 remain when fact2 targeted (3 share one thread provenance)", () => {
+  // RED: WriteGate.forgetFactById does not exist yet.
+  const { store, gate } = fresh();
+  const t = store.createThread();
+  const sharedProvenance = `thread:${t}`;
+
+  // Seed 3 machine facts all sharing the same thread provenance
+  store.insertDistilledFacts([
+    { fact: "fact one", provenance: sharedProvenance, scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
+    { fact: "fact two", provenance: sharedProvenance, scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
+    { fact: "fact three", provenance: sharedProvenance, scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
+  ], "dumb-tail");
+
+  // Read back with IDs (after Step 3.2, readDistilledFacts carries id)
+  const allFacts = store.readDistilledFacts(10);
+  expect(allFacts.length).toBe(3);
+  const fact2 = allFacts.find((f) => f.fact === "fact two")!;
+  expect(fact2).toBeDefined();
+  const id2 = fact2.id;
+
+  // Act: forget only fact2 by ID
+  const humanCtx = { actor: "user", authored_by: "human" as const };
+  gate.forgetFactById(id2, humanCtx);
+
+  // Assert: exactly fact2 gone; fact1 and fact3 remain
+  const remaining = store.readDistilledFacts(10);
+  expect(remaining.length).toBe(2);
+  expect(remaining.some((f) => f.fact === "fact one")).toBe(true);
+  expect(remaining.some((f) => f.fact === "fact three")).toBe(true);
+  expect(remaining.some((f) => f.fact === "fact two")).toBe(false);
+
+  // Count-equality: distilled_facts count correct (trigger fires on delete)
+  const db = store.rawDb();
+  const dfCount = (db.query("SELECT COUNT(*) AS n FROM distilled_facts").get() as { n: number }).n;
+  expect(dfCount).toBe(2);
+
+  // No orphan fact_topics rows for the deleted id (trigger cleans this)
+  const orphanTopics = (db.query("SELECT COUNT(*) AS n FROM fact_topics WHERE fact_id = ?").get(id2) as { n: number }).n;
+  expect(orphanTopics).toBe(0);
+
+  // Source messages byte-intact (no messages table involved)
+  const [mid] = store.appendMessages(t, [{ role: "user", content: "source message intact" }], "s1");
+  const msgRow = db.query("SELECT content FROM messages WHERE id = ?").get(mid!) as { content: string };
+  expect(msgRow.content).toBe("source message intact");
+
+  store.close();
+});
+
+test("v2-06: forgetFactById with machine ctx refuses to delete a human-authored fact (5e seam)", () => {
+  // RED: method does not exist yet; also tests 5e seam.
+  const { store, gate } = fresh();
+  const t = store.createThread();
+
+  // Seed a human-authored fact (cast: DistilledFact.authored_by is "machine" in the type
+  // but the store accepts any string; the 5e seam reads authored_by from the DB row)
+  store.insertDistilledFacts([
+    { fact: "human pinned fact", provenance: `thread:${t}`, scope: "cross-thread", expiry: null, confidence: 1, authored_by: "human" as "machine" },
+  ], "dumb-tail");
+
+  const facts = store.readDistilledFacts(10);
+  expect(facts.length).toBe(1);
+  const humanFactId = facts[0]!.id;
+
+  // Machine ctx must NOT delete a human row (5e seam)
+  const machineCtx = { actor: "agent", authored_by: "machine" as const };
+  gate.forgetFactById(humanFactId, machineCtx);
+
+  // Human row must survive
+  const afterFacts = store.readDistilledFacts(10);
+  expect(afterFacts.length).toBe(1);
+  expect(afterFacts[0]!.fact).toBe("human pinned fact");
+
+  store.close();
+});
+
+test("v2-06: forgetFactById is idempotent (calling with a non-existent id is a no-op)", () => {
+  // RED: method does not exist yet.
+  const { store, gate } = fresh();
+  const humanCtx = { actor: "user", authored_by: "human" as const };
+  // Should not throw for an unknown id
+  expect(() => gate.forgetFactById("00000000-0000-0000-0000-000000000000", humanCtx)).not.toThrow();
+  store.close();
+});

@@ -427,3 +427,61 @@ test("v2-04: POST /memory/forget target_type=fact with also_forget_sources:true 
   expect(msg).toBeDefined();
   expect(msg!.content).toBe("source content stays intact");
 });
+
+// ---- v2-06 Step 3 (RED): fact_id routing in handleForget ----
+
+test("v2-06: POST /memory/forget with target_type=fact + fact_id deletes exactly that row (one of three sharing provenance)", async () => {
+  // RED: handleForget currently ignores fact_id and falls through to forgetFact (provenance-based).
+  // Pre-fix: provenance-based delete hits ALL 3 facts; post-fix: only the targeted one is deleted.
+  const token = readToken();
+
+  // Seed 3 machine facts sharing the same thread provenance via a fresh store
+  const setupStore = new MemoryStore({ dataDir: sharedDataDir });
+  const factIdThread = setupStore.createThread("fact-id-test-thread");
+  const sharedProv = `thread:${factIdThread}`;
+  setupStore.insertDistilledFacts([
+    { fact: "alpha fact", provenance: sharedProv, scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
+    { fact: "beta fact",  provenance: sharedProv, scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
+    { fact: "gamma fact", provenance: sharedProv, scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
+  ], "dumb-tail");
+  const allFacts = setupStore.readDistilledFacts(100);
+  const betaFact = allFacts.find((f) => f.fact === "beta fact")!;
+  const betaId = betaFact.id;
+  setupStore.close();
+
+  // POST forget targeting only beta by fact_id
+  const res = await fetch(`http://127.0.0.1:${PORT}/memory/forget`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      target_type: "fact",
+      fact_id: betaId,
+      fact_text: "beta fact",
+      provenance: sharedProv,
+      reason: "v2-06-test",
+    }),
+  });
+  expect(res.status).toBe(204);
+
+  // Verify via GET /memory/thread/:id — exactly 1 deleted, alpha + gamma remain
+  const getRes = await fetch(`http://127.0.0.1:${PORT}/memory/thread/${encodeURIComponent(factIdThread)}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  expect(getRes.status).toBe(200);
+  const body = await getRes.json() as { distilledFacts: { fact: string; id: string }[] };
+  const factsRemaining = body.distilledFacts.filter((f) => ["alpha fact", "beta fact", "gamma fact"].includes(f.fact));
+  expect(factsRemaining.length).toBe(2);
+  expect(factsRemaining.some((f) => f.fact === "alpha fact")).toBe(true);
+  expect(factsRemaining.some((f) => f.fact === "gamma fact")).toBe(true);
+  expect(factsRemaining.some((f) => f.fact === "beta fact")).toBe(false);
+});
+
+test("v2-06: POST /memory/forget with target_type=message → 400 (unchanged after v2-06)", async () => {
+  const token = readToken();
+  const res = await fetch(`http://127.0.0.1:${PORT}/memory/forget`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ target_type: "message", target: seededMessageId }),
+  });
+  expect(res.status).toBe(400);
+});

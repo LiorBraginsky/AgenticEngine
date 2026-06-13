@@ -79,5 +79,14 @@ export class Hatch {
   forgetFact(factText: string, provenance: string, ctx: WriteContext, reason?: string): void {
     this.gate.forgetFact(factText, provenance, ctx, reason);
   }
+
+  /**
+   * Forget a FACT by its stable id (v2-06 C-fix — forgetFactById intent path).
+   * Delegates to WriteGate.forgetFactById. Deletes exactly one row; never scrubs messages (B1).
+   * The text/provenance forgetFact path is retained for back-compat.
+   */
+  forgetFactById(factId: string, ctx: WriteContext, reason?: string): void {
+    this.gate.forgetFactById(factId, ctx, reason);
+  }
 }
 

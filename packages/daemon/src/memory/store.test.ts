@@ -855,3 +855,35 @@ test("v2-05: ensureDistilledThroughTurnColumn adds the column to a pre-v2-03 sha
   expect(row.distilled_through_turn).toBe(-1);
   store.close();
 });
+
+// ---- v2-06 Step 3 (RED): DistilledFactRow carries id ----
+
+test("v2-06: readDistilledFacts returns rows with a non-empty uuid id (DistilledFactRow.id)", () => {
+  // RED: DistilledFactRow currently lacks `id`; this test fails until Step 3.2 adds it.
+  const { store } = freshStore();
+  store.insertDistilledFacts(
+    [{ fact: "has an id", provenance: "p1", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" }],
+    "dumb-tail",
+  );
+  const rows = store.readDistilledFacts(10);
+  expect(rows.length).toBe(1);
+  // Must carry a uuid-shaped id
+  expect(typeof rows[0]!.id).toBe("string");
+  expect(rows[0]!.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+  store.close();
+});
+
+test("v2-06: readDistilledFactsForThread returns rows with a non-empty uuid id", () => {
+  // RED: same absence — readDistilledFactsForThread SELECT also lacks id.
+  const { store } = freshStore();
+  const t = store.createThread();
+  store.insertDistilledFacts(
+    [{ fact: "thread scoped id", provenance: `thread:${t}`, scope: "thread-local", expiry: null, confidence: 1, authored_by: "machine" }],
+    "dumb-tail",
+  );
+  const rows = store.readDistilledFactsForThread(t, 10);
+  expect(rows.length).toBe(1);
+  expect(typeof rows[0]!.id).toBe("string");
+  expect(rows[0]!.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+  store.close();
+});

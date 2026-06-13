@@ -549,4 +549,76 @@ describe("D-V6e — distiller language preservation", () => {
     expect(SMART_DELTA_SYSTEM_PROMPT.toLowerCase()).toContain("user");
     expect(SMART_DELTA_SYSTEM_PROMPT.toLowerCase()).toContain("language");
   });
+
+  // ---- v2-06 Step 4 (RED): tightened input contract — no REPLACE from ASSISTANT-only tails ----
+
+  test('v2-06 B-fix: SMART_DELTA_SYSTEM_PROMPT instructs to derive facts ONLY from USER statements (ASSISTANT lines are context)', () => {
+    // RED: current prompt does not contain the USER-only restriction.
+    // This is a structural assertion on the prompt contract.
+    expect(SMART_DELTA_SYSTEM_PROMPT).toContain("ONLY from the USER");
+  });
+
+  test('v2-06 B-fix: SMART_DELTA_SYSTEM_PROMPT forbids REPLACE unless the USER contradicted a candidate in THIS new tail', () => {
+    // RED: current prompt does not contain the USER-must-contradict restriction for REPLACE.
+    expect(SMART_DELTA_SYSTEM_PROMPT).toContain("USER has stated something in THIS new tail that genuinely contradicts");
+  });
+
+  test('v2-06 B-fix: a tail with only an ASSISTANT recall reply and no new USER colour statement does NOT trigger a reword REPLACE', async () => {
+    // RED: the pre-fix scripted client can still return a REPLACE in this situation (B defect).
+    // This test uses a real store + a scripted client that reflects the TIGHTENED contract:
+    // given a tail with only [user: recall question] + [assistant: recalls colour],
+    // a properly-tightened distiller emits NO ops (no REPLACE of the colour fact).
+    //
+    // We drive this via a capturingClient that records the system prompt actually sent.
+    // Post-fix: SMART_DELTA_SYSTEM_PROMPT must contain the USER-only instruction.
+    // We assert that the prompt the LLM receives instructs ASSISTANT-as-context.
+
+    const store = freshStore();
+    const gate = new WriteGate(store, new RuleBasedScanner());
+    const threadId = store.createThread();
+
+    // Seed a colour fact in the store (as a candidate)
+    store.insertDistilledFacts([
+      { fact: "Люблю синій колір", provenance: `thread:${threadId}`, scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
+    ], "dumb-tail");
+
+    // Append a user recall question and an assistant recall reply (the B scenario)
+    gate.appendTurn(
+      threadId,
+      [
+        { role: "user", content: "Який мій улюблений колір?" },
+        { role: "assistant", content: "Recall: [remembered] Люблю синій колір | Query: Який мій улюблений колір?" },
+      ],
+      "s1",
+      { actor: "user", authored_by: "human" },
+    );
+
+    // Scripted client that simulates the B-fixed behaviour:
+    // receives the system prompt, asserts it contains the USER-only constraint,
+    // then returns [] (no ops) — because no new USER fact was stated.
+    const { client, getCalls } = capturingClient("[]");
+
+    const provider = new SmartDistillerProvider({ client });
+    const result = await provider.distill(store, threadId);
+
+    const delta = result as unknown as DistillDelta;
+    // Post-fix: no REPLACE emitted (client returns [])
+    expect(delta.ops).toEqual([]);
+
+    // Assert the system prompt sent to the LLM contains the USER-only instruction
+    const calls = getCalls();
+    expect(calls.length).toBe(1);
+    const systemPrompt = (calls[0] as { system: { text: string }[] }).system?.[0]?.text ?? "";
+    expect(systemPrompt).toContain("ONLY from the USER");
+    expect(systemPrompt).toContain("ASSISTANT");
+
+    // Verify the colour fact is unchanged (byte-identical)
+    const factsAfter = store.readDistilledFacts(10);
+    const colourFact = factsAfter.find((f) => f.fact.includes("синій"));
+    expect(colourFact).toBeDefined();
+    expect(colourFact!.fact).toBe("Люблю синій колір");
+
+    gate.toString(); // suppress unused warning on gate
+    store.close();
+  });
 });

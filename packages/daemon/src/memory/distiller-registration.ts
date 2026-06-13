@@ -306,12 +306,29 @@ async function doOneRun(
   if (firstErr) throw firstErr;
 }
 
+/**
+ * DistillerHook — returned by registerDistiller.
+ *
+ * whenIdle(): Promise<void> — resolves when the current tail of the
+ * serialized promise-queue has settled (success OR failure).
+ * Callers (ThreadLifecycle.beginTurn new-thread branch) await this before
+ * running retrieve() so they always see facts committed by the most-recently-
+ * started distill run. Do NOT change the queue's existing semantics.
+ *
+ * Implementation: await the stored `lastRun` promise, swallowing any rejection
+ * (the prior run already recorded its distill-failed event and rethrew to its
+ * own caller). `whenIdle` resolves on settle regardless of success/failure.
+ */
+export type DistillerHook = {
+  whenIdle: () => Promise<void>;
+};
+
 export function registerDistiller(
   hook: ConsolidationHook,
   store: MemoryStore,
   provider: MemoryProvider,
   scanner: MemoryScanner,
-): void {
+): DistillerHook {
   // MAJOR-3: promise-queue — serialize concurrent same-target deltas.
   //
   // Non-destructive-on-conflict — the optimistic-concurrency re-read
@@ -332,4 +349,11 @@ export function registerDistiller(
     lastRun = thisRun;
     return thisRun; // caller (hook.dismiss → close(ws)) still awaits THIS run + sees its rejection
   });
+
+  // whenIdle(): resolve when the current tail of the promise-queue settles.
+  // Swallows rejection — the prior run already handled it; we only need the
+  // settle signal (so a new-thread retrieve can proceed safely after distill).
+  const whenIdle = (): Promise<void> => lastRun.catch(() => { /* settle regardless of failure */ });
+
+  return { whenIdle };
 }

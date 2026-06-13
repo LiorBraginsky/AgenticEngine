@@ -3,11 +3,14 @@ import { MemoryStore } from "./store.js";
 import { WriteGate, REDACTION_MARKER } from "./write-gate.js";
 import { RuleBasedScanner } from "./scanner/memory-scanner.js";
 import { ConsolidationHook } from "./consolidation-hook.js";
+import { ThreadLifecycle } from "./thread-lifecycle.js";
+import { registerDistiller } from "./distiller-registration.js";
 import { tmpdir } from "node:os";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { TokenStore } from "./token-store.js";
+import type { MemoryProvider, DistillDelta } from "./memory-provider.js";
 
 let dataDir: string;
 let server: ReturnType<typeof import("../index.js").startDaemon>;
@@ -154,5 +157,76 @@ test("dismiss invokes the registered consolidation-hook and flips status to dism
   expect(calls).toHaveLength(1);
   expect(calls[0]!.ids).toEqual([tid]);
   expect((store.rawDb().query("SELECT status FROM threads WHERE thread_id=?").get(tid) as { status: string }).status).toBe("dismissed");
+  store.close();
+});
+
+// ─── v2-06 FIX-A regression: whenIdle blocks new-thread retrieve until distill commits ────────
+
+/**
+ * FIX-A regression test (v2-06): dismiss(thread A with a deliberately-delayed distill)
+ * → immediately lifecycle.beginTurn(new thread B) → assert B's retrieve sees
+ * A's just-committed fact.
+ *
+ * Uses real SQLite, real ConsolidationHook, real ThreadLifecycle, real WriteGate.
+ * Only the LLM clientFactory is stubbed (Strike-4: no real API call).
+ * A 80ms artificial delay in distill() creates a deterministic race window:
+ *   - WITHOUT whenIdle: beginTurn runs retrieve while distill is in-flight → stale 0 facts → RED
+ *   - WITH whenIdle: beginTurn blocks until distill commits → sees the fact → GREEN
+ */
+test("FIX-A regression: new-thread retrieve sees fact committed by in-flight delayed distill (whenIdle blocks)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mf01-fia-"));
+  const store = new MemoryStore({ dataDir: dir });
+  const gate = new WriteGate(store, new RuleBasedScanner());
+  const hook = new ConsolidationHook(store);
+
+  // Delayed distill stub — delays 80ms before committing the fact.
+  // Without whenIdle, retrieve on the new thread runs BEFORE this resolves.
+  const DELAY_MS = 80;
+  const delayedDistillProvider: MemoryProvider = {
+    id: "delayed-distill-stub",
+    distill: async (s, threadId): Promise<DistillDelta> => {
+      await new Promise((r) => setTimeout(r, DELAY_MS));
+      return {
+        threadId,
+        ops: [{ op: "new", fact: "city is Tel Aviv", canonical: "city tel aviv", topics: ["#about-user"] }],
+        candidateIds: [],
+        distilledThroughMarker: s.readThreadMarker(threadId),
+        distilledThroughTurn: s.maxTurnIndex(threadId),
+      };
+    },
+    retrieve: async (s) => {
+      const facts = s.readDistilledFacts(50);
+      return facts.map((f) => ({ role: "user" as const, content: `[remembered] ${f.fact}` }));
+    },
+  };
+
+  const { whenIdle } = registerDistiller(hook, store, delayedDistillProvider, new RuleBasedScanner());
+  const lifecycle = new ThreadLifecycle(store, gate, delayedDistillProvider, whenIdle);
+
+  // Step 1: Thread A — seed a message and dismiss (starts the delayed distill)
+  const threadA = store.createThread();
+  store.appendMessages(threadA, [{ role: "user", content: "Моє місто — Тель-Авів" }], "sA");
+
+  // Start dismiss WITHOUT awaiting it — creates the race window
+  const dismissPromise = hook.dismiss([threadA]);
+
+  // Step 2: Immediately begin a NEW thread (no settle between dismiss and beginTurn).
+  // WITHOUT whenIdle: retrieve runs before distill commits → sees 0 facts → RED
+  // WITH whenIdle: beginTurn awaits the in-flight distill → sees the fact → GREEN
+  const begin = await lifecycle.beginTurn({
+    type: "session_start",
+    trigger: "user",
+    text: "Яке моє місто?",
+  });
+
+  // Let dismiss complete (for cleanup)
+  await dismissPromise;
+
+  // Step 3: Assert — priorMessages contains the city fact from the delayed distill.
+  const recalledCity = begin.priorMessages.some(
+    (m) => m.content.includes("Тель-Авів") || m.content.includes("Tel Aviv") || m.content.includes("місто"),
+  );
+  expect(recalledCity).toBe(true);
+
   store.close();
 });

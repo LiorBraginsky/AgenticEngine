@@ -1,4 +1,4 @@
-import { test, expect, spyOn } from "bun:test";
+import { test, expect, spyOn, describe } from "bun:test";
 import { tmpdir } from "node:os";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
@@ -1399,4 +1399,118 @@ test("FIX-5: order stable for single-fact REPLACE scenario (slice[0] assertion)"
   expect(slice[0]!.fact).toBe("User's name is Lior");
 
   store.close();
+});
+
+// ─── v2-06 FIX-A: whenIdle + bounded-wait ────────────────────────────────────
+
+/**
+ * whenIdle() resolves when the in-flight promise-queue settles.
+ *
+ * registerDistiller now returns { whenIdle: () => Promise<void> }.
+ * - whenIdle() resolves when the current tail of the serialized promise-queue
+ *   has settled (regardless of success or failure).
+ * - A caller that awaits whenIdle() before retrieve() always sees facts that
+ *   were committed by the most-recently-started distill run.
+ */
+describe("v2-06 FIX-A: whenIdle()", () => {
+  test("whenIdle resolves immediately when no distill is in flight", async () => {
+    const { store } = freshStore();
+    const hook = new ConsolidationHook(store);
+    const provider: MemoryProvider = {
+      id: "idle-test",
+      distill: async (s, threadId): Promise<DistillDelta> => ({
+        threadId,
+        ops: [],
+        candidateIds: [],
+        distilledThroughMarker: s.readThreadMarker(threadId),
+        distilledThroughTurn: s.maxTurnIndex(threadId),
+      }),
+      retrieve: async () => [],
+    };
+    const { whenIdle } = registerDistiller(hook, store, provider, new RuleBasedScanner());
+    // No dismiss in flight — whenIdle should resolve immediately
+    let resolved = false;
+    await whenIdle().then(() => { resolved = true; });
+    expect(resolved).toBe(true);
+    store.close();
+  });
+
+  test("whenIdle resolves AFTER the in-flight distill commits (read-after-write)", async () => {
+    const { store } = freshStore();
+    const hook = new ConsolidationHook(store);
+    const scanner = new RuleBasedScanner();
+
+    // Deferred gate: distill blocks until we release it
+    let releaseDistill!: () => void;
+    const distillGate = new Promise<void>((res) => { releaseDistill = res; });
+
+    const t = store.createThread();
+    store.appendMessages(t, [{ role: "user", content: "city is Tel Aviv" }], "s1");
+
+    const provider: MemoryProvider = {
+      id: "delayed-distill",
+      distill: async (s, threadId): Promise<DistillDelta> => {
+        await distillGate; // block until released
+        return {
+          threadId,
+          ops: [{ op: "new", fact: "city is Tel Aviv", canonical: "city tel aviv", topics: [] }],
+          candidateIds: [],
+          distilledThroughMarker: s.readThreadMarker(threadId),
+          distilledThroughTurn: s.maxTurnIndex(threadId),
+        };
+      },
+      retrieve: async () => [],
+    };
+
+    const { whenIdle } = registerDistiller(hook, store, provider, scanner);
+
+    // Start a dismiss (triggers in-flight distill — blocked on distillGate)
+    const dismissPromise = hook.dismiss([t]);
+
+    // whenIdle is pending (distill not yet committed)
+    let idleResolved = false;
+    const idlePromise = whenIdle().then(() => { idleResolved = true; });
+
+    // Not yet resolved because distill is in-flight
+    await new Promise((r) => setTimeout(r, 0)); // tick
+    expect(idleResolved).toBe(false);
+
+    // Release the distill
+    releaseDistill();
+    await dismissPromise;
+    await idlePromise;
+
+    // Now idle is resolved AND the fact is in the store
+    expect(idleResolved).toBe(true);
+    const facts = store.readDistilledFacts(50);
+    expect(facts.some((f) => f.fact === "city is Tel Aviv")).toBe(true);
+
+    store.close();
+  });
+
+  test("whenIdle resolves on distill failure (settle regardless of success/failure)", async () => {
+    const { store } = freshStore();
+    const hook = new ConsolidationHook(store);
+
+    const t = store.createThread();
+    store.appendMessages(t, [{ role: "user", content: "test" }], "s1");
+
+    const provider: MemoryProvider = {
+      id: "failing-distill",
+      distill: async () => { throw new Error("intentional failure"); },
+      retrieve: async () => [],
+    };
+    const { whenIdle } = registerDistiller(hook, store, provider, new RuleBasedScanner());
+
+    const errSpy = spyOn(console, "error").mockImplementation(() => {});
+    try { await hook.dismiss([t]); } catch { /* expected */ }
+    errSpy.mockRestore();
+
+    // whenIdle must still resolve (settle = success OR failure)
+    let resolved = false;
+    await whenIdle().then(() => { resolved = true; });
+    expect(resolved).toBe(true);
+
+    store.close();
+  });
 });

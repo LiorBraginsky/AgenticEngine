@@ -4,11 +4,18 @@ import { isUuidShaped } from "./store.js";
 import type { WriteGate } from "./write-gate.js";
 import type { SessionMessage } from "../providers/provider.js";
 import type { MemoryProvider } from "./memory-provider.js";
+import { memDebug } from "./debug-log.js";
 
 type SessionStart = Extract<Envelope, { type: "session_start" }>;
 
 /** How many recent messages to hydrate into prior context (architect-time recency window). */
 const TAIL_LIMIT = 50;
+
+/**
+ * Bounded-wait timeout (ms) for whenIdle before proceeding with retrieve.
+ * On timeout: log + proceed anyway (never hang).
+ */
+const WHEN_IDLE_TIMEOUT_MS = 5000;
 
 /**
  * ThreadLifecycle — the SINGLE place the MF-01 behavioral change lives (§7.1).
@@ -29,6 +36,11 @@ const TAIL_LIMIT = 50;
  *   Invariant: only the session_start-triggered beginTurn sets hydratedCount; a later
  *   non-session_start message of the same session does NOT call bindSession again, so
  *   the stored count is never accidentally reset to 0.
+ *
+ * v2-06 FIX-A: whenIdle? — optional hook returned by registerDistiller.
+ *   On the new-thread FIRST turn ONLY, beginTurn awaits whenIdle() before retrieve()
+ *   so the retrieve always sees facts committed by the most-recently-started distill run.
+ *   Bounded at WHEN_IDLE_TIMEOUT_MS (5s) — on timeout, proceed + log (never hang).
  */
 export class ThreadLifecycle {
   private readonly sessionToThread = new Map<string, string>();
@@ -39,6 +51,7 @@ export class ThreadLifecycle {
     private readonly store: MemoryStore,
     private readonly gate: WriteGate,
     private readonly memoryProvider?: MemoryProvider,
+    private readonly whenIdle?: () => Promise<void>,
   ) {}
 
   async beginTurn(inbound: SessionStart): Promise<{ threadId: string; priorMessages: SessionMessage[] }> {
@@ -55,6 +68,29 @@ export class ThreadLifecycle {
     // (gotcha #9: no garbage durable keys). Single write path through createThread.
     const adoptId = requested && isUuidShaped(requested) ? requested : undefined;
     const newThreadId = this.store.createThread(undefined, adoptId);
+    // v2-06 FIX-A: on the new-thread FIRST turn, await whenIdle() before retrieve()
+    // so retrieve always reads facts committed by the most-recently-started distill run.
+    // Bounded at WHEN_IDLE_TIMEOUT_MS — on timeout, proceed + log (never hang).
+    // Timer is always cleared (no leak): the timeout promise clears it on settle,
+    // and the whenIdle promise also clears it on settle via the outer Promise.race winner.
+    if (this.whenIdle) {
+      let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+      const timeoutPromise = new Promise<"timeout">((res) => {
+        timeoutHandle = setTimeout(() => res("timeout"), WHEN_IDLE_TIMEOUT_MS);
+      });
+      const settled = await Promise.race([
+        this.whenIdle().then(() => "idle" as const),
+        timeoutPromise,
+      ]);
+      // Always clear the timer — prevents a dangling setTimeout after whenIdle() wins.
+      clearTimeout(timeoutHandle);
+      if (settled === "timeout") {
+        console.error(
+          `[lifecycle] whenIdle timed out after ${WHEN_IDLE_TIMEOUT_MS}ms for new thread ${newThreadId} — proceeding with retrieve`,
+        );
+        memDebug("retrieve", { forThreadId: newThreadId, whenIdleTimedOut: true });
+      }
+    }
     // Cross-thread distilled-slice injection (MF-02 injection-point) — fires on
     // the adopted id identically, because it keys off the returned newThreadId.
     const priorMessages = this.memoryProvider

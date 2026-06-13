@@ -75,8 +75,8 @@ export function startDaemon(port: number = DAEMON_PORT, provider?: AgentProvider
   // memoryProvider? — additive test/harness injection seam (mirrors provider?); production uses buildMemoryProvider().
   const memProvider = memoryProvider ?? buildMemoryProvider();
   const hook = new ConsolidationHook(store);
-  registerDistiller(hook, store, memProvider, scanner);
-  const lifecycle = new ThreadLifecycle(store, gate, memProvider);
+  const { whenIdle } = registerDistiller(hook, store, memProvider, scanner);
+  const lifecycle = new ThreadLifecycle(store, gate, memProvider, whenIdle);
 
   const memoryDeps = { hatch, store, tokenStore };
 

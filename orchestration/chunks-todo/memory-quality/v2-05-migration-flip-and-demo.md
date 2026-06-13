@@ -32,9 +32,10 @@ and close the feature on Lior's LIVE demo proving the headline: **stability**.
   2. structured recall → **precise** answer + provenance link → `history.html`;
   3. **STABILITY live** [finding 1, the headline]: dismiss several times → "my name is Lior" and other
      facts **stay put** — no churn, reorder, or vanishing; a genuinely-changed preference DOES update;
-  4. **forget a fact** → durable (gone, **source byte-intact**);
-  5. **message-forget** (HARD) + **option-B** "also forget sources" with the **co-fed-count confirm**;
-  6. a **Ukrainian** turn → a **Ukrainian** display fact [finding 3].
+  4. **forget a fact** → durable delete (gone, **source conversation byte-intact**) — fact-forget is the
+     WHOLE forget story in v2 (no option-B / source-scrub, no per-message message-forget user path;
+     content-erase is the future THREAD-forget, not built here);
+  5. a **Ukrainian** turn → a **Ukrainian** display fact [finding 3].
 
 **Out** (PIPELINE §7.2):
 - In-overlay UI; `history.html` 🔒/token-trim UX — move with the in-overlay follow-on.

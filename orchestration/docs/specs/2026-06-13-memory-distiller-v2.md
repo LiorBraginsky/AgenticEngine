@@ -68,6 +68,12 @@ tags: [spec, memory, distiller, incremental, stability, fts5, topic-tags, forget
 - **In-overlay memory UI** — separate follow-on (unchanged from the 2026-06-12 scope SPLIT).
 - **2c (agent memory-action tools / conversational forget)** — still queued. The self-concept fix
   (§3.6) is the *honest deferral* of it, not the capability.
+- **Content-forget = THREAD-forget (the FUTURE content-erase primitive)** — v2 drops the per-message
+  message-forget user path (§3.6 D-V6a-bis); its replacement is **forgetting a whole conversation**
+  (scrub its messages via the kept `WriteGate` hard-scrub primitive + delete its facts) — simpler than
+  per-message and matches ADR-0012's "user interacts with THREADS." **Recorded, NOT built here**; its
+  own feature, pairs with 2d. The `WriteGate` hard-scrub primitive is retained now so 2c/THREAD-forget
+  inherit it.
 - **Promoting the two research gotchas** (`setCustomSQLite`, `onnxruntime-node`+Bun) to
   `known-gotchas.md` — recommended to the conductor (they bite 2d, not this pass).
 
@@ -78,9 +84,12 @@ tags: [spec, memory, distiller, incremental, stability, fts5, topic-tags, forget
 - **ADR-0012** north-star (one agent that remembers; two stores; transparency 5a–f) — **AMENDED** here:
   its HARD INVARIANT moves from *re-derivable projection* to *stateful, stability-guaranteed, auditable,
   forgettable, best-effort-replayable* (§3.5 / the proposed amendment). The amendment is Lior's gate.
-- **ADR-0015 / forget-flow spec**: intent-dispatch, the **separate-table B1 invariant** (fact-forget
-  touches neither `messages` nor `mutations`, never calls `tombstoneFact`), and the **HARD
-  message-forget** guarantee are **carried unchanged**. Only fact-forget's *internals* simplify (§3.6).
+- **ADR-0015 / forget-flow spec**: the **separate-table B1 invariant** (fact-forget touches neither
+  `messages` nor `mutations`, never calls `tombstoneFact`) is **carried unchanged**. **ADR-0015
+  decision 5 (option B — forget-fact-AND-sources) is SUPERSEDED**, and **per-message message-forget is
+  DROPPED as a user-facing path** (§3.6 D-V6a-bis / Lior relay-005 + refinement): in v2 the user-facing
+  forget is **fact-forget ONLY**. The `WriteGate` hard-scrub **primitive** is KEPT (the future
+  **THREAD-forget** content-primitive reuses it) but has no per-message user route now.
 - **Research report** `2026-06-13-memory-similarity-approaches.md`: FTS5/BM25 over `distilled_facts`
   is the right NOW; embeddings are the right 2d tool, deferred. This spec's similarity layer (§3.4)
   is designed FROM that report.
@@ -238,29 +247,53 @@ trigger as FTS5 (or explicit delete in each path; FK stays OFF per the store's d
 
 ### 3.6 — forget under incremental + the demo findings (conductor "forget simplifies"; [grill M3/M4])
 
-**D-V6a. fact-forget = durable delete of the stable-id row.** Because facts are no longer re-derived
-wholesale, deleting a fact's stable-id row makes it **stay gone** — forget becomes a *durable delete*,
-**strictly STRONGER** than the old best-effort-against-re-derivation. The ADR-0015 **separate-table B1
-invariant, intent dispatch, and HARD message-forget are carried UNCHANGED.**
+**D-V6a. The forget model simplifies to ONE handle: forget a FACT = durable delete of the stable-id
+row** (Lior, relay-005). Because incremental distillation never re-derives old conversations, deleting
+a fact's stable-id row makes it **stay gone** — forget is a *durable delete*, **strictly STRONGER** than
+the old best-effort-against-re-derivation. The fact's **provenance → conversation link stays as a READ
+affordance** ("dig deeper"), **never a delete target**. The source conversation remains in the lossless
+archive as substrate (not user-managed at the fact level). The ADR-0015 **separate-table B1 invariant +
+intent-dispatch (forget-FACT vs forget-MESSAGE) are carried UNCHANGED.**
 
-**D-V6b. `forgotten_facts` is RETAINED, narrower** [grill M3]. Its only remaining job is suppressing
-re-derivation across the **replay / re-adoption** window (a forgotten fact's source thread is still in
-the archive; if that thread is ever re-distilled, the fact could re-derive). Layer-T (canonical
-text-match) runs **per-candidate at distill, before apply**. Two NAMED limits (best-effort ceiling,
-§4 carried):
-- **Un-forget on genuine re-statement / human re-pin.** A high-confidence FRESH conversational
-  re-statement of a forgotten fact (the same asymmetric machinery) — or a human edit/re-pin — clears
-  the `forgotten_facts` row; otherwise forget stays sticky until the user re-pins via the hatch. (This
-  keeps stability honest: "never silently vanishes" applies to a *genuine new* statement.)
-- **Cross-lingual gap** [grill m4/M3]: a fact forgotten in English won't normalize-match a re-derived
-  Ukrainian canonical. Layer-T is best-effort and cross-lingual is out of its reach — **named, not
-  silently broken.**
+**D-V6a-bis. Option B is DROPPED; per-message message-forget is DROPPED as a user-facing path; the
+`WriteGate` hard-scrub PRIMITIVE is kept** (Lior, relay-005 + refinement). Two removals + one retention:
+- **ADR-0015 decision 5 — option B** (`forgetFactAndSources` + the `also_forget_sources` flag +
+  `GET /memory/cofed` + the "also delete N source message(s)" button) — is **SUPERSEDED.** It existed
+  only because the OLD global-reprojection distiller re-derived a forgotten fact from its still-present
+  source; v2's durable delete + no-re-derivation removes that premise → redundant complexity, **removed
+  end-to-end.**
+- **Per-message message-forget is DROPPED as a user-facing path** — remove the `history.html`
+  message-"Forget" button and the `target_type:"message"` user route. The user-facing forget is now
+  **fact-forget ONLY** (D-V6a). The intent-dispatch collapses to one user path; the separate-table B1
+  invariant still holds for it.
+- **The `WriteGate.forget` hard-scrub PRIMITIVE is KEPT** (the mechanism, MF-05). It has **no
+  per-message user route** now, but the **future content-forget primitive (THREAD-forget) reuses it.**
 
-**D-V6c. message-forget drops derived facts — fix the comma-joined miss** [grill M4].
-`dropDistilledFactsByProvenance` matches provenance by **exact string** and MISSES a comma-joined
-provenance (the same MAJOR-1-class bug `purgeLiveMachineFactsByForget` already fixed). Fix it to match
-by **component** so a message-forget removes facts derived from that message even in an aggregate
-provenance.
+**Future content-forget = THREAD-forget** (recorded here, NOT built — see §1 + the roadmap): the way a
+user erases *content* (not just a derived fact) is to **forget a whole conversation** — scrub its
+messages (via the kept `WriteGate` hard-scrub primitive) AND delete its facts
+(`dropDistilledFactsForThread`). This is **simpler than per-message** and matches ADR-0012's "the user
+interacts with THREADS." It is the right home for archive-content-scrub and is **deferred to its own
+feature** (it pairs naturally with 2d, where a forgotten topic could otherwise resurface via
+message-search). For v2's model (the agent uses FACTS), **fact-forget is the user's only forget handle.**
+
+**D-V6b. `forgotten_facts` necessity — RECONSIDERED (architect-time, v2-04)** [Lior relay-005 + grill M3].
+Under durable-delete + no-re-derivation a forgotten fact does NOT come back on a normal dismiss, so the
+old "suppress re-derivation" job mostly evaporates. The ONLY residual risk is the **migration
+ordered-replay** (§3.8) re-distilling an old conversation and resurrecting a forgotten fact. So
+`forgotten_facts` is **either (a) retained ONLY as replay-safety** (Layer-T consulted during the
+migration replay, NOT on the per-dismiss path), **or (b) dropped entirely** if the migration default is
+"wipe + re-distill forward" (no replay → nothing to resurrect). **v2-04 DECIDES and STATES the call —
+do not silently leave a contradiction.** With durable delete there is no per-dismiss re-derivation to
+un-forget against, so grill M3's per-dismiss un-forget machinery is retired; the cross-lingual Layer-T
+gap [grill m4] is then moot or a named replay-only limit.
+
+**D-V6c. The grill-M4 comma-join concern MIGRATES to the future THREAD-forget** [grill M4]. It was a
+fix to message-forget's derived-fact drop (`dropDistilledFactsByProvenance`'s exact-string match MISSES
+a comma-joined provenance). With the per-message message-forget user path DROPPED (D-V6a-bis), there is
+no per-message user path to carry it; the concern moves to the future **THREAD-forget** primitive (which
+deletes a conversation's facts via `dropDistilledFactsForThread`, not by message-provenance) — **out of
+scope for v2-04, recorded for the THREAD-forget feature.**
 
 **D-V6d. 2a self-concept fix — "cannot self-forget"** [finding 2]. The chunk-01 `MEMORY_SELF_CONCEPT`
 tells the agent the *user* can delete via History but does NOT forbid the agent from *claiming to have
@@ -276,11 +309,12 @@ normalize for matching (§3.4 D-V4c). Tested: a Ukrainian conversation yields a 
 
 ### 3.7 — The stale-build finding (finding 4)
 
-The demo's `GET /memory/cofed` 404 / "no scrub" was almost certainly a **stale build** (that route is
-new in chunk 04; `main`'s handler is correct and dispatches `forgetFactAndSources`). **Do NOT "fix"
-correct code.** But the incremental redesign reworks the forget flow anyway, so: keep option-B + cofed
-correct, and add an **EXECUTED end-to-end probe** through the real `history.html → HTTP → Hatch` path
-(§5) so a future demo can't be fooled by a stale build.
+The demo's `GET /memory/cofed` 404 / "no scrub" was a **stale build** of a route that **v2 REMOVES
+anyway** (option B is dropped — D-V6a-bis — so `/memory/cofed` and `forgetFactAndSources` go away).
+There is nothing to "fix" there. But the *lesson* stands: a future demo must not be fooled by a stale
+build. So v2-04 ships an **EXECUTED end-to-end probe** through the real `history.html → HTTP → Hatch`
+path (§5) — now proving **fact-forget durable-delete** (the fact stops being used; its row is gone; the
+source conversation is untouched), not option B.
 
 ### 3.8 — Migration (q#011; [grill m2])
 
@@ -338,23 +372,27 @@ The proposed amendment (q#009; `proposed`; Lior accepts at §5.2) — headline f
   after each delete path (forget-fact, message-forget, REPLACE, migration-wipe).
 - **B1 full-corpus invariant** [grill B1]: a contradicting fact with a DIFFERENT topic-tag is still
   surfaced as a candidate (tags don't filter).
-- **forget tests (carried + simplified)**: B1 no-downgrade (carried from ch04 — fact-forget never
-  scrubs/writes `mutations`); fact-forget durable delete *stays gone* across a re-dismiss with an echo
-  stub; message-forget HARD (carried); comma-joined message-forget drops the aggregate-derived fact
-  [grill M4]; cross-lingual Layer-T gap is a documented limit (not a failing test).
+- **forget tests (simplified — option B + per-message user path dropped)**: B1 no-downgrade (carried —
+  fact-forget never scrubs/writes `mutations`); **fact-forget durable delete *stays gone* across a
+  re-dismiss** with an echo stub (the headline forget test); **no option-B / cofed tests, no
+  message-forget user-path tests (removed)**. The `WriteGate.forget` hard-scrub PRIMITIVE keeps its
+  existing unit tests (it survives for the future THREAD-forget). The `forgotten_facts` / replay-safety
+  tests follow v2-04's D-V6b call. (The grill-M4 comma-join drop migrates to the future THREAD-forget.)
 - **Language test** [finding 3]: a Ukrainian conversation → a Ukrainian display fact.
 - **One EXECUTED real-API probe** (Strike-5; output in the PR) on a FRESH store: a real conversation →
-  incremental distill → stable facts; and an **end-to-end forget probe through the real
-  `history.html → HTTP → Hatch` path** [finding 4] (option-B + cofed proven, not stale-build-fooled).
+  incremental distill → stable facts; and an **end-to-end fact-forget probe through the real
+  `history.html → HTTP → Hatch` path** [finding 4] (durable-delete proven, source untouched — not
+  stale-build-fooled; no option-B/cofed).
 - **The migration script gets its own real-sqlite check** (q#011 rider — it touches
   `~/.agentic-engine/memory.sqlite`).
 - **Behavioral DoD = Lior's LIVE feature-closing demo** (§6.1, non-negotiable): (1) meta-question →
   truthful memory ownership AND **no false "I forgot that"** [finding 2]; (2) structured recall →
   precise answer + provenance link; (3) **STABILITY live**: dismiss several times → "my name is Lior"
-  and other facts **stay put** (no churn/reorder/vanish); (4) forget a fact (durable, source intact);
-  (5) message-forget (hard) + option-B (with the co-fed confirm); (6) a Ukrainian turn → a Ukrainian
-  fact. **Demo env:** ANTHROPIC key (Keychain), `LLM_PROVIDER=anthropic-api`, the incremental provider
-  active.
+  and other facts **stay put** (no churn/reorder/vanish); (4) **forget a fact → durable delete**: the
+  agent stops using it AND the source conversation stays intact (fact-forget is the WHOLE forget story
+  in v2 — no option-B / source-scrub, and no per-message message-forget user path; content-erase is the
+  future THREAD-forget); (5) a Ukrainian turn → a Ukrainian fact. **Demo env:** ANTHROPIC key
+  (Keychain), `LLM_PROVIDER=anthropic-api`, the incremental provider active.
 
 ---
 
@@ -403,7 +441,7 @@ it. The v2 build:
 | **v2-01** | self-concept "cannot self-forget" (2a-bis) + language-preservation prompt | D-V6d clause added to `MEMORY_SELF_CONCEPT`; the distiller language-preservation instruction (prompt only) | none (independent — ships value first) |
 | **v2-02** | incremental store foundation | additive `fact_topics` + `fact_fts` (FTS5, canonical col) + `AFTER DELETE` sync trigger; stable-id delta-apply store primitives (insert-returning-id, update-by-id, append-by-id, record-replaced, BM25 full-corpus candidate-fetch, fact-delete cleans derived tables); mutation-counter; count-equality DoD. NO distiller logic. | v2-01 |
 | **v2-03** | the incremental distiller (delta port) | `MemoryProvider` port → delta; `SmartDistiller` rewrite (read-new-tail, canonical+display+topics+op+targetOrdinal+expectedText); registration delta-apply (guard-in-tx, never-drop re-purpose, optimistic-concurrency); **FixedMarker retired + DumbTail adapted (delta op:'new') + swap-proof test rewritten** (B3); the **STABILITY test** + **EXECUTED probe** on a fresh store | v2-02 |
-| **v2-04** | forget simplification + end-to-end probe | fact-forget = durable delete (stable id); `forgotten_facts` narrowed + Layer-T per-candidate + un-forget; `dropDistilledFactsByProvenance` comma-joined fix; carried B1/HARD message-forget; **EXECUTED `history.html→HTTP→Hatch` forget probe** (finding 4); cross-lingual limit named | v2-03 |
+| **v2-04** | forget simplification + end-to-end probe | fact-forget = durable delete (stable id) + provenance as READ affordance; **option B DROPPED** (forgetFactAndSources/`also_forget_sources`/`/memory/cofed`/button removed; ADR-0015 d5 superseded); **per-message message-forget user path DROPPED** (button + `target_type:"message"` removed) — `WriteGate` hard-scrub PRIMITIVE KEPT for the future THREAD-forget; `forgotten_facts` necessity DECIDED + stated (replay-safety-only or dropped); carried B1 invariant; **EXECUTED `history.html→HTTP→Hatch` fact-forget durable-delete probe** (finding 4) | v2-03 |
 | **v2-05** | migration + default cutover + closing demo | one-time migration script (wipe-machine/human-preserved/optional-replay/resurrection-report, real-sqlite check); flip default → incremental; no-key fallback keeps suite green; **Lior LIVE demo** (§5, stability headline) | v2-04 |
 
 Each chunk file: `Status: todo`, `## Orchestrator brief`, per-chunk scope rationale, the §7.1 notes it

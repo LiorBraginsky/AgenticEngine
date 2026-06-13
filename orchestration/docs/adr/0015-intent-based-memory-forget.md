@@ -14,6 +14,22 @@ tags: [adr, memory, forget, distiller, provenance, tombstone, intent-routing, tr
 triggered by a hard-review finding on memory-quality chunk 03. Bus seams q#004–007 ruled by
 the conductor (`.conveyor/bus/a/00{4,5,6,7}-*.md`).
 
+> **⚠️ SUPERSEDED IN PART by the memory-distiller-v2 incremental model (2026-06-13, Lior).** When the
+> distiller became **incremental + stable-id + durable-delete** (see
+> [[../specs/2026-06-13-memory-distiller-v2]] §3.6 + the ADR-0012 amendment), two parts of this ADR were
+> retired:
+> - **Decision 5 (option B — "also forget source messages") is SUPERSEDED** — it existed only because
+>   global re-projection re-derived a forgotten fact from its still-present source; durable fact-delete
+>   removes that premise, so the source-scrub hard-escape is redundant.
+> - **The per-message message-forget USER PATH (decision 1's "forget a message" row + `target_type:"message"`)
+>   is DROPPED** as a user-facing path. The user-facing forget is **fact-forget ONLY**. The
+>   `WriteGate.forget` hard-scrub **primitive is RETAINED** (the future **THREAD-forget** content
+>   primitive — forget a whole conversation — reuses it; matches ADR-0012 "user interacts with threads").
+>
+> **Still in force:** the **separate-table B1 invariant** (fact-forget touches neither `messages` nor
+> `mutations`, never calls `tombstoneFact`) and intent-named dispatch. This ADR stays as the record of
+> how forget was contracted in the global-reprojection era; the v2 spec + ADR-0012 amendment govern now.
+
 > **Hard-to-reverse tier (PIPELINE Finding #5).** This introduces a new durable store
 > mechanism, changes the user-facing forget *dispatch* contract, and creates a cross-cutting
 > contract the queued **2c (agent memory-action tools)** will build on. Therefore it takes the
@@ -116,7 +132,7 @@ authoring/editing a matching fact clears the `forgotten_facts` row) ▷ machine 
 record (text-match suppression) ▷ machine re-derivation.** The text-match filter must not
 suppress a candidate when a human-authored fact with the same normalized text exists.
 
-### 5. Option B — "also forget source messages" is a first-class, intent-gated HARD escape.
+### 5. Option B — "also forget source messages" is a first-class, intent-gated HARD escape.  ⚠️ SUPERSEDED 2026-06-13 (see Status) — dropped by the v2 incremental model; durable fact-delete makes the source-scrub redundant.
 
 On explicit opt-in, `forgetFactAndSources` enumerates the fact's `isMessageId` provenance
 components and hard-scrubs each via the existing `WriteGate.forget`. A `thread:<id>`-shaped

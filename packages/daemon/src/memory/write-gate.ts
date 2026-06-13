@@ -83,7 +83,8 @@ export class WriteGate {
       db.query("UPDATE messages SET content = ? WHERE id = ?").run(REDACTION_MARKER, messageId);
     });
     tx();
-    // v2-02: bump the per-thread mutation marker on the human forget path
+    // v2-02: bump the per-thread mutation marker — applied forget path (human, or machine-over-machine;
+    // the early return above blocks machine-over-human only) — mutation marker for v2-03's skip decision
     // (edit/forget are NOT append; they do not touch last_active_at — the marker tracks all three)
     this.store.bumpThreadMarker(threadId);
     // Rewrite the JSONL mirror so the message line's content is replaced with the
@@ -198,7 +199,8 @@ export class WriteGate {
     db.query(
       "INSERT INTO mutations (id, target_message_id, kind, actor, reason, replacement_content, authored_by, created_at) VALUES (?, ?, 'correction', ?, ?, ?, ?, ?)",
     ).run(crypto.randomUUID(), messageId, ctx.actor, reason ?? null, replacement, ctx.authored_by, now);
-    // v2-02: bump the per-thread mutation marker on the human edit path
+    // v2-02: bump the per-thread mutation marker — applied edit path (human, or machine-over-machine;
+    // the early return above blocks machine-over-human only) — mutation marker for v2-03's skip decision
     this.store.bumpThreadMarker(threadId);
     this.store.mirrorEvent(threadId, { event: "edit", target_message_id: messageId, replacement, actor: ctx.actor, created_at: now });
     // Un-forget (ADR-0015 decision 4 — human precedence cuts both ways):

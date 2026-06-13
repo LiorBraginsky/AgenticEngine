@@ -10,7 +10,9 @@
 
 ---
 
-## Status: Phase 3 — Implementation Plan ready. A is bus-gated (the consistency-model choice routes UP via the dev-bus; the architect's recommendation + impl sketch are included so the worker moves fast once the bus answers). Branch: `chunk/v2-06-debug-env-and-demo-fixes` (already checked out, stacked on `chunk/v2-05-migration-flip-and-demo`).
+## Status: review-complete — DONE-ready, BLOCKED on Lior's §6.1 live re-demo (behavioral DoD item 3). All steps 1–6 done + a harness-caught 4th defect (D) fixed. Bus q#012 ruled (i)+bounded-wait. engine-reviewer CLEAN (0 blockers/0 majors; 1 minor + 2 nits advisory, documented in PR). Gates (orchestrator-re-verified on HEAD 60c2a7e): `bun test` 495/0 · typecheck 0 · lint:strict 0 · frozen @agentic/protocol + mock-agent.ts byte-unchanged (0 bytes). EXECUTED Strike-5: stub all-GREEN (C/B/A hard assertion); real-mode exit 0 (real Haiku, 0 SmartDistillError, C/B GREEN). Branch: `chunk/v2-06-debug-env-and-demo-fixes` (stacked on `chunk/v2-05-migration-flip-and-demo`). NOT merged — behavioral §6.1 re-demo is Lior's gate; conductor re-verifies + routes the demo, then merges (bringing v2-05 along, closing PR #67 subsumed).
+
+> **Defect D (added mid-flight, FLAGGED to conductor):** the v2-06 real-mode harness caught a 4th, demo-blocking defect — real Haiku non-deterministically wraps its JSON delta in a fence / inline backtick / prose, and the distiller's anchored fence-strip missed it → `parseOps`/`parseFacts` threw `SmartDistillError` → distill failed → no facts → the live STABILITY/recall demo would fail. PRE-EXISTING from v2-03, but it makes DoD item 3 (behavioral demo) unreachable, so the orchestrator folded the fix (a shared `extractJsonArray` first-`[`..last-`]` helper used by both parsers) under the §7.2 citation test (fix required to satisfy a frozen DoD line, mechanical, on a surface v2-06 already owns). Conductor may overrule (split into a v2-07) — flagged in the ledger + PR.
 
 ---
 

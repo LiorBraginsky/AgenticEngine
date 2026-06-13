@@ -60,9 +60,16 @@ Rules:
 // ── Error type ─────────────────────────────────────────────────────────────
 
 export class SmartDistillError extends Error {
-  constructor(message: string) {
+  /** True only for the output-truncation case (stop_reason:"max_tokens").
+   *  Lets the Phase-1 catch route truncation to a DISTINCT trigger
+   *  ("reprojection-truncated") vs a generic parse/LLM failure
+   *  ("reprojection-failed"). Defaults false so existing throw sites
+   *  (parseFacts) keep the generic-failure routing. */
+  readonly truncated: boolean;
+  constructor(message: string, opts?: { truncated?: boolean }) {
     super(message);
     this.name = "SmartDistillError";
+    this.truncated = opts?.truncated ?? false;
   }
 }
 
@@ -344,6 +351,23 @@ export class SmartDistillerProvider implements MemoryProvider {
       system: [{ type: "text", text: systemText }],
       messages: [{ role: "user", content: digest }],
     });
+
+    // Output-truncation guard (ADR-0012 5b — distillation must be observable, never
+    // silent corruption; spec §2 D-E / q#006). The fact set (LLM OUTPUT) grows
+    // monotonically with the archive (global re-projection, O(total archive), D8);
+    // once it outgrows max_tokens the JSON is truncated mid-array. Do NOT parse the
+    // partial body — throw a DISTINCT truncation error so chunk-02's Phase-1 catch can
+    // route it to trigger="reprojection-truncated" (the NAMED trigger for the future
+    // summarization tier, spec §1) instead of the generic "reprojection-failed".
+    if (response.stop_reason === "max_tokens") {
+      throw new SmartDistillError(
+        "[smart-distiller] LLM output hit the SMART_MAX_TOKENS cap (stop_reason=max_tokens); " +
+          "the fact JSON is truncated. Not parsing the partial body. Raising the cap is runway, " +
+          "not a cure — at O(total archive) the cap is eventually re-hit; the real fix is the " +
+          "summarization tier (out of scope).",
+        { truncated: true },
+      );
+    }
 
     // Extract text from first text block
     let rawText = "";

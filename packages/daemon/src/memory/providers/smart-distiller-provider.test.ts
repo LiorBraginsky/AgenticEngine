@@ -686,3 +686,42 @@ test("retrieve() backstop: a forgotten fact still in distilled_facts is filtered
 
   store.close();
 });
+
+// ── chunk 05 Task 1: stop_reason guard ────────────────────────────────────
+
+/** Stub that returns stop_reason:"max_tokens" plus a TRUNCATED (mid-array) JSON body.
+ *  Proves the guard keys off stop_reason and does NOT depend on the body being parseable. */
+function maxTokensClient(): Anthropic {
+  return {
+    messages: {
+      create: async () => ({
+        stop_reason: "max_tokens",
+        content: [{ type: "text", text: '[{"fact":"a","provenance":"p","scope":"cross-thread"' }],
+      }),
+    },
+  } as unknown as Anthropic;
+}
+
+test("stop_reason guard: max_tokens throws a SmartDistillError flagged truncated (partial body NOT parsed)", async () => {
+  const store = freshStore();
+  const threadId = store.createThread();
+  store.appendMessages(threadId, [{ role: "user", content: "hello" }], "s1");
+  const provider = new SmartDistillerProvider({ client: maxTokensClient() });
+  let caught: unknown;
+  try { await provider.distill(store, threadId); } catch (e) { caught = e; }
+  expect(caught).toBeInstanceOf(SmartDistillError);
+  expect((caught as SmartDistillError).truncated).toBe(true);
+  store.close();
+});
+
+test("SmartDistillError.truncated defaults to false for ordinary parse failures", async () => {
+  const store = freshStore();
+  const threadId = store.createThread();
+  store.appendMessages(threadId, [{ role: "user", content: "hello" }], "s1");
+  const provider = new SmartDistillerProvider({ client: echoClient("This is not JSON at all!") });
+  let caught: unknown;
+  try { await provider.distill(store, threadId); } catch (e) { caught = e; }
+  expect(caught).toBeInstanceOf(SmartDistillError);
+  expect((caught as SmartDistillError).truncated).toBe(false);
+  store.close();
+});

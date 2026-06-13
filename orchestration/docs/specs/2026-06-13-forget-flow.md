@@ -1,7 +1,8 @@
 ---
 title: Forget-flow redesign — smart-fact era (corrective pass on memory-quality §4)
-status: draft
+status: accepted
 date: 2026-06-13
+date-accepted: 2026-06-13
 deciders: [lior]
 feeds: memory-quality
 implements: adr/0015-intent-based-memory-forget
@@ -11,7 +12,7 @@ route-part: 1 (quality pass — corrective, triggered by a hard-review finding o
 tags: [spec, memory, forget, distiller, provenance, tombstone, intent-routing]
 ---
 
-# Forget-flow redesign — spec (DRAFT — bus rulings q#004–007 folded; awaiting Lior §5.2)
+# Forget-flow redesign — spec (ACCEPTED — Lior §5.2 2026-06-13; bus rulings q#004–007 folded)
 
 > **Pipeline placement.** Frontier (fable) **design + decompose** pass (PIPELINE §11),
 > triggered mid-feature by a hard-review finding on memory-quality chunk 03. Redesigns the

@@ -1,6 +1,7 @@
 ---
-status: proposed
+status: accepted
 date: 2026-06-13
+date-accepted: 2026-06-13
 deciders: [lior]
 tags: [adr, memory, forget, distiller, provenance, tombstone, intent-routing, transparency]
 ---
@@ -9,7 +10,7 @@ tags: [adr, memory, forget, distiller, provenance, tombstone, intent-routing, tr
 
 ## Status
 
-`proposed` — **agent-authored during a frontier (fable) design pass** (PIPELINE §11),
+`accepted` (Lior §5.2, 2026-06-13) — **agent-authored during a frontier (fable) design pass** (PIPELINE §11),
 triggered by a hard-review finding on memory-quality chunk 03. Bus seams q#004–007 ruled by
 the conductor (`.conveyor/bus/a/00{4,5,6,7}-*.md`).
 

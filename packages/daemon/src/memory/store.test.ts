@@ -528,32 +528,8 @@ test("hasHumanFactWithNormalizedText returns true only when a human fact matches
   store.close();
 });
 
-test("countFactsFedByMessages returns how many OTHER distilled facts a set of source messages feed", () => {
-  const { store } = freshStore();
-  store.insertDistilledFacts([
-    { fact: "f1", provenance: "m1,m2", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
-    { fact: "f2", provenance: "m2,m3", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
-    { fact: "self", provenance: "m1", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
-  ], "smart");
-  // facts fed by {m1} excluding the fact being forgotten ("self")
-  expect(store.countFactsFedByMessages(["m1"], "self")).toBe(1); // f1 also feeds on m1
-  store.close();
-});
-
-// ---- MINOR-2 NIT: countFactsFedByMessages null-provenance guard ----
-
-test("m2.2 RED: countFactsFedByMessages throws when a machine row has NULL provenance (f.provenance.split on null)", () => {
-  const { store } = freshStore();
-  // Seed a NULL-provenance machine row via rawDb (bypasses insertDistilledFacts typed input)
-  store.rawDb().query(
-    "INSERT INTO distilled_facts (id, fact, provenance, scope, expiry, confidence, authored_by, derived_at, distiller_version) VALUES (?,?,?,?,?,?,?,?,?)",
-  ).run(crypto.randomUUID(), "null-prov fact", null, "cross-thread", null, 1, "machine", Date.now(), "v0");
-
-  // This should NOT throw after the fix (m2.3: null-provenance guard)
-  // Without the fix: f.provenance.split is called on null → TypeError
-  expect(() => store.countFactsFedByMessages(["m1"], "other")).not.toThrow();
-  store.close();
-});
+// v2-04: countFactsFedByMessages tests removed. countFactsFedByMessages was the
+// option-B cofed-count helper; it was removed in v2-04 along with option B.
 
 // ---- MINOR-1: readDistilledFactsForThread origin-thread resolved in code ----
 

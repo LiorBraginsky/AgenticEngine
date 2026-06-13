@@ -1,5 +1,4 @@
 import type { MemoryStore } from "./store.js";
-import { isMessageId } from "./store.js";
 import type { SessionMessage } from "../providers/provider.js";
 import { REDACTION_MARKER } from "./schema.js";
 import type { MemoryScanner } from "./scanner/memory-scanner.js";
@@ -103,77 +102,26 @@ export class WriteGate {
   }
 
   /**
-   * forgetFact — forget a distilled fact by its text + provenance (chunk 04 / ADR-0015).
+   * forgetFact — durable delete of a distilled fact by its text + provenance (v2-04).
    *
-   * New signature: (factText, provenance, ctx, reason?) — intent-based.
-   * No longer receives a bare provenance as first arg; the caller provides the FACT TEXT
-   * so we can key the forgotten_facts record on normalized text (the load-bearing match key).
+   * v2-04 rewrite: durable delete via deleteMachineFactsByForget; the AFTER DELETE trigger
+   * cleans fact_fts + fact_topics. No forgotten_facts write on this path (Ruling 1-b).
+   * B1 untouched: no scrub of messages.content, no mutations row.
    *
-   * Three steps (SEPARATE-TABLE path — never touches messages or mutations):
-   *   1. recordForgottenFact: durable entry in forgotten_facts keyed on normalizeFactText(factText)
-   *   2. purgeLiveMachineFactsByForget: delete live machine rows by provenance OR normalized text
-   *      (both checks ensure a re-derived fact with different provenance is still caught)
+   * Under incremental + stable-id + watermark, a durably-deleted fact is NOT re-derived on
+   * a normal dismiss, so the per-dismiss suppression job (forgotten_facts record) evaporates.
+   * The forgotten_facts table and its low-level primitives are retained as dormant v2-05
+   * optional ordered-replay Layer-T substrate (no live per-dismiss consumer).
    *
    * DOES NOT call tombstoneFact — the isMessageId throw stays on the message path (ADR-0015 decision 1).
    * DOES NOT call dropDistilledFactsByProvenance/dropDistilledFactsForThread — those are message-path.
-   * NO scrub of messages.content, NO mutations row (B1 structural invariant).
-   *
-   * 5e guard: purgeLiveMachineFactsByForget carries authored_by != 'human' guard.
+   * 5e guard: deleteMachineFactsByForget carries authored_by != 'human' guard.
    */
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   forgetFact(factText: string, provenance: string, ctx: WriteContext, reason?: string): void {
     const norm = normalizeFactText(factText);
-    // 1. Durable record (keyed on normalized text — the Layer-T match key)
-    this.store.recordForgottenFact({
-      raw_text: factText,
-      provenance,
-      actor: ctx.actor,
-      reason,
-      authored_by: ctx.authored_by,
-    });
-    // 2. Immediate purge of live machine rows (no-window; 5e guard is inside purgeLiveMachineFactsByForget)
-    this.store.purgeLiveMachineFactsByForget(provenance, norm);
-  }
-
-  /**
-   * forgetFactAndSources — fact-forget + option-B hard escape (chunk 04 / ADR-0015 decision 3).
-   *
-   * All-or-nothing atomicity (MINOR-1 fix): pre-validate ALL isMessageId components exist
-   * BEFORE any mutation. If any component is unknown, throw WITHOUT scrubbing anything.
-   * This prevents the partial-irreversible-scrub + misleading "not found" defect.
-   *
-   * Cannot use a DB transaction to wrap forget() because forget() also rewrites the
-   * JSONL mirror (a filesystem side-effect a DB tx cannot roll back). Pre-validate instead.
-   *
-   * 1. Compute isMessageId components (empty for thread:<id> prefix).
-   * 2. Pre-validate ALL components resolve (threadOf throws for unknown ids).
-   * 3. Only then: forgetFact(...) + scrub loop.
-   *    thread:<id> provenance → no specific source messages to scrub (never a whole-thread scrub).
-   */
-  forgetFactAndSources(factText: string, provenance: string, ctx: WriteContext, reason?: string): void {
-    // Step 1: compute isMessageId components (empty for thread:<id> provenance)
-    if (provenance.startsWith("thread:")) {
-      // No source messages to scrub; still record the fact-forget.
-      this.forgetFact(factText, provenance, ctx, reason);
-      return;
-    }
-    const comps = provenance
-      .split(",")
-      .map((p) => p.trim())
-      .filter((p) => isMessageId(p));
-
-    // Step 2: pre-validate ALL components (threadOf throws for unknown ids, already 404-mapped).
-    // Do this BEFORE any mutation so a failure leaves NOTHING changed.
-    for (const comp of comps) {
-      this.threadOf(comp); // throws if unknown — aborts before any write
-    }
-
-    // Step 3: all validated — now mutate (all-or-nothing guarantee satisfied pre-step).
-    // Durable fact-forget record + live purge (no scrub of its own).
-    this.forgetFact(factText, provenance, ctx, reason);
-    // Option B: hard-scrub each validated component via the existing message path.
-    for (const comp of comps) {
-      this.forget(comp, ctx, reason); // reuse WriteGate.forget (HARD scrub)
-    }
+    // Durable delete via trigger-backed deleteFactById loop (5e guard inside)
+    this.store.deleteMachineFactsByForget(provenance, norm);
   }
 
   /**
@@ -203,15 +151,10 @@ export class WriteGate {
     // the early return above blocks machine-over-human only) — mutation marker for v2-03's skip decision
     this.store.bumpThreadMarker(threadId);
     this.store.mirrorEvent(threadId, { event: "edit", target_message_id: messageId, replacement, actor: ctx.actor, created_at: now });
-    // Un-forget (ADR-0015 decision 4 — human precedence cuts both ways):
-    // when a human edits a message whose replacement text normalizes to the same text as
-    // a forgotten fact, clear that forgotten_facts row. This is the deliberate inverse of D6.
-    // Load-bearing un-forget path: human-fact authoring (human-pin route). The message-edit
-    // clear fires only when the edited content normalizes to a forgotten fact's text (rare,
-    // but correct per spec §2 D-B). It is always scoped to ctx.authored_by === 'human'.
-    if (ctx.authored_by === "human") {
-      this.store.clearForgottenByNormalizedText(normalizeFactText(replacement));
-    }
+    // Un-forget block REMOVED (v2-04): the durable-delete path no longer writes forgotten_facts
+    // on a fact-forget, so there is no per-dismiss suppression record to clear.
+    // clearForgottenByNormalizedText is retained as dormant v2-05 optional ordered-replay Layer-T
+    // substrate (no live per-dismiss consumer).
   }
 
   /**

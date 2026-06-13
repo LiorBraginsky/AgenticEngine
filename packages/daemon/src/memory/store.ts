@@ -267,25 +267,35 @@ export class MemoryStore {
   /**
    * SELECT all distilled_facts ordered by derived_at DESC, limited to `limit` rows.
    *
-   * MAJOR-1 fix (relay-004): provider-agnostic read-side suppression.
-   * After fetching, applies suppressForgottenMachineRows() so forgotten machine facts
-   * are excluded regardless of provider. Human rows are never suppressed (5e guard).
-   * The 1000-row cap makes under-fill due to suppression immaterial.
+   * v2-04: provider-agnostic read-side suppression REMOVED (Ruling 1-b).
+   * Under durable-delete + no-re-derivation, forgotten facts are gone from the table —
+   * the per-dismiss forgotten_facts suppression defended a resurrection that can no longer happen.
+   * Returns rows directly.
    */
   readDistilledFacts(limit: number): DistilledFactRow[] {
     const rows = this.db
       .query("SELECT fact, provenance, scope, expiry, confidence, authored_by FROM distilled_facts ORDER BY derived_at DESC LIMIT ?")
       .all(limit) as DistilledFactRow[];
-    return this.suppressForgottenMachineRows(rows);
+    return rows;
   }
 
-  // ---- chunk 04: forgotten_facts primitives (ADR-0015 decision 2/3) ----
+  // ---- forgotten_facts primitives (v2-04 Ruling 1-b: dormant substrate) ----
+  //
+  // dormant — retained for v2-05 optional ordered-replay Layer-T; no live per-dismiss consumer.
+  //
+  // Under durable-delete + no-re-derivation (v2-04), a forgotten fact is gone from
+  // distilled_facts and does NOT come back on a normal dismiss. The per-dismiss suppression
+  // machinery (recordForgottenFact write on forgetFact; buildForgottenNormSet/keepRow/
+  // suppressForgottenMachineRows on read; isForgottenNormalizedText in retrieve()) has been
+  // retired. These low-level primitives are kept so v2-05 can optionally use them in the
+  // ordered-replay migration path (Layer-T consulted during replay, NOT per-dismiss).
+  // If v2-05 ships "wipe + re-distill forward" as the default, this block is removable.
 
   /**
    * Record a durable fact-forget entry in `forgotten_facts`.
    * Keyed on `normalizeFactText(raw_text)` — the load-bearing match key for Layer-T.
    * The provenance is stored as-forgotten for Layer-P (opportunistic) + audit.
-   * This is the FACT-suppression artifact — it NEVER touches `messages` or `mutations`.
+   * dormant — retained for v2-05 optional ordered-replay Layer-T; no live per-dismiss consumer.
    */
   recordForgottenFact(e: ForgottenFactInput): void {
     const normalized = normalizeFactText(e.raw_text);
@@ -306,8 +316,9 @@ export class MemoryStore {
   }
 
   /**
-   * Read all forgotten facts — used by the smart distiller's suppression layers.
+   * Read all forgotten facts.
    * Returns normalized_text (Layer-T match key), raw_text (Layer-X nudge), provenance (Layer-P).
+   * dormant — retained for v2-05 optional ordered-replay Layer-T; no live per-dismiss consumer.
    */
   readForgottenFacts(): ForgottenFactRow[] {
     return this.db
@@ -317,7 +328,7 @@ export class MemoryStore {
 
   /**
    * Returns true if ANY forgotten_facts row has the given normalized text.
-   * Used by the smart distiller (Layer-T) and retrieve() backstop.
+   * dormant — retained for v2-05 optional ordered-replay Layer-T; no live per-dismiss consumer.
    */
   isForgottenNormalizedText(norm: string): boolean {
     const row = this.db
@@ -328,14 +339,47 @@ export class MemoryStore {
 
   /**
    * Remove all forgotten_facts rows with the given normalized text.
-   * Used by the un-forget mechanism (human re-authorship / edit clears the row).
    * Returns the number of rows deleted.
+   * dormant — retained for v2-05 optional ordered-replay Layer-T; no live per-dismiss consumer.
    */
   clearForgottenByNormalizedText(norm: string): number {
     const result = this.db
       .query("DELETE FROM forgotten_facts WHERE normalized_text = ? RETURNING id")
       .all(norm);
     return result.length;
+  }
+
+  /**
+   * Durable-delete of machine-authored distilled_facts whose provenance OR normalized fact text
+   * matches the given arguments (AND authored_by != 'human' — 5e guard).
+   *
+   * v2-04 fact-forget primitive: replaces purgeLiveMachineFactsByForget.
+   * Calls deleteFactById (which fires the AFTER DELETE trigger cleaning fact_fts + fact_topics)
+   * for each matching row, all in one db.transaction. Returns the count deleted.
+   *
+   * Both provenance match and text match are checked so a re-derived fact with a
+   * DIFFERENT provenance shape (unstable across re-projections) is still caught by text.
+   * 5e guard: authored_by != 'human' — never deletes a human-authored row.
+   */
+  deleteMachineFactsByForget(provenance: string, normalizedText: string): number {
+    const tx = this.db.transaction((): number => {
+      const candidates = this.db
+        .query("SELECT id, fact, provenance FROM distilled_facts WHERE authored_by != 'human'")
+        .all() as { id: string; fact: string; provenance: string }[];
+
+      const toDelete = candidates.filter(
+        (c) => c.provenance === provenance || normalizeFactText(c.fact) === normalizedText,
+      );
+
+      if (toDelete.length === 0) return 0;
+
+      // deleteFactById fires the AFTER DELETE trigger for each row (cleans fact_fts + fact_topics)
+      for (const row of toDelete) {
+        this.deleteFactById(row.id);
+      }
+      return toDelete.length;
+    });
+    return tx();
   }
 
   /**
@@ -372,8 +416,7 @@ export class MemoryStore {
 
   /**
    * Returns true if ANY human-authored distilled_fact has a normalized text matching `norm`.
-   * Used by Layer-T's 5e-aware filter: a human-pinned fact with the same text must NOT
-   * be suppressed (human precedence: D6 ▷ machine fact-forget record).
+   * dormant — retained for v2-05 optional ordered-replay Layer-T; no live per-dismiss consumer.
    */
   hasHumanFactWithNormalizedText(norm: string): boolean {
     const rows = this.db
@@ -409,26 +452,6 @@ export class MemoryStore {
   }
 
   /**
-   * Count the number of OTHER distilled facts (machine-authored) whose provenance
-   * comma-set intersects `messageIds`, excluding the fact with the given `excludeFactText`.
-   * Used by the option-B confirm to surface "how many other facts these source messages feed".
-   */
-  countFactsFedByMessages(messageIds: string[], excludeFactText: string): number {
-    const facts = this.db
-      .query("SELECT fact, provenance FROM distilled_facts WHERE authored_by != 'human'")
-      .all() as { fact: string; provenance: string }[];
-    const idSet = new Set(messageIds);
-    let count = 0;
-    for (const f of facts) {
-      if (f.fact === excludeFactText) continue;
-      // m2.3: null-provenance guard — provenance is SQL-nullable even if TS-typed as string
-      const components = (f.provenance ?? "").split(",").map((p) => p.trim());
-      if (components.some((c) => idSet.has(c))) count++;
-    }
-    return count;
-  }
-
-  /**
    * MF-04 (5f, spec §3.3; ADR-0012 decision 5f). Scope-filtered projection read —
    * the thread-isolation enforcement point. A fact is injectable into `forThreadId` iff:
    *   scope IN ('cross-thread','global')                              -- shared facts cross
@@ -461,15 +484,10 @@ export class MemoryStore {
       )
       .all(now) as DistilledFactRow[];
 
-    // Phase 2: in-code thread-local filter (MINOR-1) + forgotten suppression (MAJOR-1).
-    // Suppression set built once per read (not per-row) for performance.
-    const forgottenNorms = this.buildForgottenNormSet();
+    // Phase 2: in-code thread-local filter (MINOR-1).
+    // v2-04: forgotten suppression REMOVED (Ruling 1-b) — durable-delete makes it dead.
     const filtered: DistilledFactRow[] = [];
     for (const row of candidates) {
-      // MAJOR-1 read-side suppression: skip forgotten machine rows BEFORE LIMIT break
-      // so the returned slice is full (suppressed rows don't count against the limit).
-      if (!this.keepRow(row, forgottenNorms)) continue;
-
       const scope = row.scope ?? "cross-thread";
       if (scope === "cross-thread" || scope === "global" || scope === null) {
         filtered.push(row);
@@ -1057,57 +1075,6 @@ export class MemoryStore {
     const cols = this.db.query("PRAGMA table_info(thread_distill_state)").all() as { name: string }[];
     this._distilledThroughTurnColumnPresent = cols.some((c) => c.name === "distilled_through_turn");
     return this._distilledThroughTurnColumnPresent;
-  }
-
-  // ── MAJOR-1 read-side suppression helpers (relay-004) ───────────────────────
-  //
-  // Provider-agnostic suppression: forgotten machine rows are excluded from BOTH
-  // readDistilledFacts (Hatch VIEW source) and readDistilledFactsForThread (injection).
-  // This is the same one real text-match layer as smart's Layer-T, moved to the shared
-  // read path so ALL providers honor forgotten_facts — not just SmartDistillerProvider.
-  //
-  // The §4 honest ceiling is UNCHANGED: text-match is still THE one real layer.
-  // Smart's in-distill Layer-T + retrieve backstop are KEPT as defense-in-depth.
-  //
-  // 5e-aware (machine-only, bidirectional):
-  //   Keep a row iff: authored_by==='human'
-  //                   OR norm not in forgotten set
-  //                   OR a human fact with the same normalized text exists (human precedence).
-  // Human rows are NEVER suppressed. This mirrors smart's Layer-T exactly (5e-aware).
-
-  /**
-   * Build the forbidden normalized-text set from forgotten_facts for one read call.
-   * Called once per readDistilledFacts / readDistilledFactsForThread to avoid per-row queries.
-   */
-  private buildForgottenNormSet(): Set<string> {
-    const rows = this.readForgottenFacts();
-    return new Set(rows.map((r) => r.normalized_text));
-  }
-
-  /**
-   * Returns true iff the row should be included in the read result.
-   * Suppresses machine rows whose normalized text is in the forgotten set,
-   * unless a human fact with the same text exists (5e-aware).
-   */
-  private keepRow(row: DistilledFactRow, forgottenNorms: Set<string>): boolean {
-    // Human rows are never suppressed (5e guard: human precedence is bidirectional)
-    if (row.authored_by === "human") return true;
-    const norm = normalizeFactText(row.fact);
-    if (!forgottenNorms.has(norm)) return true; // not in forgotten set — keep
-    // 5e-aware: if a human fact with the same normalized text exists → do NOT suppress
-    if (this.hasHumanFactWithNormalizedText(norm)) return true;
-    return false; // machine row + forgotten + no human override → suppress
-  }
-
-  /**
-   * Apply read-side forgotten suppression to a fetched row array.
-   * Used by readDistilledFacts (post-query filter; 1000-row cap makes under-fill immaterial).
-   * Doc comment: provider-agnostic, machine-only, 5e-aware.
-   */
-  private suppressForgottenMachineRows(rows: DistilledFactRow[]): DistilledFactRow[] {
-    const forgottenNorms = this.buildForgottenNormSet();
-    if (forgottenNorms.size === 0) return rows; // fast path: nothing forgotten
-    return rows.filter((row) => this.keepRow(row, forgottenNorms));
   }
 
   /** Write the derived fact_fts + fact_topics rows for a fact id: one fact_fts row

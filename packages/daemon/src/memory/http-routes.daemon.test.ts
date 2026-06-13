@@ -227,29 +227,8 @@ test("T2.1c-7: POST /memory/forget with missing target_type → 400 bad_body", a
   expect(body.error).toBe("bad_body");
 });
 
-// Test: POST /memory/cofed returns exact co-fed count.
-test("T2.1c-8: GET /memory/cofed returns exact count of other facts fed by given provenance", async () => {
-  const token = readToken();
-  // Seed facts into the store
-  const setupStore = new MemoryStore({ dataDir: sharedDataDir });
-  const cofedThread = setupStore.createThread("cofed-test");
-  const [c1] = setupStore.appendMessages(cofedThread, [{ role: "user", content: "cofed1" }], "cs");
-  const [c2] = setupStore.appendMessages(cofedThread, [{ role: "user", content: "cofed2" }], "cs");
-  // fact F1 depends on both c1 and c2
-  setupStore.insertDistilledFacts([
-    { fact: "co-fed fact F1", provenance: `${c1},${c2}`, scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
-    { fact: "the self-fact", provenance: c1!, scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
-  ], "smart");
-  setupStore.close();
-
-  // ask: how many other facts do messages [c1] feed, excluding "the self-fact"?
-  const res = await fetch(`http://127.0.0.1:${PORT}/memory/cofed?provenance=${encodeURIComponent(c1!)}&exclude=${encodeURIComponent("the self-fact")}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  expect(res.status).toBe(200);
-  const body = await res.json() as { count: number };
-  expect(body.count).toBe(1); // F1 feeds on c1 and is NOT the excluded fact
-});
+// v2-04: T2.1c-8 GET /memory/cofed test removed. countFactsFedByMessages was removed
+// in v2-04 along with option B. The /memory/cofed route will be removed in Task 2 (2.2).
 
 // Test 7: POST /memory/edit with token → 204 and correction row on disk (authored_by:human).
 // The T1 hatch tests already prove edit→distill→retrieve injection (Fix-2 cross-thread test

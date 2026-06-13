@@ -74,32 +74,8 @@ test("B1 no-downgrade: forgetMessage still scrubs (the message path is unchanged
   expect(mut).not.toBeNull(); // redaction tombstone written
 });
 
-// ─── Option B tests (Step 4 — RED until Hatch.forgetFactAndSources exists) ───
-
-test("forgetFactAndSources scrubs each isMessageId source; plain forgetFact leaves them intact", async () => {
-  const hatch = new Hatch(store, gate);
-  const t = store.createThread();
-  const [m1] = store.appendMessages(t, [{ role: "user", content: "src one" }], "s");
-  const [m2] = store.appendMessages(t, [{ role: "assistant", content: "src two" }], "s");
-
-  hatch.forgetFactAndSources("derived fact", `${m1},${m2}`, { actor: "user", authored_by: "human" });
-
-  const db = store.rawDb();
-  expect((db.query("SELECT content FROM messages WHERE id=?").get(m1!) as { content: string }).content).toBe(REDACTION_MARKER);
-  expect((db.query("SELECT content FROM messages WHERE id=?").get(m2!) as { content: string }).content).toBe(REDACTION_MARKER);
-  // and the durable fact-forget record exists too
-  expect(store.isForgottenNormalizedText(normalizeFactText("derived fact"))).toBe(true);
-});
-
-test("forgetFactAndSources on a thread:<id> provenance is a no-op scrub (record only), never a whole-thread scrub", async () => {
-  const hatch = new Hatch(store, gate);
-  const t = store.createThread();
-  const [m] = store.appendMessages(t, [{ role: "user", content: "stays" }], "s");
-  hatch.forgetFactAndSources("thread fact", `thread:${t}`, { actor: "user", authored_by: "human" });
-  const db = store.rawDb();
-  expect((db.query("SELECT content FROM messages WHERE id=?").get(m!) as { content: string }).content).toBe("stays"); // not scrubbed
-  expect(store.isForgottenNormalizedText(normalizeFactText("thread fact"))).toBe(true); // record still made
-});
+// v2-04: forgetFactAndSources tests removed. Option B (forgetFactAndSources) was removed
+// in v2-04 per Ruling 2. The WriteGate.forget primitive and its unit tests remain.
 
 // ─── T1.1: Hatch.view — archive + distilled facts + distillation events ──────
 
@@ -212,7 +188,7 @@ test("T1.2(b): Hatch.edit → authored_by:human correction reflected in within-t
 // FixedMarkerProvider is retired (v2-03). We manually insert a thread-level fact
 // to replicate the thread-provenance shape that the old FixedMarker used.
 
-test("T1.2(a) LOAD-BEARING: forgetFact(thread-level provenance) — durable record + immediate purge", async () => {
+test("T1.2(a) LOAD-BEARING: forgetFact(thread-level provenance) — durable delete, row GONE, no forgotten_facts write", async () => {
   const hatch = new Hatch(store, gate);
 
   // Seed source thread with live messages (they stay live throughout)
@@ -220,10 +196,9 @@ test("T1.2(a) LOAD-BEARING: forgetFact(thread-level provenance) — durable reco
   store.appendMessages(threadId, [{ role: "user", content: "live message one" }], "s1");
   store.appendMessages(threadId, [{ role: "assistant", content: "live message two" }], "s1");
 
-  // Manually insert a thread-level fact (provenance = "thread:<id>") — replicates the
-  // thread-provenance shape that FixedMarker used to produce.
+  // Manually insert a thread-level fact (provenance = "thread:<id>")
   const THREAD_FACT = `thread:${threadId} has 2 live messages`;
-  store.insertFact({
+  const factId = store.insertFact({
     fact: THREAD_FACT,
     canonical: normalizeFactText(THREAD_FACT),
     provenance: `thread:${threadId}`,
@@ -238,15 +213,16 @@ test("T1.2(a) LOAD-BEARING: forgetFact(thread-level provenance) — durable reco
   const threadFact = beforeForget.find((f) => f.provenance === `thread:${threadId}`);
   expect(threadFact).toBeDefined(); // sanity: fact exists before forget
 
-  // forgetFact via Hatch (fact path: writes forgotten_facts, NO tombstoneFact)
+  // forgetFact via Hatch (v2-04: durable delete, NO forgotten_facts write)
   hatch.forgetFact(threadFact!.fact, `thread:${threadId}`, { actor: "user", authored_by: "human" });
 
-  // Immediately purged from live slice (purgeLiveMachineFactsByForget)
+  // Durably deleted from distilled_facts (row GONE, not suppressed)
+  const db = store.rawDb();
+  expect(db.query("SELECT 1 FROM distilled_facts WHERE id = ?").get(factId)).toBeNull();
   expect(store.readDistilledFacts(50).some((f) => f.provenance === `thread:${threadId}`)).toBe(false);
 
-  // Durable record in forgotten_facts (the new suppression artifact)
-  const { normalizeFactText: normFn } = await import("./normalize-fact-text.js");
-  expect(store.isForgottenNormalizedText(normFn(threadFact!.fact))).toBe(true);
+  // No forgotten_facts write on the durable-delete path (Ruling 1-b)
+  expect(store.readForgottenFacts().length).toBe(0);
 });
 
 // ─── T1.2(d): No regression — MF-02/03 forget via message id still works ──────
@@ -331,18 +307,17 @@ test("Fix-2: Hatch.edit → distill → retrieve in new thread B reflects correc
 //   - store.tombstoneFact still throws for UUID-shaped provenances (the store-level
 //     guard survives as the defensive assertion ADR-0015 decision 1 says stays).
 
-test("Fix-1: WriteGate.forgetFact does NOT call tombstoneFact — never touches mutations regardless of factText", () => {
-  // Under the new API, forgetFact writes only to forgotten_facts.
-  // The fact text can be anything — even UUID-shaped. Intent dispatch (Hatch) prevents
-  // a bare message UUID from reaching forgetFact. The structural guard is the separate
-  // table path, not an isMessageId throw.
+test("Fix-1: WriteGate.forgetFact does NOT call tombstoneFact — never touches mutations regardless of factText (v2-04: durable delete)", () => {
+  // v2-04: forgetFact is a durable delete of distilled_facts rows. It does NOT write
+  // to forgotten_facts (Ruling 1-b), does NOT write mutations, does NOT call tombstoneFact.
   const factText = "some fact text";
   const provenance = "thread:test-prov";
   gate.forgetFact(factText, provenance, { actor: "user", authored_by: "human" });
   const db = store.rawDb();
   const mutCount = (db.query("SELECT COUNT(*) AS n FROM mutations").get() as { n: number }).n;
   expect(mutCount).toBe(0); // no mutations row written
-  expect(store.isForgottenNormalizedText(normalizeFactText(factText))).toBe(true);
+  // no forgotten_facts record (durable-delete path, Ruling 1-b)
+  expect(store.readForgottenFacts().length).toBe(0);
 });
 
 test("Fix-1: MemoryStore.tombstoneFact still throws if provenance is a UUID-shaped message id (store-level defensive assertion survives)", () => {

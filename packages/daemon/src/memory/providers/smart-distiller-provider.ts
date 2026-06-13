@@ -574,22 +574,17 @@ export class SmartDistillerProvider implements MemoryProvider {
    * Compose the bounded distilled slice for injection at a new thread's start.
    * Identical contract to DumbTailProvider.retrieve.
    *
-   * Defense-in-depth (chunk 04 / D-F):
-   *   - Existing: excludes any fact whose provenance is tombstoned (F1 backstop).
-   *   - NEW: also excludes any fact whose normalized text is in forgotten_facts.
-   *     Covers the window between a fact-forget and the next re-projection (the
-   *     immediate purgeLiveMachineFactsByForget is best-effort-immediate; this +
-   *     the re-projection Layer-T filter are the durable guarantee).
+   * v2-04: the isForgottenNormalizedText backstop is REMOVED (Ruling 1-b).
+   * Under durable-delete, forgotten facts are gone from distilled_facts — the
+   * per-dismiss forgotten_facts suppression window no longer exists.
+   * Retains: isFactTombstoned (MF-05 T1.2 — mutations tombstone backstop).
    */
   async retrieve(store: MemoryStore, forThreadId: string): Promise<SessionMessage[]> {
     // MF-04 (5f): scope-filtered read — thread-local facts of OTHER threads excluded.
     const rows = store.readDistilledFactsForThread(forThreadId, RETRIEVE_SLICE_N);
-    // Existing backstop: isFactTombstoned (MF-05 T1.2 — mutations tombstone)
-    // New backstop (chunk 04): isForgottenNormalizedText (forgotten_facts text check)
+    // Backstop: isFactTombstoned (MF-05 T1.2 — mutations tombstone)
     const live = rows.filter(
-      (f) =>
-        !store.isFactTombstoned(f.provenance) &&
-        !store.isForgottenNormalizedText(normalizeFactText(f.fact)),
+      (f) => !store.isFactTombstoned(f.provenance),
     );
     return Promise.resolve(
       live.map((f) => ({ role: "user" as const, content: `${REMEMBERED_LABEL}${f.fact}` })),

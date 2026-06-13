@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { MemoryStore } from "./store.js";
 import { WriteGate, REDACTION_MARKER } from "./write-gate.js";
 import { RuleBasedScanner } from "./scanner/memory-scanner.js";
-import { normalizeFactText } from "./normalize-fact-text.js";
 
 function fresh() {
   const dir = mkdtempSync(join(tmpdir(), "mf01-wg-"));
@@ -202,7 +201,7 @@ test("S2: recording a quarantine marker twice for the same target stays at 1 row
 
 // ---- chunk 04 Step 3: WriteGate.forgetFact (new semantics) + un-forget ----
 
-test("forgetFact writes a forgotten_facts row and purges the live machine row — NO scrub, NO mutations", () => {
+test("forgetFact durably deletes the live machine row — NO forgotten_facts write, NO scrub, NO mutations", () => {
   const { store, gate } = fresh();
   const t = store.createThread();
   const [mid] = store.appendMessages(t, [{ role: "user", content: "source msg" }], "s");
@@ -212,10 +211,10 @@ test("forgetFact writes a forgotten_facts row and purges the live machine row �
 
   gate.forgetFact("favourite colour: blue", mid!, { actor: "user", authored_by: "human" }, "hatch-forget");
 
-  // durable record present
-  expect(store.isForgottenNormalizedText(normalizeFactText("favourite colour: blue"))).toBe(true);
-  // live machine row purged
+  // durable delete — row is GONE, not suppressed
   expect(store.readDistilledFacts(50).some((f) => f.fact === "favourite colour: blue")).toBe(false);
+  // no forgotten_facts record written (Ruling 1-b: durable-delete path)
+  expect(store.readForgottenFacts().length).toBe(0);
   // message byte-intact, no mutations row (B1 at the gate)
   const db = store.rawDb();
   expect((db.query("SELECT content FROM messages WHERE id=?").get(mid!) as { content: string }).content).toBe("source msg");
@@ -231,74 +230,83 @@ test("forgetFact never calls tombstoneFact even for a comma-joined provenance", 
   store.close();
 });
 
-test("un-forget: a human edit whose normalized content matches a forgotten row clears it", () => {
+// v2-04: un-forget (edit → clearForgottenByNormalizedText) test removed.
+// The durable-delete path no longer writes forgotten_facts on forgetFact,
+// so there is no per-dismiss suppression record to clear in edit(). The
+// clearForgottenByNormalizedText store method is retained as dormant v2-05 substrate.
+
+// v2-04: forgetFactAndSources test removed. forgetFactAndSources (option B) was
+// removed in v2-04 per Ruling 2 (no per-message message-forget user path). The
+// WriteGate.forget primitive and its unit tests remain.
+
+// ── v2-04 Task 1: durable-delete tests ───────────────────────────────────────
+
+test("durable delete: forgetFact deletes the distilled_facts row by id (row GONE, not suppressed)", () => {
   const { store, gate } = fresh();
   const t = store.createThread();
-  const [mid] = store.appendMessages(t, [{ role: "user", content: "likes tea" }], "s");
-  store.recordForgottenFact({ raw_text: "likes tea", provenance: "p", actor: "u", authored_by: "human" });
-  expect(store.isForgottenNormalizedText(normalizeFactText("likes tea"))).toBe(true);
+  const [mid] = store.appendMessages(t, [{ role: "user", content: "source msg" }], "s");
+  store.insertDistilledFacts([
+    { fact: "favourite colour: blue", provenance: mid!, scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
+  ], "test");
 
-  gate.edit(mid!, "likes tea", { actor: "user", authored_by: "human" }); // human re-authorship
-
-  expect(store.isForgottenNormalizedText(normalizeFactText("likes tea"))).toBe(false); // un-forgotten
-  store.close();
-});
-
-// ── MINOR-1 RED: option-B atomicity ──────────────────────────────────────────
-// forgetFactAndSources with id1 valid + id2 unknown currently scrubs id1 THEN
-// throws on id2 → partial irreversible scrub. Fix: pre-validate ALL components
-// before any mutation (all-or-nothing).
-
-test("MINOR-1: forgetFactAndSources with one valid + one unknown id throws AND leaves NOTHING changed (all-or-nothing)", () => {
-  const { store, gate } = fresh();
-  const t = store.createThread();
-  const [m1] = store.appendMessages(t, [{ role: "user", content: "valid source content" }], "s");
-  const unknownId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"; // valid UUID shape but unknown
-
-  // Act — must throw (unknown id)
-  expect(() =>
-    gate.forgetFactAndSources("agg fact", `${m1},${unknownId}`, { actor: "user", authored_by: "human" }),
-  ).toThrow();
-
-  // Assert: m1 content BYTE-INTACT (no partial scrub)
+  // Capture the stable id of the inserted row
   const db = store.rawDb();
-  const row = db.query("SELECT content FROM messages WHERE id=?").get(m1!) as { content: string };
-  expect(row.content).toBe("valid source content");
+  const row = db.query("SELECT id FROM distilled_facts WHERE fact = 'favourite colour: blue'").get() as { id: string } | null;
+  expect(row).not.toBeNull();
+  const factId = row!.id;
 
-  // Assert: NO mutations row for m1
-  const mut = db.query("SELECT id FROM mutations WHERE target_message_id=?").get(m1!);
-  expect(mut).toBeNull();
+  gate.forgetFact("favourite colour: blue", mid!, { actor: "user", authored_by: "human" });
 
-  // Assert: NO forgotten_facts row written
-  const forgotten = db.query("SELECT id FROM forgotten_facts").all();
-  expect(forgotten.length).toBe(0);
+  // 1. The row is GONE (durable delete, not suppression)
+  expect(db.query("SELECT 1 FROM distilled_facts WHERE id = ?").get(factId)).toBeNull();
+
+  // 2. count-equality: COUNT(fact_fts) === COUNT(distilled_facts), no orphan fact_topics
+  const dfCount = (db.query("SELECT COUNT(*) AS n FROM distilled_facts").get() as { n: number }).n;
+  const ftsCount = (db.query("SELECT COUNT(*) AS n FROM fact_fts").get() as { n: number }).n;
+  expect(ftsCount).toBe(dfCount);
+  const orphans = (db.query("SELECT COUNT(*) AS n FROM fact_topics WHERE fact_id NOT IN (SELECT id FROM distilled_facts)").get() as { n: number }).n;
+  expect(orphans).toBe(0);
+
+  // 3. No forgotten_facts write on the durable-delete path
+  expect(store.readForgottenFacts().length).toBe(0);
+
+  // 4. messages.content byte-intact (B1)
+  const msgRow = db.query("SELECT content FROM messages WHERE id = ?").get(mid!) as { content: string };
+  expect(msgRow.content).toBe("source msg");
 
   store.close();
 });
 
-// ── MINOR-2 known limit: un-forget clears on coincidental normalized-text collision ──
-// This documents the CURRENT intentional behavior (per plan addendum MINOR-2).
-// A human edit whose normalized text coincidentally matches a forgotten fact's text
-// clears the forgotten_facts row regardless of any relational connection.
-// This is named as a known limit — do NOT tighten in chunk 04; scope: 2c.
-
-test("KNOWN LIMIT — un-forget clears on coincidental normalized-text collision", () => {
+test("B1: fact-forget touches neither messages nor mutations", () => {
   const { store, gate } = fresh();
   const t = store.createThread();
+  const [mid] = store.appendMessages(t, [{ role: "user", content: "source content byte-intact" }], "s");
+  store.insertDistilledFacts([
+    { fact: "favourite colour: blue", provenance: mid!, scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
+  ], "test");
 
-  // Forget a fact for some unrelated reason
-  store.recordForgottenFact({ raw_text: "likes tea", provenance: "some-prov", actor: "u", authored_by: "human" });
-  expect(store.isForgottenNormalizedText(normalizeFactText("likes tea"))).toBe(true);
+  const db = store.rawDb();
+  // Snapshot mutations count before forget
+  const mutCountBefore = (db.query("SELECT COUNT(*) AS n FROM mutations").get() as { n: number }).n;
+  const msgContentBefore = (db.query("SELECT content FROM messages WHERE id = ?").get(mid!) as { content: string }).content;
 
-  // An UNRELATED message happens to have the same normalized text
-  const [mid] = store.appendMessages(t, [{ role: "user", content: "unrelated message" }], "s");
-  // Human edits it with content that normalizes to "likes tea"
-  gate.edit(mid!, "likes tea", { actor: "user", authored_by: "human" });
+  gate.forgetFact("favourite colour: blue", mid!, { actor: "user", authored_by: "human" });
 
-  // KNOWN LIMIT: the forgotten_facts row is cleared even though this edit has no
-  // relation to the original forget. This is intentional behavior in v0 (edit path
-  // is the only un-forget trigger; provenance-relation scoping is deferred to 2c).
-  expect(store.isForgottenNormalizedText(normalizeFactText("likes tea"))).toBe(false);
+  // COUNT(mutations) unchanged
+  const mutCountAfter = (db.query("SELECT COUNT(*) AS n FROM mutations").get() as { n: number }).n;
+  expect(mutCountAfter).toBe(mutCountBefore);
+
+  // messages.content byte-identical
+  const msgContentAfter = (db.query("SELECT content FROM messages WHERE id = ?").get(mid!) as { content: string }).content;
+  expect(msgContentAfter).toBe(msgContentBefore);
+
+  // no tombstone mutations row for the message
+  const tombstone = db.query("SELECT 1 FROM mutations WHERE target_message_id = ? AND kind = 'tombstone'").get(mid!);
+  expect(tombstone).toBeNull();
 
   store.close();
 });
+
+// v2-04: KNOWN LIMIT — un-forget collision test removed. The edit() un-forget block
+// was removed in v2-04 (dead code: durable-delete path never writes forgotten_facts,
+// so there is nothing to un-forget). The coincidental-collision limit is moot.

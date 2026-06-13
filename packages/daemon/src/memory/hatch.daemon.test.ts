@@ -40,9 +40,10 @@ afterEach(() => {
 
 // ── B1 NAMED GATE: a fact-forget can NEVER scrub a message or write a tombstone ──
 //
-// Step 1 (RED): Tests use the FINAL intent-dispatch API (forgetFact/forgetMessage) which
-// does NOT exist yet. This compile error is the correct RED — it pins the invariant before
-// any production code moves. These tests go GREEN in Step 4.
+// v2-04: Hatch.forgetMessage and Hatch.forgetFactAndSources removed (D-V6a-bis, Ruling 2).
+// The ONE user forget path is Hatch.forgetFact (durable delete, NO scrub).
+// WriteGate.forget (the hard-scrub PRIMITIVE) is retained for the future THREAD-forget;
+// its unit tests live in write-gate.test.ts.
 
 test("B1 no-downgrade: forgetFact on a bare message-UUID provenance leaves messages.content byte-INTACT and writes NO mutations row", async () => {
   const hatch = new Hatch(store, gate);
@@ -60,46 +61,9 @@ test("B1 no-downgrade: forgetFact on a bare message-UUID provenance leaves messa
   expect(mut).toBeNull(); // NO redaction tombstone written by the fact path
 });
 
-test("B1 no-downgrade: forgetMessage still scrubs (the message path is unchanged)", async () => {
-  const hatch = new Hatch(store, gate);
-  const threadId = store.createThread();
-  const [mid] = store.appendMessages(threadId, [{ role: "user", content: "scrub me" }], "s1");
-
-  hatch.forgetMessage(mid!, { actor: "user", authored_by: "human" });
-
-  const db = store.rawDb();
-  const msg = db.query("SELECT content FROM messages WHERE id = ?").get(mid!) as { content: string };
-  expect(msg.content).toBe(REDACTION_MARKER); // scrubbed
-  const mut = db.query("SELECT id FROM mutations WHERE target_message_id = ? AND kind='tombstone'").get(mid!);
-  expect(mut).not.toBeNull(); // redaction tombstone written
-});
-
-// ─── Option B tests (Step 4 — RED until Hatch.forgetFactAndSources exists) ───
-
-test("forgetFactAndSources scrubs each isMessageId source; plain forgetFact leaves them intact", async () => {
-  const hatch = new Hatch(store, gate);
-  const t = store.createThread();
-  const [m1] = store.appendMessages(t, [{ role: "user", content: "src one" }], "s");
-  const [m2] = store.appendMessages(t, [{ role: "assistant", content: "src two" }], "s");
-
-  hatch.forgetFactAndSources("derived fact", `${m1},${m2}`, { actor: "user", authored_by: "human" });
-
-  const db = store.rawDb();
-  expect((db.query("SELECT content FROM messages WHERE id=?").get(m1!) as { content: string }).content).toBe(REDACTION_MARKER);
-  expect((db.query("SELECT content FROM messages WHERE id=?").get(m2!) as { content: string }).content).toBe(REDACTION_MARKER);
-  // and the durable fact-forget record exists too
-  expect(store.isForgottenNormalizedText(normalizeFactText("derived fact"))).toBe(true);
-});
-
-test("forgetFactAndSources on a thread:<id> provenance is a no-op scrub (record only), never a whole-thread scrub", async () => {
-  const hatch = new Hatch(store, gate);
-  const t = store.createThread();
-  const [m] = store.appendMessages(t, [{ role: "user", content: "stays" }], "s");
-  hatch.forgetFactAndSources("thread fact", `thread:${t}`, { actor: "user", authored_by: "human" });
-  const db = store.rawDb();
-  expect((db.query("SELECT content FROM messages WHERE id=?").get(m!) as { content: string }).content).toBe("stays"); // not scrubbed
-  expect(store.isForgottenNormalizedText(normalizeFactText("thread fact"))).toBe(true); // record still made
-});
+// v2-04: "B1 no-downgrade: forgetMessage still scrubs" test removed — Hatch.forgetMessage
+// removed in v2-04 per Ruling 2. The WriteGate.forget primitive scrub coverage lives in
+// write-gate.test.ts (kept intact). forgetFactAndSources tests also removed.
 
 // ─── T1.1: Hatch.view — archive + distilled facts + distillation events ──────
 
@@ -157,38 +121,10 @@ test("T1.1: view distilledFacts includes facts from the real store", async () =>
   expect(result.distilledFacts.some((f) => f.fact === "deploy is yeet.sh")).toBe(true);
 });
 
-// ─── T1.2: Hatch.forget — message target → existing WriteGate.forget ─────────
-
-test("T1.2(c): Hatch.forgetMessage of a message id → tombstone + hard-scrub absent from next injection", async () => {
-  const hatch = new Hatch(store, gate);
-  const hook = new ConsolidationHook(store);
-  const dumbTail = new DumbTailProvider();
-  registerDistiller(hook, store, dumbTail, new RuleBasedScanner());
-
-  const threadId = store.createThread();
-  const [mid] = store.appendMessages(threadId, [{ role: "user", content: "secret fact" }], "s1");
-
-  // Dismiss → distill (so fact is live in distilled_facts)
-  await hook.dismiss([threadId]);
-  expect(store.readDistilledFacts(50).some((f) => f.fact === "secret fact")).toBe(true);
-
-  // Forget via Hatch (message-id route → existing WriteGate.forget)
-  hatch.forgetMessage(mid!, { actor: "user", authored_by: "human" });
-
-  // Immediately purged from live slice
-  expect(store.readDistilledFacts(50).some((f) => f.fact === "secret fact")).toBe(false);
-
-  // Re-derive: forgotten message should NOT re-appear (tombstoned → not in new tail)
-  // With incremental DumbTail, re-distill via a second dismiss (watermark already advanced
-  // past the tombstoned message, so it won't be re-read anyway).
-  // Directly verify the forgotten fact is gone from distilled_facts.
-  expect(store.readDistilledFacts(50).some((f) => f.fact === "secret fact")).toBe(false);
-
-  // Retrieve: injection slice must not contain the forgotten fact
-  const freshThread = store.createThread();
-  const slice = await dumbTail.retrieve(store, freshThread);
-  expect(slice.some((m) => m.content.includes("secret fact"))).toBe(false);
-});
+// ─── T1.2: Hatch.forgetFact + edit ───────────────────────────────────────────
+//
+// v2-04: T1.2(c) (Hatch.forgetMessage) removed — Hatch.forgetMessage removed (Ruling 2).
+// WriteGate.forget scrub+tombstone coverage lives in write-gate.test.ts (intact).
 
 test("T1.2(b): Hatch.edit → authored_by:human correction reflected in within-thread tail", async () => {
   const hatch = new Hatch(store, gate);
@@ -212,7 +148,7 @@ test("T1.2(b): Hatch.edit → authored_by:human correction reflected in within-t
 // FixedMarkerProvider is retired (v2-03). We manually insert a thread-level fact
 // to replicate the thread-provenance shape that the old FixedMarker used.
 
-test("T1.2(a) LOAD-BEARING: forgetFact(thread-level provenance) — durable record + immediate purge", async () => {
+test("T1.2(a) LOAD-BEARING: forgetFact(thread-level provenance) — durable delete, row GONE, no forgotten_facts write", async () => {
   const hatch = new Hatch(store, gate);
 
   // Seed source thread with live messages (they stay live throughout)
@@ -220,10 +156,9 @@ test("T1.2(a) LOAD-BEARING: forgetFact(thread-level provenance) — durable reco
   store.appendMessages(threadId, [{ role: "user", content: "live message one" }], "s1");
   store.appendMessages(threadId, [{ role: "assistant", content: "live message two" }], "s1");
 
-  // Manually insert a thread-level fact (provenance = "thread:<id>") — replicates the
-  // thread-provenance shape that FixedMarker used to produce.
+  // Manually insert a thread-level fact (provenance = "thread:<id>")
   const THREAD_FACT = `thread:${threadId} has 2 live messages`;
-  store.insertFact({
+  const factId = store.insertFact({
     fact: THREAD_FACT,
     canonical: normalizeFactText(THREAD_FACT),
     provenance: `thread:${threadId}`,
@@ -238,33 +173,22 @@ test("T1.2(a) LOAD-BEARING: forgetFact(thread-level provenance) — durable reco
   const threadFact = beforeForget.find((f) => f.provenance === `thread:${threadId}`);
   expect(threadFact).toBeDefined(); // sanity: fact exists before forget
 
-  // forgetFact via Hatch (fact path: writes forgotten_facts, NO tombstoneFact)
+  // forgetFact via Hatch (v2-04: durable delete, NO forgotten_facts write)
   hatch.forgetFact(threadFact!.fact, `thread:${threadId}`, { actor: "user", authored_by: "human" });
 
-  // Immediately purged from live slice (purgeLiveMachineFactsByForget)
+  // Durably deleted from distilled_facts (row GONE, not suppressed)
+  const db = store.rawDb();
+  expect(db.query("SELECT 1 FROM distilled_facts WHERE id = ?").get(factId)).toBeNull();
   expect(store.readDistilledFacts(50).some((f) => f.provenance === `thread:${threadId}`)).toBe(false);
 
-  // Durable record in forgotten_facts (the new suppression artifact)
-  const { normalizeFactText: normFn } = await import("./normalize-fact-text.js");
-  expect(store.isForgottenNormalizedText(normFn(threadFact!.fact))).toBe(true);
+  // No forgotten_facts write on the durable-delete path (Ruling 1-b)
+  expect(store.readForgottenFacts().length).toBe(0);
 });
 
-// ─── T1.2(d): No regression — MF-02/03 forget via message id still works ──────
-
-test("T1.2(d) regression: Hatch.forget(messageId) → tombstone guard (5e) — machine cannot clobber human", async () => {
-  const hatch = new Hatch(store, gate);
-
-  const threadId = store.createThread();
-  const [mid] = store.appendMessages(threadId, [{ role: "user", content: "human authored" }], "s1");
-
-  // Machine attempt to forget a human-authored message: must be a no-op
-  hatch.forgetMessage(mid!, { actor: "agent", authored_by: "machine" });
-
-  // Content must be byte-intact
-  const db = store.rawDb();
-  const row = db.query("SELECT content FROM messages WHERE id = ?").get(mid!) as { content: string };
-  expect(row.content).toBe("human authored");
-});
+// ─── T1.2(d): No regression — WriteGate.forget primitive still works ─────────
+//
+// v2-04: Hatch.forget(messageId) tombstone-guard test removed (Hatch.forgetMessage removed).
+// The WriteGate.forget primitive regression (direct gate.forget) is kept below.
 
 test("T1.2(d) regression: WriteGate.forget(messageId) still tombstones and purges — existing path unchanged", async () => {
   const hook = new ConsolidationHook(store);
@@ -331,18 +255,17 @@ test("Fix-2: Hatch.edit → distill → retrieve in new thread B reflects correc
 //   - store.tombstoneFact still throws for UUID-shaped provenances (the store-level
 //     guard survives as the defensive assertion ADR-0015 decision 1 says stays).
 
-test("Fix-1: WriteGate.forgetFact does NOT call tombstoneFact — never touches mutations regardless of factText", () => {
-  // Under the new API, forgetFact writes only to forgotten_facts.
-  // The fact text can be anything — even UUID-shaped. Intent dispatch (Hatch) prevents
-  // a bare message UUID from reaching forgetFact. The structural guard is the separate
-  // table path, not an isMessageId throw.
+test("Fix-1: WriteGate.forgetFact does NOT call tombstoneFact — never touches mutations regardless of factText (v2-04: durable delete)", () => {
+  // v2-04: forgetFact is a durable delete of distilled_facts rows. It does NOT write
+  // to forgotten_facts (Ruling 1-b), does NOT write mutations, does NOT call tombstoneFact.
   const factText = "some fact text";
   const provenance = "thread:test-prov";
   gate.forgetFact(factText, provenance, { actor: "user", authored_by: "human" });
   const db = store.rawDb();
   const mutCount = (db.query("SELECT COUNT(*) AS n FROM mutations").get() as { n: number }).n;
   expect(mutCount).toBe(0); // no mutations row written
-  expect(store.isForgottenNormalizedText(normalizeFactText(factText))).toBe(true);
+  // no forgotten_facts record (durable-delete path, Ruling 1-b)
+  expect(store.readForgottenFacts().length).toBe(0);
 });
 
 test("Fix-1: MemoryStore.tombstoneFact still throws if provenance is a UUID-shaped message id (store-level defensive assertion survives)", () => {

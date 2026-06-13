@@ -491,7 +491,7 @@ test("clearForgottenByNormalizedText removes the un-forget row(s)", () => {
   store.close();
 });
 
-test("purgeLiveMachineFactsByForget deletes by provenance OR normalized text, never a human row", () => {
+test("deleteMachineFactsByForget deletes by provenance OR normalized text, never a human row", () => {
   const { store } = freshStore();
   store.insertDistilledFacts([
     { fact: "fav colour: blue", provenance: "m1,m2", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
@@ -500,20 +500,20 @@ test("purgeLiveMachineFactsByForget deletes by provenance OR normalized text, ne
   store.rawDb().query(
     "INSERT INTO distilled_facts (id, fact, provenance, scope, expiry, confidence, authored_by, derived_at, distiller_version) VALUES (?,?,?,?,?,?,?,?,?)",
   ).run(crypto.randomUUID(), "fav colour: blue", "different", "cross-thread", null, 1, "human", Date.now(), "manual");
-  const n = store.purgeLiveMachineFactsByForget("m1,m2", normalizeFactText("fav colour: blue"));
+  const n = store.deleteMachineFactsByForget("m1,m2", normalizeFactText("fav colour: blue"));
   expect(n).toBe(1); // machine row gone
   const rows = store.readDistilledFacts(50);
   expect(rows.some((r) => r.authored_by === "human")).toBe(true); // human row survives
   store.close();
 });
 
-test("purgeLiveMachineFactsByForget catches a comma-joined row by TEXT when provenance differs (no purge-miss)", () => {
+test("deleteMachineFactsByForget catches a comma-joined row by TEXT when provenance differs (no purge-miss)", () => {
   const { store } = freshStore();
   store.insertDistilledFacts([
     { fact: "User favourite colour is blue", provenance: "x,y,z", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
   ], "smart");
   // forgotten with a DIFFERENT provenance shape but the same normalized text
-  const n = store.purgeLiveMachineFactsByForget("m1", normalizeFactText("User favourite colour is blue"));
+  const n = store.deleteMachineFactsByForget("m1", normalizeFactText("User favourite colour is blue"));
   expect(n).toBe(1);
   store.close();
 });
@@ -528,32 +528,8 @@ test("hasHumanFactWithNormalizedText returns true only when a human fact matches
   store.close();
 });
 
-test("countFactsFedByMessages returns how many OTHER distilled facts a set of source messages feed", () => {
-  const { store } = freshStore();
-  store.insertDistilledFacts([
-    { fact: "f1", provenance: "m1,m2", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
-    { fact: "f2", provenance: "m2,m3", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
-    { fact: "self", provenance: "m1", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
-  ], "smart");
-  // facts fed by {m1} excluding the fact being forgotten ("self")
-  expect(store.countFactsFedByMessages(["m1"], "self")).toBe(1); // f1 also feeds on m1
-  store.close();
-});
-
-// ---- MINOR-2 NIT: countFactsFedByMessages null-provenance guard ----
-
-test("m2.2 RED: countFactsFedByMessages throws when a machine row has NULL provenance (f.provenance.split on null)", () => {
-  const { store } = freshStore();
-  // Seed a NULL-provenance machine row via rawDb (bypasses insertDistilledFacts typed input)
-  store.rawDb().query(
-    "INSERT INTO distilled_facts (id, fact, provenance, scope, expiry, confidence, authored_by, derived_at, distiller_version) VALUES (?,?,?,?,?,?,?,?,?)",
-  ).run(crypto.randomUUID(), "null-prov fact", null, "cross-thread", null, 1, "machine", Date.now(), "v0");
-
-  // This should NOT throw after the fix (m2.3: null-provenance guard)
-  // Without the fix: f.provenance.split is called on null → TypeError
-  expect(() => store.countFactsFedByMessages(["m1"], "other")).not.toThrow();
-  store.close();
-});
+// v2-04: countFactsFedByMessages tests removed. countFactsFedByMessages was the
+// option-B cofed-count helper; it was removed in v2-04 along with option B.
 
 // ---- MINOR-1: readDistilledFactsForThread origin-thread resolved in code ----
 
@@ -771,10 +747,10 @@ test("v2-02 SYNC GATE: dropAllDistilledFacts (migration wipe) keeps derived tabl
   store.close();
 });
 
-test("v2-02 SYNC GATE: purgeLiveMachineFactsByForget keeps derived tables in sync", () => {
+test("v2-02 SYNC GATE: deleteMachineFactsByForget keeps derived tables in sync", () => {
   const { store } = freshStore();
   const { a } = seedTwoFacts(store);
-  store.purgeLiveMachineFactsByForget("thread:tA", "no-text-match");
+  store.deleteMachineFactsByForget("thread:tA", "no-text-match");
   assertDerivedInSync(store);
   expect(store.rawDb().query("SELECT 1 FROM distilled_facts WHERE id = ?").get(a)).toBeNull();
   store.close();

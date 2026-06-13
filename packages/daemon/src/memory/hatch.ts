@@ -7,16 +7,13 @@
  *
  * Constructed over a real MemoryStore + WriteGate — no mocks, no DI bypass.
  *
- * INTENT-NAMED FORGET OPERATIONS (chunk 04 / ADR-0015 decision 1):
- * The old shape-routing `forget(target)` heuristic is REPLACED by three explicit methods:
- *   forgetMessage(messageId, ctx, reason?) → WriteGate.forget (HARD scrub + tombstone)
- *   forgetFact(factText, provenance, ctx, reason?) → WriteGate.forgetFact (BEST-EFFORT; no scrub)
- *   forgetFactAndSources(factText, provenance, ctx, reason?) → WriteGate.forgetFactAndSources (opt-in HARD escape)
+ * USER FORGET OPERATION (v2-04 / D-V6a-bis — one user path):
+ *   forgetFact(factText, provenance, ctx, reason?) → WriteGate.forgetFact
+ *     Durable delete of the stable-id row. NO scrub of messages. The source
+ *     conversation stays in the lossless archive (provenance is a READ affordance).
  *
- * The separate-artifact invariant (ADR-0015 decision 2) is structural:
- *   - message-forget writes mutations tombstone + scrubs messages.content
- *   - fact-forget writes ONLY forgotten_facts, never touches messages or mutations
- *   No target_type value can downgrade a message scrub to a fact-forget.
+ * WriteGate.forget (the hard-scrub PRIMITIVE) is RETAINED for the future THREAD-forget
+ * and currently has no caller on the user-facing HTTP path.
  */
 
 /**
@@ -75,28 +72,12 @@ export class Hatch {
   }
 
   /**
-   * Forget a MESSAGE — HARD scrub + mutations tombstone (unchanged message path).
-   * Delegates to WriteGate.forget. The isMessageId assert lives INSIDE the message path.
-   */
-  forgetMessage(messageId: string, ctx: WriteContext, reason?: string): void {
-    this.gate.forget(messageId, ctx, reason);
-  }
-
-  /**
-   * Forget a FACT — durable forgotten_facts record + live purge, NO scrub.
+   * Forget a FACT — durable delete of the stable-id row, NO scrub.
    * Delegates to WriteGate.forgetFact. Never touches messages or mutations (B1 invariant).
+   * This is the ONE user forget operation as of v2-04 (D-V6a-bis).
    */
   forgetFact(factText: string, provenance: string, ctx: WriteContext, reason?: string): void {
     this.gate.forgetFact(factText, provenance, ctx, reason);
-  }
-
-  /**
-   * Forget a FACT + its source messages — fact-forget record + option-B hard escape.
-   * Delegates to WriteGate.forgetFactAndSources.
-   * thread:<id> provenance → no-op on source scrub (never a whole-thread scrub).
-   */
-  forgetFactAndSources(factText: string, provenance: string, ctx: WriteContext, reason?: string): void {
-    this.gate.forgetFactAndSources(factText, provenance, ctx, reason);
   }
 }
 

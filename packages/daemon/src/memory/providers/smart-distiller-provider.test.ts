@@ -494,20 +494,10 @@ test("SmartDistillerProvider.retrieve skips tombstoned fact provenances (defense
   store.close();
 });
 
-test("retrieve() backstop: a forgotten fact still in distilled_facts is filtered by the forgotten_facts text check", async () => {
-  const store = freshStore();
-  // a live machine row whose text was forgotten but (hypothetically) survived the purge window
-  store.insertDistilledFacts([
-    { fact: "fav colour blue", provenance: "thread:zzz", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
-  ], "smart");
-  store.recordForgottenFact({ raw_text: "fav colour blue", provenance: "thread:zzz", actor: "u", authored_by: "human" });
-
-  const smart = new SmartDistillerProvider({ client: echoClient("[]") });
-  const slice = await smart.retrieve(store, store.createThread());
-  expect(slice.some((m) => m.content.includes("fav colour blue"))).toBe(false);
-
-  store.close();
-});
+// v2-04: retrieve() forgotten_facts backstop test removed (Ruling 1-b).
+// The isForgottenNormalizedText filter in retrieve() was removed in v2-04:
+// under durable-delete, forgotten facts are gone from distilled_facts — the
+// purge window that the backstop defended no longer exists.
 
 // ── normalizeFactText unit tests ───────────────────────────────────────────
 

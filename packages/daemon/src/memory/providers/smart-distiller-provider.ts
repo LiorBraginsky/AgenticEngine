@@ -13,8 +13,9 @@
  * Phase-1 catch (→ recordDistillFailure). distill() does NOT swallow errors.
  *
  * The dead Layer-1/Layer-T/Layer-P projection post-filters are DROPPED from distill
- * (they filtered a full projection that no longer exists; forget rewiring is v2-04 and
- * the store read-side suppression still covers the live slice).
+ * (they filtered a full projection that no longer exists; forget is now durable delete
+ * — a forgotten machine fact's row is removed from distilled_facts, with the AFTER DELETE
+ * trigger keeping fact_fts/fact_topics in sync; no read-time suppression remains).
  * _getForgottenSuppression removed (3.0b — orphaned). retrieve kept exactly as-is.
  */
 
@@ -415,8 +416,8 @@ export interface SmartDistillerOptions {
  *   9. Return DistillDelta {threadId, ops, candidateIds, distilledThroughMarker, distilledThroughTurn}.
  *
  * Dead Layer-1/Layer-T/Layer-P projection post-filters DROPPED (they filtered a full
- * projection that no longer exists; forget rewiring is v2-04; store read-side suppression
- * covers the live slice).
+ * projection that no longer exists; forget is now durable delete — forgotten machine facts
+ * are removed from distilled_facts, AFTER DELETE trigger keeps fact_fts/fact_topics in sync).
  *
  * _getForgottenSuppression removed (3.0b — orphaned). retrieve KEPT exactly as-is.
  *
@@ -574,22 +575,17 @@ export class SmartDistillerProvider implements MemoryProvider {
    * Compose the bounded distilled slice for injection at a new thread's start.
    * Identical contract to DumbTailProvider.retrieve.
    *
-   * Defense-in-depth (chunk 04 / D-F):
-   *   - Existing: excludes any fact whose provenance is tombstoned (F1 backstop).
-   *   - NEW: also excludes any fact whose normalized text is in forgotten_facts.
-   *     Covers the window between a fact-forget and the next re-projection (the
-   *     immediate purgeLiveMachineFactsByForget is best-effort-immediate; this +
-   *     the re-projection Layer-T filter are the durable guarantee).
+   * v2-04: the isForgottenNormalizedText backstop is REMOVED (Ruling 1-b).
+   * Under durable-delete, forgotten facts are gone from distilled_facts — the
+   * per-dismiss forgotten_facts suppression window no longer exists.
+   * Retains: isFactTombstoned (MF-05 T1.2 — mutations tombstone backstop).
    */
   async retrieve(store: MemoryStore, forThreadId: string): Promise<SessionMessage[]> {
     // MF-04 (5f): scope-filtered read — thread-local facts of OTHER threads excluded.
     const rows = store.readDistilledFactsForThread(forThreadId, RETRIEVE_SLICE_N);
-    // Existing backstop: isFactTombstoned (MF-05 T1.2 — mutations tombstone)
-    // New backstop (chunk 04): isForgottenNormalizedText (forgotten_facts text check)
+    // Backstop: isFactTombstoned (MF-05 T1.2 — mutations tombstone)
     const live = rows.filter(
-      (f) =>
-        !store.isFactTombstoned(f.provenance) &&
-        !store.isForgottenNormalizedText(normalizeFactText(f.fact)),
+      (f) => !store.isFactTombstoned(f.provenance),
     );
     return Promise.resolve(
       live.map((f) => ({ role: "user" as const, content: `${REMEMBERED_LABEL}${f.fact}` })),
@@ -600,5 +596,6 @@ export class SmartDistillerProvider implements MemoryProvider {
 // Note: sortedSet / setsEqual / Layer-P (provenance-SET equality filter) were dropped in
 // v2-03 — the distill path no longer runs a full projection post-filter.
 // _getForgottenSuppression (which built provSets) was removed in 3.0b: the private helper
-// was orphaned when the Layer-1/T/P post-filters were dropped from distill(); the store
-// read-side suppression (MAJOR-1, relay-004) covers the live slice. forget rewiring is v2-04.
+// was orphaned when the Layer-1/T/P post-filters were dropped from distill(). forget is now
+// durable delete (v2-04): forgotten machine facts are deleted from distilled_facts; the AFTER
+// DELETE trigger keeps fact_fts/fact_topics in sync. No read-time suppression remains.

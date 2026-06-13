@@ -2,7 +2,7 @@
  * normalizeFactText — shared text normalization for the fact-forget machinery.
  *
  * Extracted from smart-distiller-provider.ts to avoid a store→provider import cycle:
- * store.ts needs normalizeFactText for the forgotten_facts primitives (purgeLiveMachineFactsByForget,
+ * store.ts needs normalizeFactText for the forget primitives (deleteMachineFactsByForget,
  * isForgottenNormalizedText, etc.), and store.ts must not import from providers/.
  *
  * Algorithm: NFKC → lowercase → strip REMEMBERED_LABEL prefix →

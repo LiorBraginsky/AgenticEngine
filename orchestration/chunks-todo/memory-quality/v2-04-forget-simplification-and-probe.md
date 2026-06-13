@@ -1,6 +1,6 @@
 # Chunk v2-04: forget simplification — fact-forget ONLY (durable delete) + end-to-end probe
 
-**Status:** todo
+**Status:** in-progress
 **Created:** 2026-06-13 (simplified 2026-06-13 per Lior relay-005 + the message-forget-drop refinement)
 **Phase:** memory-distiller-v2 (spec `docs/specs/2026-06-13-memory-distiller-v2.md` §3.6/§3.7, §5)
 **Estimated size:** ~0.5–1 day (SMALLER than the original — option B + the per-message user path are gone)

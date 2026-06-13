@@ -64,7 +64,8 @@ Rules:
 - Never scope a fact "global".
 - Never output prose, markdown, or code fences — only the bare JSON array.
 - If no facts are extractable, output [].
-- Emit facts in order from most recent / most relevant to least recent, so that the most useful facts appear first.`;
+- Emit facts in order from most recent / most relevant to least recent, so that the most useful facts appear first.
+- Write each "fact" in the SAME language the user used in the conversation (e.g. a Ukrainian conversation yields a Ukrainian "fact"); do not translate the user's language into English.`;
 
 // ── Error type ─────────────────────────────────────────────────────────────
 

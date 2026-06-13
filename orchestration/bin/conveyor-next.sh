@@ -55,10 +55,10 @@ FDIR="$CHUNKS/$FEATURE"
 next_chunk=""
 while IFS= read -r f; do
   if grep -qiE '^[[:space:]]*\**status:\**[[:space:]]*todo' "$f"; then next_chunk="$f"; break; fi
-done < <(find "$FDIR" -maxdepth 1 -name '[0-9]*.md' | sort)
+done < <(find "$FDIR" -maxdepth 1 -name '[0-9v]*.md' | sort)
 
 if [ -z "$next_chunk" ]; then
-  if find "$FDIR" -maxdepth 1 -name '[0-9]*.md' | grep -q .; then
+  if find "$FDIR" -maxdepth 1 -name '[0-9v]*.md' | grep -q .; then
     echo "no 'todo' chunks in '$FEATURE' (remaining are in-progress/blocked — resume/unblock manually)" >&2
   else
     echo "feature '$FEATURE' drained → time for Jimmy to refresh (PIPELINE §11.1)" >&2
@@ -66,7 +66,7 @@ if [ -z "$next_chunk" ]; then
   exit 3
 fi
 
-nn="$(basename "$next_chunk" | grep -oE '^[0-9]+')"
+nn="$(basename "$next_chunk" | grep -oE '^(v[0-9]+-)?[0-9]+')"
 title="$(grep -m1 -E '^#[[:space:]]' "$next_chunk" | sed -E 's/^#[[:space:]]*//')"
 rel="${next_chunk#"$REPO_ROOT"/}"
 branch="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD)"

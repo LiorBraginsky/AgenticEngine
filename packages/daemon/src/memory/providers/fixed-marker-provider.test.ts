@@ -114,13 +114,13 @@ test("D4: FixedMarkerProvider.distill DistillResult.threadId equals the trigger 
 
 test("D4: FixedMarkerProvider.distill tombstoned-thread-provenance skip still applies (no fact for that thread)", async () => {
   const { store } = freshStore();
-  const gate = new WriteGate(store, new RuleBasedScanner());
   const tA = store.createThread();
   const tB = store.createThread();
   store.appendMessages(tA, [{ role: "user", content: "a" }], "s1");
   store.appendMessages(tB, [{ role: "user", content: "b" }], "s2");
   // Tombstone the thread-level provenance for tA so FixedMarker skips it
-  gate.forgetFact(`thread:${tA}`, { actor: "user", authored_by: "human" });
+  // (uses store.tombstoneFact directly — the mutations path that isFactTombstoned reads)
+  store.tombstoneFact(`thread:${tA}`, { actor: "user", authored_by: "human" });
   const r = await provider.distill(store, tB);
   const provenances = r.facts.map((f) => f.provenance);
   // tA's thread provenance is tombstoned — its count-fact must be absent

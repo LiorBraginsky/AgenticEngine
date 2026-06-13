@@ -22,8 +22,10 @@ import type { SessionMessage } from "../../providers/provider.js";
 import { REDACTION_MARKER } from "../schema.js";
 import { REMEMBERED_LABEL } from "../../providers/system-prompt.js";
 import { resolveAnthropicKey, type ResolveOpts } from "../../secrets/cloud-secrets.js";
-// Re-exported from the shared module to avoid a store→provider import cycle.
-export { normalizeFactText } from "../normalize-fact-text.js";
+// Imported from the shared module to avoid a store→provider import cycle.
+// Also re-exported so external callers can still use "from ./smart-distiller-provider.js".
+import { normalizeFactText } from "../normalize-fact-text.js";
+export { normalizeFactText };
 
 // ── Tunable constants (exported for unit tests) ────────────────────────────
 
@@ -298,6 +300,14 @@ export class SmartDistillerProvider implements MemoryProvider {
    *
    * NEVER-THROW: LLM/parse failures surface as rejected promises to chunk-02's
    * Phase-1 catch (recordReprojectionFailure). This method does NOT swallow errors.
+   *
+   * Post-filter layers (chunk 04 / ADR-0015 decision 3 — re-sourced from forgotten_facts):
+   *   Layer-T: THE one real text-match layer (normalized text ∈ forgotten_facts).
+   *            5e-aware: does NOT suppress when a human fact with the same text exists.
+   *   Layer-P: opportunistic nudge — provenance-SET equality (not intersection).
+   *            Fires rarely because provenance is unstable across re-projections.
+   *   Layer-X: soft LLM exclusion nudge in system prompt. A generative model can ignore it.
+   * These are MITIGATIONS, not guarantees. A generative distiller can rephrase.
    */
   async distill(store: MemoryStore, triggerThreadId: string): Promise<DistillResult> {
     // Phase 1a: build digest (tombstone/quarantine-honored)
@@ -311,15 +321,17 @@ export class SmartDistillerProvider implements MemoryProvider {
     // Phase 1b: LLM call (outside any SQLite tx — grill #6 seam)
     const client = this.getClient();
 
-    // Build system prompt dynamically: static base + optional layer-3 exclusion block.
-    // Layer-3 (best-effort MITIGATION): tombstoned fact texts are appended as explicit
-    // LLM exclusions. A generative model can ignore this instruction — the load-bearing
-    // mechanism remains digest exclusion (D8). This is a soft nudge, not a guarantee.
-    const { normalizedTexts: tombstonedNorms, rawTexts: tombstonedRawTexts } =
-      this._getTombstonedTexts(store);
+    // Collect forgotten suppression data for all three post-filter layers.
+    // Re-sourced from forgotten_facts (chunk 04) — not from deleted distilled_facts rows.
+    const { norms: forgottenNorms, provSets: forgottenProvSets, rawTexts: forgottenRawTexts } =
+      this._getForgottenSuppression(store);
+
+    // Layer-X (soft nudge): forgotten fact texts appended as LLM exclusion block.
+    // A generative model can ignore this instruction — the load-bearing mechanism
+    // is Layer-T (normalized text match). This is a soft nudge, not a guarantee.
     let systemText = SMART_SYSTEM_PROMPT;
-    if (tombstonedRawTexts.length > 0) {
-      const exclusionLines = tombstonedRawTexts.map((t) => `- ${t}`).join("\n");
+    if (forgottenRawTexts.length > 0) {
+      const exclusionLines = forgottenRawTexts.map((t) => `- ${t}`).join("\n");
       systemText =
         SMART_SYSTEM_PROMPT +
         `\n\nDo NOT emit any fact equivalent to these previously-forgotten facts:\n${exclusionLines}`;
@@ -345,71 +357,116 @@ export class SmartDistillerProvider implements MemoryProvider {
     // Phase 1c: defensive parse (throws SmartDistillError on bad JSON/non-array)
     const parsed = parseFacts(rawText);
 
-    // Phase 1d: best-effort post-filters (MITIGATION — not a guarantee)
-
-    // Layer 1 — provenance match: drop facts whose provenance is tombstoned.
-    // Comma-joined provenances: drop if ANY component is tombstoned.
-    // (MITIGATION: the LLM can assign a new provenance to re-express the same fact.)
+    // Phase 1d: best-effort post-filters (one real layer + two opportunistic nudges)
+    //
+    // Layer-1 — provenance tombstone filter (sourced from mutations via isFactTombstoned):
+    //   Drop facts whose provenance is tombstoned (message-redaction path).
+    //   Comma-joined provenances: drop if ANY component is tombstoned.
+    //   (MITIGATION: the LLM can assign a new provenance to re-express the same fact.)
     const afterLayer1 = parsed.filter((f) => {
       const components = f.provenance.split(",").map((p) => p.trim());
       return !components.some((p) => store.isFactTombstoned(p));
     });
 
-    // Layer 2 — normalized-text match: drop facts whose normalized text byte-equals
-    // a tombstoned fact's normalized text. We derive tombstoned fact texts from the
-    // distilled_facts table filtered by isFactTombstoned provenance.
-    // (MITIGATION: exact-after-normalize, not fuzzy/semantic — a rephrased fact defeats this.)
-    const afterLayer2 = afterLayer1.filter((f) => {
+    // Layer-T — the ONE real text-match layer (sourced from forgotten_facts.normalized_text):
+    //   Drop candidates whose normalized text is in the forgotten set.
+    //   5e-aware: do NOT suppress when a human-authored distilled_fact with the same
+    //   normalized text exists (ADR-0015 decision 4 / ADR-0012 5e).
+    //   (MITIGATION: exact-after-normalize match; a rephrased fact defeats this.)
+    const afterLayerT = afterLayer1.filter((f) => {
       const norm = normalizeFactText(f.fact);
-      return !tombstonedNorms.has(norm);
+      if (!forgottenNorms.has(norm)) return true; // not forgotten — keep
+      // 5e-aware: human fact with same text → do NOT suppress
+      if (store.hasHumanFactWithNormalizedText(norm)) return true;
+      return false; // forgotten + no human override → drop
     });
 
-    return { threadId: triggerThreadId, facts: afterLayer2 };
+    // Layer-P — opportunistic nudge (provenance-SET equality, NOT intersection):
+    //   Drop iff the candidate's normalized provenance SET equals a forgotten provenance set.
+    //   Fires rarely because provenance is unstable across re-projections (ADR-0015 root #2).
+    //   NOT marketed as defense — opportunistic/audit only.
+    const afterLayerP = afterLayerT.filter((f) => {
+      const candidateSet = sortedSet(f.provenance);
+      return !forgottenProvSets.some((fs) => setsEqual(candidateSet, fs));
+    });
+
+    return { threadId: triggerThreadId, facts: afterLayerP };
   }
 
   /**
-   * Collect raw and normalized texts of all currently-tombstoned distilled facts
-   * in a single scan. Used by layer-2 (normalized set) and layer-3 (raw texts).
+   * Collect the suppression data from forgotten_facts for all post-filter layers.
+   * Re-named from _getTombstonedTexts (chunk 04) — re-sourced from forgotten_facts,
+   * not from distilled_facts + isFactTombstoned (the dead MAJOR-1 path deleted here).
    *
-   * This is a best-effort MITIGATION — the set is derived from distilled_facts rows
-   * that still exist; if a row was deleted, we have no text to compare against.
-   * The load-bearing exclusion mechanism is digest exclusion (D8) — tombstoned-provenance
-   * messages never enter the digest in the first place.
+   * Returns:
+   *   norms:    Set<string>   — normalized texts (Layer-T match key)
+   *   provSets: Set<string>[] — sorted provenance sets (Layer-P match key)
+   *   rawTexts: string[]      — raw fact texts (Layer-X LLM exclusion nudge)
    */
-  private _getTombstonedTexts(store: MemoryStore): {
-    normalizedTexts: Set<string>;
+  private _getForgottenSuppression(store: MemoryStore): {
+    norms: Set<string>;
+    provSets: Set<string>[];
     rawTexts: string[];
   } {
-    // Read all distilled facts and filter to those with tombstoned provenances.
-    // We use readDistilledFacts with a large limit as a full scan.
-    // This is O(projection_size) which is acceptable for the fact count expected.
-    const allFacts = store.readDistilledFacts(10_000);
-    const normalizedTexts = new Set<string>();
+    const rows = store.readForgottenFacts();
+    const norms = new Set<string>();
+    const provSets: Set<string>[] = [];
     const rawTexts: string[] = [];
-    for (const f of allFacts) {
-      // Check each provenance component
-      const components = f.provenance.split(",").map((p) => p.trim());
-      if (components.some((p) => store.isFactTombstoned(p))) {
-        normalizedTexts.add(normalizeFactText(f.fact));
-        rawTexts.push(f.fact);
+    for (const row of rows) {
+      norms.add(row.normalized_text);
+      rawTexts.push(row.raw_text);
+      if (row.provenance) {
+        provSets.push(sortedSet(row.provenance));
       }
     }
-    return { normalizedTexts, rawTexts };
+    return { norms, provSets, rawTexts };
   }
 
   /**
    * Compose the bounded distilled slice for injection at a new thread's start.
    * Identical contract to DumbTailProvider.retrieve and FixedMarkerProvider.retrieve.
    *
-   * Defense-in-depth: excludes any fact whose provenance is tombstoned (F1 backstop).
+   * Defense-in-depth (chunk 04 / D-F):
+   *   - Existing: excludes any fact whose provenance is tombstoned (F1 backstop).
+   *   - NEW: also excludes any fact whose normalized text is in forgotten_facts.
+   *     Covers the window between a fact-forget and the next re-projection (the
+   *     immediate purgeLiveMachineFactsByForget is best-effort-immediate; this +
+   *     the re-projection Layer-T filter are the durable guarantee).
    */
   async retrieve(store: MemoryStore, forThreadId: string): Promise<SessionMessage[]> {
     // MF-04 (5f): scope-filtered read — thread-local facts of OTHER threads excluded.
     const rows = store.readDistilledFactsForThread(forThreadId, RETRIEVE_SLICE_N);
-    // MF-05 T1.2: isFactTombstoned is a strict superset of isMessageTombstoned.
-    const live = rows.filter((f) => !store.isFactTombstoned(f.provenance));
+    // Existing backstop: isFactTombstoned (MF-05 T1.2 — mutations tombstone)
+    // New backstop (chunk 04): isForgottenNormalizedText (forgotten_facts text check)
+    const live = rows.filter(
+      (f) =>
+        !store.isFactTombstoned(f.provenance) &&
+        !store.isForgottenNormalizedText(normalizeFactText(f.fact)),
+    );
     return Promise.resolve(
       live.map((f) => ({ role: "user" as const, content: `${REMEMBERED_LABEL}${f.fact}` })),
     );
   }
+}
+
+// ── Internal helpers ──────────────────────────────────────────────────────────
+
+/** Build a sorted Set<string> from a comma-joined provenance string. */
+function sortedSet(provenance: string): Set<string> {
+  return new Set(
+    provenance
+      .split(",")
+      .map((p) => p.trim())
+      .filter(Boolean)
+      .sort(),
+  );
+}
+
+/** Compare two Sets for equality (provenance-SET equality, not intersection). */
+function setsEqual(a: Set<string>, b: Set<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const v of a) {
+    if (!b.has(v)) return false;
+  }
+  return true;
 }

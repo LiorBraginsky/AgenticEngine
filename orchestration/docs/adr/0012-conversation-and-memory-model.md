@@ -9,7 +9,11 @@ tags: [adr, conversation, memory, interaction, threads, dual-modality, agent-par
 
 ## Status
 
-`accepted`
+`accepted` — with a **PROPOSED AMENDMENT 2026-06-13** (incremental distiller: *stability over strict
+re-derivability*; see the "Amendment 2026-06-13" section below). The amendment is `proposed` and rides
+the memory-distiller-v2 design PR to **Lior's §5.2 acceptance gate** (hard-to-reverse tier — it changes
+this ADR's HARD INVARIANT). Until accepted, decision 6's "re-derivable projection" framing stands as
+written; the amendment, once accepted, supersedes that framing as described below.
 
 ## Context
 
@@ -127,8 +131,83 @@ Concretely:
 
 **The part that stays OPEN, however:** ADR-0005's closed-set cleanly covers widgets *we* compose, but it only weakly answers **external / third-party rich widgets** — a Spotify widget, a weather mini-app, "calling a little program into the overlay" — which are *not* built from our primitives (its `custom_content` sanitized-HTML escape hatch is the current, limited answer). For *that* surface, **A2UI or a sandboxed mini-app model is a live candidate**, to be **researched when the plugin / external-widget layer is built** ([[../open-questions]] Q11). So this is "not adopted for our own primitives now," **not** "A2UI is closed forever" — per the team's standing rule not to reflex-reject a relevant direction just because it touches an accepted ADR.
 
+## Amendment 2026-06-13 (proposed): Incremental distiller — STABILITY over strict re-derivability
+
+> **Status:** `proposed` — Lior accepts at §5.2 (hard-to-reverse tier). Agent-drafted in a frontier
+> (fable) design pass; conductor blessed the wording (bus q#009, `decided_by: jimmy`); the acceptance
+> is Lior's. Rides the same PR as [[../specs/2026-06-13-memory-distiller-v2]] (the mechanics).
+
+### Why amend
+
+Decision 6 committed the distilled slice as a **disposable, re-derivable projection** of the lossless
+archive. The memory-quality build honored that literally: the smart distiller returned the COMPLETE
+projection over the whole archive and the store did DELETE-all + INSERT every dismiss. Met with a
+**non-deterministic LLM**, literal re-derivability becomes **instability**: Lior's 2026-06-13 LIVE demo
+showed facts **churning (rewording), reordering, and DISAPPEARING** across dismisses ("a forget re-wrote
+every fact; a reload showed a different, smaller set"). For a *memory* feature this is disqualifying —
+**"my name is Lior" must stay put.** The fix (memory-distiller-v2) makes distillation **incremental**:
+distill only the just-ended conversation, find a contradicting/related existing fact (FTS5 + the LLM),
+and **REPLACE only that one fact, APPEND same-kind, else add new — leaving all other facts untouched.**
+Incremental facts are therefore a **stateful accumulation**, not a pure function of the archive; this
+amendment makes that explicit and names the guarantee that replaces re-derivability.
+
+### The amended HARD INVARIANT
+
+1. **STABILITY (the new headline guarantee).** *A distilled fact persists UNCHANGED until (a) a
+   genuinely-contradicting new fact replaces it, (b) the user edits it, or (c) the user/forget removes
+   it. It never silently rewords, reorders, or vanishes across dismisses.* This is the user-facing
+   promise the demo proved was missing, and it is what the whole pivot buys.
+
+2. **The archive stays lossless + immutable** — UNCHANGED, and this is the invariant that actually
+   matters. `messages`/`mutations` remain the source of truth; a forget hard-scrubs `messages.content`;
+   the event/tombstone remains.
+
+3. **The fact store is a STATEFUL, incrementally-accumulated DERIVED store — NOT a pure f(archive).**
+   It is built one conversation at a time at dismiss; the current set is **path-dependent** (which fact
+   replaced which, in what order). `distilled_facts.id` is **stable** across dismisses.
+
+4. **Supporting properties (these REPLACE "disposable / regenerable-identically"):**
+   - **Auditable** (preserves 5c): every fact carries provenance to its source messages, and a REPLACE
+     records the replaced fact's text — a destructive change is visible and recoverable, never silent.
+   - **Forgettable** (preserves 5a): a forget is now a **durable delete** of the stable-id row —
+     **strictly STRONGER** than the old best-effort suppression against re-derivation.
+   - **Best-effort REPLAYABILITY (not re-derivability):** because the archive is lossless, the fact
+     store CAN be rebuilt by replaying distillation conversation-by-conversation in chronological order
+     — but this is an **explicit admin action** (provider swap / corruption recovery / migration), NOT
+     a per-dismiss invariant, and it is **non-deterministic** (LLM) and **lossy of forget-history**.
+
+5. **Preserved unchanged:** transparency 5a–f; human-precedence 5e (now trivially honored — nothing
+   re-derives over human facts); thread-isolation 5f; the two-stores shape (decision 6's storage
+   sentence); the swappable-retrieval posture (FTS5 now over facts, embeddings deferred to the 2d
+   retrieval feature — exactly "vector/graph retrieval is a swappable provider, not a v1 bet").
+
+6. **Given up (named, not latent):** the property that the distilled slice is **disposable and
+   regenerable-identically at any time**. The fact store is now **durable state** that must be backed
+   up and migrated like any other state — including a **one-time migration** off the prior
+   global-reprojection facts (memory-distiller-v2 §3.8).
+
+### Consequences of the amendment
+
+- **Positive:** stability (the headline); forget becomes durable + stronger; human facts are
+  unassailable; the destructive path is rule-gated + auditable; no per-dismiss whole-archive LLM cost.
+- **Negative / accepted:** the store is durable state (backup/migration burden); contradiction
+  detection is best-effort (a missed contradiction → a redundant fact the user deletes — a UX
+  inconvenience, not a correctness defect); replay is non-deterministic + lossy of forget-history.
+- **What this obsoletes in the codebase** (the v2 build must reconcile, not leave as silent
+  contradictions): the `DistilledFact` doc ("a re-derivable projection… Disposable"), the
+  `MemoryProvider.distill` doc ("re-run the projection — no source-of-truth migration"), and
+  `dropAllDistilledFacts`'s stated "swap-proof / machine rebuild" purpose all encode the old
+  re-derivability assumption and are rewritten under this amendment.
+
+### Relationship to the 6-month-regret TODO above
+
+This amendment is, in part, the regret arriving early: the global re-projection was "too eager" in
+exactly the way that TODO anticipated ("every thread felt cluttered / facts churned"). The pivot is the
+correction, made before the feature shipped as default rather than after.
+
 ## Related
 
+- [[../specs/2026-06-13-memory-distiller-v2]] — the incremental mechanics this amendment's invariant governs.
 - [[0001-interaction-pattern]] — streaming sessions + the **cross-session memory it explicitly deferred** (decision-point 4/6, Option C rejected as v2). This ADR is where that deferral comes due and commits the memory model. Sessions remain the in-thread turn substrate.
 - [[0002-ui-as-tool-calls]] — the **agent paradigm**: output is tool calls / widgets, not a chat-message channel. Decision 3 holds the line here.
 - [[0005-ui-contract-closed-set]] — closed-set primitives (**widgets out**, no transcript surface); A2UI **not adopted for our primitives** (cross-frontend rendering is already native), but **external rich-widget rendering stays open** ([[../open-questions]] Q11).

@@ -1,6 +1,6 @@
 # Chunk 6: Default flip + feature-closing live demo (2b cutover)
 
-**Status:** todo
+**Status:** in-progress
 **Created:** 2026-06-12 (renumbered 04→06 on 2026-06-13 — forget-flow chunks 04/05 inserted)
 **Phase:** memory-quality (specs `docs/specs/2026-06-12-memory-quality.md` §3.4 + §5 AND
 `docs/specs/2026-06-13-forget-flow.md` §6 — the forget steps)

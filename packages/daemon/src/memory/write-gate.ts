@@ -3,6 +3,7 @@ import type { SessionMessage } from "../providers/provider.js";
 import { REDACTION_MARKER } from "./schema.js";
 import type { MemoryScanner } from "./scanner/memory-scanner.js";
 import { normalizeFactText } from "./normalize-fact-text.js";
+import { memDebug } from "./debug-log.js";
 
 export { REDACTION_MARKER };
 
@@ -122,6 +123,13 @@ export class WriteGate {
     const norm = normalizeFactText(factText);
     // Durable delete via trigger-backed deleteFactById loop (5e guard inside)
     this.store.deleteMachineFactsByForget(provenance, norm);
+    // ── D1 forget log (env-gated, zero-cost when OFF) ─────────────────────────
+    memDebug("forget", {
+      route: "forgetFact",
+      target: { provenance, normalizedText: norm },
+      deletedIds: [],
+      deletedCount: 0, // deleteMachineFactsByForget does not return ids/count — conservative log
+    });
   }
 
   /**

@@ -4,6 +4,7 @@ import type { SessionMessage } from "../../providers/provider.js";
 import { REDACTION_MARKER } from "../schema.js";
 import { REMEMBERED_LABEL } from "../../providers/system-prompt.js";
 import { normalizeFactText } from "../normalize-fact-text.js";
+import { memDebug, previewStr } from "../debug-log.js";
 
 /** Bounded slice retrieved from distilled_facts to inject at new-thread start. */
 const RETRIEVE_SLICE_N = 20;
@@ -56,6 +57,24 @@ export class DumbTailProvider implements MemoryProvider {
     const distilledThroughMarker = store.readThreadMarker(threadId);
     const distilledThroughTurn = store.maxTurnIndex(threadId);
 
+    // ── D1 distill INPUT log (env-gated, zero-cost when OFF) ─────────────────
+    // DumbTail has no candidate fetch; log tail only (candidates: []).
+    memDebug("distill", {
+      threadId,
+      sinceTurn,
+      tail: allTail
+        .filter((m) => m.content !== REDACTION_MARKER)
+        .filter((m) => !store.isMessageQuarantined(m.id))
+        .filter((m) => !store.isFactTombstoned(m.id))
+        .map((m) => ({
+          id: m.id,
+          role: m.role,
+          len: m.content.length,
+          preview: previewStr(m.content),
+        })),
+      candidates: [],
+    });
+
     return Promise.resolve({
       threadId,
       ops,
@@ -77,6 +96,15 @@ export class DumbTailProvider implements MemoryProvider {
     // MF-05 T1.2: isFactTombstoned is a strict superset of isMessageTombstoned —
     // covers both message-UUID provenances (DumbTail) and thread-level provenances.
     const live = rows.filter((f) => !store.isFactTombstoned(f.provenance));
+    // ── D1 retrieve log (env-gated, zero-cost when OFF) ──────────────────────
+    // NOTE: rows currently lack `id` (Step 3 adds it); log factPreview + order for now.
+    memDebug("retrieve", {
+      forThreadId,
+      injected: live.map((f, i) => ({
+        factPreview: previewStr(f.fact),
+        order: i,
+      })),
+    });
     return Promise.resolve(
       live.map((f) => ({ role: "user" as const, content: `${REMEMBERED_LABEL}${f.fact}` })),
     );

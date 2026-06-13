@@ -10,6 +10,7 @@ import { RuleBasedScanner } from "./memory/scanner/memory-scanner.js";
 import { ThreadLifecycle } from "./memory/thread-lifecycle.js";
 import { ConsolidationHook } from "./memory/consolidation-hook.js";
 import { buildMemoryProvider } from "./memory/memory-provider-selector.js";
+import type { MemoryProvider } from "./memory/memory-provider.js";
 import { registerDistiller } from "./memory/distiller-registration.js";
 import { Hatch } from "./memory/hatch.js";
 import { handleMemoryHttp } from "./memory/http-routes.js";
@@ -58,8 +59,12 @@ const REDUCER_INPUT_TYPES = new Set(["session_start", "tool_result", "tool_cance
  *                   production provider is selected by the LLM_PROVIDER env var via
  *                   buildInjector(). Tests inject a fake provider so they can drive
  *                   show_text envelopes without a real LLM key or network call.
+ * @param memoryProvider - additive test/harness injection seam (mirrors provider?);
+ *                   production uses buildMemoryProvider(). The demo harness injects
+ *                   a SmartDistillerProvider with a scripted clientFactory so the full
+ *                   flow runs deterministically without a live Anthropic key.
  */
-export function startDaemon(port: number = DAEMON_PORT, provider?: AgentProvider) {
+export function startDaemon(port: number = DAEMON_PORT, provider?: AgentProvider, memoryProvider?: MemoryProvider) {
   const activeProvider = provider ?? buildInjector();
   const dataDir = Bun.env.AGENTIC_DATA_DIR ?? join(homedir(), ".agentic-engine");
   const store = new MemoryStore({ dataDir });
@@ -67,10 +72,11 @@ export function startDaemon(port: number = DAEMON_PORT, provider?: AgentProvider
   const gate = new WriteGate(store, scanner);
   const hatch = new Hatch(store, gate);
   const tokenStore = new TokenStore(dataDir);
-  const memoryProvider = buildMemoryProvider();
+  // memoryProvider? — additive test/harness injection seam (mirrors provider?); production uses buildMemoryProvider().
+  const memProvider = memoryProvider ?? buildMemoryProvider();
   const hook = new ConsolidationHook(store);
-  registerDistiller(hook, store, memoryProvider, scanner);
-  const lifecycle = new ThreadLifecycle(store, gate, memoryProvider);
+  registerDistiller(hook, store, memProvider, scanner);
+  const lifecycle = new ThreadLifecycle(store, gate, memProvider);
 
   const memoryDeps = { hatch, store, tokenStore };
 

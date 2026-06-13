@@ -30,6 +30,7 @@ import { resolveAnthropicKey, type ResolveOpts } from "../../secrets/cloud-secre
 // Also re-exported so external callers can still use "from ./smart-distiller-provider.js".
 import { normalizeFactText } from "../normalize-fact-text.js";
 export { normalizeFactText };
+import { memDebug, previewStr } from "../debug-log.js";
 
 // ── Tunable constants (exported for unit tests) ────────────────────────────
 
@@ -526,6 +527,24 @@ export class SmartDistillerProvider implements MemoryProvider {
         ? `\nEXISTING FACTS (candidates 1..${candidates.length}):\n${poolLines.join("\n")}`
         : "\nEXISTING FACTS: (none yet)";
 
+    // ── D1 distill INPUT log (env-gated, zero-cost when OFF) ─────────────────
+    // Logs tail + candidates just before the LLM call — the diagnosis enabler.
+    memDebug("distill", {
+      threadId: triggerThreadId,
+      sinceTurn,
+      tail: tail.map((m) => ({
+        id: m.id,
+        role: m.role,
+        len: m.content.length,
+        preview: previewStr(m.content),
+      })),
+      candidates: candidates.map((c, i) => ({
+        ordinal: i + 1,
+        id: c.id,
+        factPreview: previewStr(c.fact),
+      })),
+    });
+
     // Phase 6: ONE LLM call (outside any tx — grill #6 seam)
     const client = this.getClient();
 
@@ -587,6 +606,15 @@ export class SmartDistillerProvider implements MemoryProvider {
     const live = rows.filter(
       (f) => !store.isFactTombstoned(f.provenance),
     );
+    // ── D1 retrieve log (env-gated, zero-cost when OFF) ──────────────────────
+    // NOTE: rows currently lack `id` (Step 3 adds it); log factPreview + order for now.
+    memDebug("retrieve", {
+      forThreadId,
+      injected: live.map((f, i) => ({
+        factPreview: previewStr(f.fact),
+        order: i,
+      })),
+    });
     return Promise.resolve(
       live.map((f) => ({ role: "user" as const, content: `${REMEMBERED_LABEL}${f.fact}` })),
     );

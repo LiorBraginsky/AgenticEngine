@@ -4,6 +4,7 @@ import type { MemoryProvider, DistillDelta, FactOp } from "./memory-provider.js"
 import type { MemoryScanner } from "./scanner/memory-scanner.js";
 import { SmartDistillError } from "./providers/smart-distiller-provider.js";
 import { normalizeFactText } from "./normalize-fact-text.js";
+import { memDebug, previewStr } from "./debug-log.js";
 
 /**
  * Wire the distiller as the consolidation-hook's batch handler.
@@ -99,6 +100,21 @@ async function distillOneThread(
     recordDistillFailure(err, "provider.distill", trigger);
     throw err;
   }
+
+  // ── D1 distill OUTPUT delta log (env-gated, zero-cost when OFF) ──────────
+  // Logs after provider.distill returns so we see what the LLM/provider produced.
+  // (`why` = expectedTargetText for replace ops — no free-text why on FactOp)
+  memDebug("distill", {
+    threadId,
+    ops: delta.ops.map((op) => ({
+      op: op.op,
+      ...(op.targetOrdinal !== undefined ? { targetOrdinal: op.targetOrdinal } : {}),
+      ...(op.expectedTargetText !== undefined ? { why: previewStr(op.expectedTargetText) } : {}),
+      factPreview: previewStr(op.fact),
+      canonicalPreview: previewStr(op.canonical ?? ""),
+    })),
+    candidateIds: delta.candidateIds,
+  });
 
   // ── Phase 2: SCAN per-op (outside the tx, pre-insert) ────────────────────
   // Provenance is thread-level ("thread:<threadId>") so no per-op quarantine recording.

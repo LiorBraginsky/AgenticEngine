@@ -596,7 +596,7 @@ export class MemoryStore {
   }
 
   /**
-   * DEAD as of v2-03 — no per-dismiss or migration caller; remove with the v2-05 cleanup.
+   * DEAD as of v2-03 (no live caller in the incremental path); slated for a follow-up dead-code pass, NOT removed in v2-05 (still has unit tests).
    *
    * Atomic replace of the machine projection (chunk 02, spec D5/D6/D7).
    *

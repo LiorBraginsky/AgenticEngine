@@ -1,8 +1,8 @@
 /**
  * memory-provider-selector.test.ts
  *
- * Tests for selector registration of "smart" (R6) + default-unchanged guard.
- * fixed-marker is RETIRED (v2-03) — no entry in REGISTRY.
+ * Tests for selector registration of "smart" (R6). Default IS now "smart" (v2-05 cutover);
+ * keyless path falls back to "dumb-tail" with a loud log. fixed-marker is RETIRED (v2-03) — no entry in REGISTRY.
  *
  * Test seam (Strike-4 — no shell-out in unit tests): buildMemoryProvider accepts an
  * optional `resolveKey` function. Tests inject a fake resolver returning controlled

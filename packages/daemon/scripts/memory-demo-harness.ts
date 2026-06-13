@@ -164,6 +164,17 @@ function buildChatStub(): AgentProvider {
 //   USER line matches "Я працюю"    → op:new fact about work
 //   USER line matches "Тепер мій улюблений колір — зелений" → op:replace colour candidate (genuine change)
 //   ASSISTANT line only (no new USER colour statement) → no op (B-fix: ASSISTANT is context only)
+//
+// A-RACE DELAY (q#012 rider 2 — deterministic harness A):
+//   USER line contains "Моє місто" → inject 80ms await BEFORE returning ops.
+//   This creates a deterministic race window: dismiss fires distill for the race
+//   thread, but the distill hangs 80ms. A new thread opened immediately after
+//   WS close will race the in-flight distill. With the whenIdle fix, beginTurn
+//   awaits the in-flight distill before retrieve → recall HITS (GREEN). Without
+//   it, retrieve runs PRE-distill → recall MISSES (RED). Hard assertion, no fallback.
+
+// A-race delay constant (mirrors the daemon integration test DELAY_MS).
+const A_RACE_DELAY_MS = 80;
 
 function buildScriptedClient(): Anthropic {
   return {
@@ -246,6 +257,14 @@ function buildScriptedClient(): Anthropic {
               });
             }
           }
+        }
+
+        // A-RACE DELAY: if the tail contains the race-thread text, hold 80ms
+        // before returning. This gives the immediately-opened query thread
+        // time to race the distill. withIdle blocks that thread until this
+        // resolves → deterministic GREEN (q#012 rider 2).
+        if (userContent.includes("Моє місто")) {
+          await new Promise((r) => setTimeout(r, A_RACE_DELAY_MS));
         }
 
         return {
@@ -692,51 +711,58 @@ try {
   }
   console.log("");
 
-  // ── A DEFECT: Race — fast reopen races in-flight distill ──────────────────
-  console.log("[demo-harness] A DEFECT: Testing recall race");
+  // ── A DEFECT: Race — fast reopen races in-flight distill (q#012 rider 2) ──
+  console.log("[demo-harness] A: Testing recall race — deterministic delayed-stub RED→GREEN");
+  console.log("[demo-harness] A: The scripted client delays 80ms for the race thread.");
+  console.log("[demo-harness] A: With whenIdle fix: beginTurn blocks until distill commits → HITS (GREEN).");
+  console.log("[demo-harness] A: Without whenIdle: retrieve runs PRE-distill → MISS (RED = process.exit(1)).");
   console.log("[demo-harness] Re-seeding a fresh thread for A race test...");
 
-  // Seed a fact in a new thread then immediately open a new thread to race
+  // Seed a fact in a new thread then immediately open a new thread to race.
+  // The scripted client adds A_RACE_DELAY_MS delay when it sees "Моє місто".
   const threadArace = crypto.randomUUID();
-
-  // Seed one fact and close (start distill async) — then IMMEDIATELY open new thread
   const RACE_TEXT = "Моє місто — Тель-Авів";
 
-  // Start the distill by sending a turn and closing (wsTurn does not settle)
+  // Start the distill by sending a turn and closing (wsTurn does not settle).
+  // This triggers dismiss → distill with the 80ms delay baked into the stub.
   const raceP = wsTurn(PORT, token, { threadId: threadArace, text: RACE_TEXT });
 
-  // While the distill is in-flight, immediately open a new thread and query
-  const threadAquery = crypto.randomUUID();
+  // Micro-delay: enough time for the WS to close and the dismiss to fire,
+  // but far less than the 80ms distill delay — so the distill is still in-flight
+  // when the query thread opens.
+  await new Promise((r) => setTimeout(r, 10));
 
-  // Micro-delay: let the WS close but not the distill-promise to settle
-  await new Promise((r) => setTimeout(r, 5));
-
-  const raceResult = await raceP; // ensure the seeding ws closed
+  const raceResult = await raceP; // ensure the seeding WS is closed
   void raceResult; // suppress unused
 
-  // Open query thread immediately (race window: distill may still be in-flight)
+  // Open query thread immediately (race window: distill is in-flight, delayed 80ms).
+  // With whenIdle: beginTurn blocks until the delayed distill commits → retrieve
+  // sees the city fact → reply contains recall evidence → GREEN.
+  const threadAquery = crypto.randomUUID();
   const recallRace = await wsTurnAndSettle(PORT, token, {
     threadId: threadAquery,
     text: "Яке моє місто?",
-  }, 50);
+  }, 500); // generous settle (distill may take up to ~80ms + WS round-trip)
 
   const recalledCity = recallRace.reply.includes("Тель-Авів") ||
     recallRace.reply.includes("Tel Aviv") ||
-    recallRace.reply.toLowerCase().includes("місто");
+    recallRace.reply.toLowerCase().includes("місто") ||
+    recallRace.reply.includes("[remembered]");
 
-  console.log(`[demo-harness] A: fast-reopen recall: "${recallRace.reply.slice(0, 100)}"`);
-  if (!recalledCity) {
-    assertRed(true, "A: recall race — new thread did not see in-flight distill result",
-      "Retrieve returned stale (PRE-distill) fact set");
+  console.log(`[demo-harness] A: fast-reopen recall reply: "${recallRace.reply.slice(0, 120)}"`);
+  if (recalledCity) {
+    console.log("[demo-harness] A: GREEN — whenIdle blocked retrieve until delayed distill committed; city fact recalled");
   } else {
-    console.log("[demo-harness] A: recall hit (no race this time — timing window may be too narrow in stub mode)");
-    console.log("[demo-harness] A: FALLBACK — see MEMORY_DEBUG=1 trace for retrieve injection evidence");
+    console.error("[demo-harness] A: RED — recall MISSED (whenIdle not working? distill not committing?)");
+    console.error("  Expected: reply to contain 'Тель-Авів' or '[remembered]' (fact injected by retrieve)");
+    console.error("  Got: " + recallRace.reply.slice(0, 200));
+    await cleanup();
+    process.exit(1);
   }
   console.log("");
 
-  // ── MEMORY_DEBUG=1 trace for A ────────────────────────────────────────────
-  console.log("[demo-harness] === MEMORY_DEBUG retrieve trace for A race (next run with MEMORY_DEBUG=1) ===");
-  console.log("[demo-harness] To capture the A race trace, run:");
+  // ── MEMORY_DEBUG=1 trace for A (supplementary) ────────────────────────────
+  console.log("[demo-harness] A: MEMORY_DEBUG=1 retrieve trace (supplementary — run to confirm injection):");
   console.log("  MEMORY_DEBUG=1 bun run packages/daemon/scripts/memory-demo-harness.ts --mode=stub 2>&1 | grep '\\[memory-debug\\] retrieve'");
   console.log("");
 
@@ -746,7 +772,8 @@ try {
   console.log("║                                                                              ║");
   console.log("║  C: forgetFactById — exactly 1 fact deleted (GREEN = fix applied)           ║");
   console.log("║  B: no rewording — colour byte-stable across N recall turns (GREEN)         ║");
-  console.log("║  A: race (bus-gated; timing-sensitive; see MEMORY_DEBUG=1 trace above)      ║");
+  console.log("║  A: delayed-stub race — whenIdle blocks retrieve → city recalled (GREEN)    ║");
+  console.log("║     (hard assertion: process.exit(1) on miss — q#012 rider 2)              ║");
   console.log("║                                                                              ║");
   console.log("║  Paste this stdout into the PR body = Strike-5 EXECUTED evidence (v2-06).  ║");
   console.log("╚══════════════════════════════════════════════════════════════════════════════╝");

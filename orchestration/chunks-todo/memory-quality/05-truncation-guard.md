@@ -1,6 +1,6 @@
 # Chunk 5: Smart-distiller truncation guard (MINOR-3 livelock fix)
 
-**Status:** todo
+**Status:** in-progress
 **Created:** 2026-06-13
 **Phase:** memory-quality (spec `docs/specs/2026-06-13-forget-flow.md` §2 D-E)
 **Estimated size:** ~0.5 day (small, isolated)

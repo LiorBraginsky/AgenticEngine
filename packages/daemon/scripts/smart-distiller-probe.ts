@@ -2,9 +2,14 @@
  * smart-distiller-probe — EXECUTED real-Haiku smoke probe (Strike-5).
  *
  * ─── Purpose ─────────────────────────────────────────────────────────────
- * This script proves that SmartDistillerProvider drives a REAL Haiku call
- * against a REAL on-disk MemoryStore (seeded with known messages) and
- * produces ≥1 distilled fact.
+ * This script proves the v2-03 STABILITY headline end-to-end with a REAL (non-
+ * deterministic) LLM call: on a FRESH store, seed a real conversation, run a REAL
+ * SmartDistillerProvider distill (first distill → seeds facts), capture fact ids,
+ * then append a related follow-up turn, bump the marker, and re-dismiss (second REAL
+ * Haiku distill that will see overlapping candidates). Assert:
+ *   - the originally-distilled fact(s) row id(s) are UNCHANGED
+ *   - the fact texts are still present (nothing vanished)
+ *   - the injected slice is coherent (≥1 fact total after re-distill)
  *
  * ─── STRIKE-5 BANNER ─────────────────────────────────────────────────────
  * This script existing and type-checking is NECESSARY-BUT-NOT-SUFFICIENT.
@@ -19,25 +24,29 @@
  *
  * ─── What success looks like ─────────────────────────────────────────────
  *   [smart-probe] key resolved (source=keychain)
- *   [smart-probe] store seeded: 3 threads, 5 messages
- *   [smart-probe] calling provider.distill() — real Haiku network call...
- *   [smart-probe] fact[0]: { fact: "...", scope: "...", confidence: ..., provenance: "..." }
- *   ...
- *   [smart-probe] PROBE PASSED — ≥1 fact produced; stdout pasted in PR = Strike-5 evidence.
+ *   [smart-probe] store seeded (FRESH tmpDir)
+ *   [smart-probe] --- DISTILL 1 (real Haiku) ---
+ *   [smart-probe] distill-1 produced N fact(s). ids captured.
+ *   [smart-probe] --- DISTILL 2 (re-dismiss, real Haiku, overlapping candidates) ---
+ *   [smart-probe] distill-2 produced M fact(s).
+ *   [smart-probe] STABILITY: all N original fact id(s) UNCHANGED after re-distill
+ *   [smart-probe] PROBE PASSED — STABILITY proven: original fact ids unchanged
+ *                 across two real-Haiku distills on a FRESH store.
  *
  * ─── What failure looks like ──────────────────────────────────────────────
  *   [smart-probe] FAIL: key not resolved: <reason> — <fixHint>
  *   Exit 1.
  *
- *   [smart-probe] PROBE FAILED — 0 facts produced; expected ≥1.
+ *   [smart-probe] PROBE FAILED — 0 facts produced on first distill; cannot test stability.
+ *   Exit 1.
+ *
+ *   [smart-probe] PROBE FAILED — STABILITY VIOLATED: fact(s) vanished after re-distill.
  *   Exit 1.
  *
  * ─── Environment requirements ────────────────────────────────────────────
  * - Real Anthropic API key in macOS Keychain (service=agentic-engine,
  *   account=ANTHROPIC_API_KEY) — OR AGENTIC_ENV=dev + ANTHROPIC_API_KEY set.
  * - Network access to api.anthropic.com.
- * - No AGENTIC_ENV=dev re-exec needed: the probe works in any env where the
- *   key resolves (Keychain is the expected prod path; .env is the dev fallback).
  */
 
 // ── Banner ─────────────────────────────────────────────────────────────────
@@ -45,6 +54,8 @@
 console.log("");
 console.log("╔══════════════════════════════════════════════════════════════════════╗");
 console.log("║  smart-distiller-probe — Strike-5 EXECUTED evidence (chunk 03)      ║");
+console.log("║  Proves STABILITY: original fact ids UNCHANGED across 2 real Haiku  ║");
+console.log("║  distills on a FRESH store (DoD #6: stable facts end-to-end).       ║");
 console.log("║  Requires: live run + real Anthropic key in Keychain + network       ║");
 console.log("║  Type-check alone is NOT evidence. ORCHESTRATOR runs this for DoD.  ║");
 console.log("╚══════════════════════════════════════════════════════════════════════╝");
@@ -58,6 +69,17 @@ import { join } from "node:path";
 import { resolveAnthropicKey } from "../src/secrets/cloud-secrets.js";
 import { MemoryStore } from "../src/memory/store.js";
 import { SmartDistillerProvider } from "../src/memory/providers/smart-distiller-provider.js";
+
+// ── Helper: read all fact rows (id + fact text) via rawDb ─────────────────
+// DistilledFactRow does not expose id (it's a public display type); use rawDb for id access.
+
+interface FactDbRow { id: string; fact: string }
+
+function readAllFactRows(store: MemoryStore): FactDbRow[] {
+  return store.rawDb()
+    .query("SELECT id, fact FROM distilled_facts ORDER BY rowid ASC")
+    .all() as FactDbRow[];
+}
 
 // ── Step 1: Resolve the Anthropic API key ─────────────────────────────────
 
@@ -77,23 +99,21 @@ if (!resolved.ok) {
 console.log(`[smart-probe] key resolved (source=${resolved.source})`);
 console.log("");
 
-// ── Step 2: Seed a real on-disk MemoryStore ───────────────────────────────
+// ── Step 2: Seed a real on-disk MemoryStore (FRESH store) ─────────────────
 //
-// Creates 3 threads with a mix of messages including a known retrievable fact
-// ("my favourite colour is blue") to ensure the LLM has something to distill.
-// Uses the real appendMessages() path — identical to what the daemon + integration
-// tests use. NO mock store.
+// Creates a fresh tmpDir store with a known fact seeded in thread A
+// ("my favourite colour is blue") — clear enough for Haiku to distill as a fact.
 
 const tmpDir = mkdtempSync(join(tmpdir(), "smart-probe-"));
 
 let store: MemoryStore | null = null;
-let triggerThreadId: string;
+let threadA: string;
 
 try {
   store = new MemoryStore({ dataDir: tmpDir });
 
   // Thread A: contains the known fact we expect Haiku to distill
-  const threadA = store.createThread("probe-thread-A");
+  threadA = store.createThread("probe-thread-A");
   store.appendMessages(
     threadA,
     [
@@ -105,33 +125,8 @@ try {
     "probe-session-A",
   );
 
-  // Thread B: a second thread (tests cross-thread dedup)
-  const threadB = store.createThread("probe-thread-B");
-  store.appendMessages(
-    threadB,
-    [
-      { role: "user", content: "hi" },
-    ],
-    "probe-session-B",
-  );
-
-  // Thread C: a third thread with another user-stated fact
-  const threadC = store.createThread("probe-thread-C");
-  store.appendMessages(
-    threadC,
-    [
-      { role: "user", content: "hi, I prefer dark mode in all my apps" },
-      { role: "assistant", content: "Noted — dark mode preference recorded." },
-    ],
-    "probe-session-C",
-  );
-
-  // Use thread A as the triggerThreadId (the thread that triggered consolidation)
-  triggerThreadId = threadA;
-
-  console.log(`[smart-probe] store seeded: 3 threads, 7 messages`);
-  console.log(`[smart-probe] tmpDir: ${tmpDir}`);
-  console.log(`[smart-probe] triggerThreadId: ${triggerThreadId}`);
+  console.log(`[smart-probe] store seeded (FRESH tmpDir: ${tmpDir})`);
+  console.log(`[smart-probe] thread A: ${threadA}`);
   console.log("");
 
   // ── Step 3: Construct SmartDistillerProvider (real client — no injected factory) ──
@@ -139,59 +134,130 @@ try {
   const provider = new SmartDistillerProvider();
   // ^ No opts → getClient() uses resolveAnthropicKey() internally → real Haiku
 
-  // ── Step 4: Call distill (REAL HAIKU NETWORK CALL) ────────────────────────
-
-  console.log("[smart-probe] calling provider.distill() — real Haiku network call...");
-  console.log("  (This is a live API call — requires internet + valid key + billing)");
-  console.log("");
-
-  // v2-03: distill() returns DistillDelta (ops, not facts). Use the registration path
-  // (registerDistiller + hook.dismiss) to drive distillation and read facts from the store.
-  // This matches how the daemon actually drives distillation.
   const { ConsolidationHook } = await import("../src/memory/consolidation-hook.js");
   const { registerDistiller } = await import("../src/memory/distiller-registration.js");
   const { RuleBasedScanner } = await import("../src/memory/scanner/memory-scanner.js");
 
   const hook = new ConsolidationHook(store);
   registerDistiller(hook, store, provider, new RuleBasedScanner());
-  await hook.dismiss([triggerThreadId]);
 
-  const facts = store.readDistilledFacts(50);
+  // ── Step 4: DISTILL 1 — real Haiku call on the seeded conversation ─────────
 
-  // ── Step 5: Print each produced fact (NEVER print the key) ───────────────
-
-  console.log(`[smart-probe] distill produced ${facts.length} fact(s) (via registration path):`);
+  console.log("[smart-probe] --- DISTILL 1 (real Haiku network call) ---");
+  console.log("  (This is a live API call — requires internet + valid key + billing)");
   console.log("");
 
-  for (let i = 0; i < facts.length; i++) {
-    const f = facts[i]!;
-    console.log(`[smart-probe] fact[${i}]: {`);
-    console.log(`  fact:       ${JSON.stringify(f.fact)}`);
-    console.log(`  scope:      ${JSON.stringify(f.scope)}`);
-    console.log(`  confidence: ${f.confidence}`);
-    console.log(`  provenance: ${JSON.stringify(f.provenance)}`);
-    console.log(`  expiry:     ${f.expiry ?? "null"}`);
-    console.log(`  authored_by: ${JSON.stringify(f.authored_by)}`);
-    console.log(`}`);
-    console.log("");
+  await hook.dismiss([threadA]);
+
+  // Use rawDb to get stable ids (DistilledFactRow does not expose id)
+  const rowsAfterFirst = readAllFactRows(store);
+
+  console.log(`[smart-probe] distill-1 produced ${rowsAfterFirst.length} fact(s):`);
+  for (let i = 0; i < rowsAfterFirst.length; i++) {
+    const r = rowsAfterFirst[i]!;
+    console.log(`  [${i}] id=${r.id}  fact=${JSON.stringify(r.fact)}`);
   }
+  console.log("");
 
-  // ── Step 6: Assert ≥1 fact ────────────────────────────────────────────────
-
-  if (facts.length >= 1) {
-    console.log("╔══════════════════════════════════════════════════════════════════════╗");
-    console.log("║  PROBE PASSED — ≥1 fact produced                                     ║");
-    console.log("║  Paste this stdout into the PR body = Strike-5 EXECUTED evidence.    ║");
-    console.log("╚══════════════════════════════════════════════════════════════════════╝");
-    console.log("");
-  } else {
-    console.error("[smart-probe] PROBE FAILED — 0 facts produced; expected ≥1.");
-    console.error("  The LLM returned an empty array for a non-empty archive.");
-    console.error("  Check the system prompt, digest format, and LLM response below.");
-    // Clean up before exit
+  if (rowsAfterFirst.length === 0) {
+    console.error("[smart-probe] PROBE FAILED — 0 facts produced on first distill; cannot test stability.");
+    console.error("  The LLM returned an empty array for a non-empty conversation.");
+    console.error("  Check the system prompt, new-tail read, and LLM response.");
     rmSync(tmpDir, { recursive: true, force: true });
     process.exit(1);
   }
+
+  // Capture the ids + texts after the FIRST distill (these must remain stable)
+  const firstDistillIds = new Map<string, string>(); // id → fact text
+  for (const r of rowsAfterFirst) {
+    firstDistillIds.set(r.id, r.fact);
+  }
+  console.log(`[smart-probe] captured ${firstDistillIds.size} fact id(s) after distill-1`);
+  console.log("");
+
+  // ── Step 5: Append a related follow-up turn + bump the marker ─────────────
+  //
+  // Append a related follow-up message so:
+  //   (a) the skip-guard doesn't no-op (marker bumps via appendMessages)
+  //   (b) the LLM sees an overlapping candidate (the colour fact) in the FTS pool
+  //   (c) we test the STABILITY guarantee: the original fact ids must not change
+
+  store.appendMessages(
+    threadA,
+    [
+      { role: "user", content: "actually, I also like green quite a lot" },
+      { role: "assistant", content: "Noted — I'll remember you also like green." },
+    ],
+    "probe-session-A-followup",
+  );
+
+  console.log("[smart-probe] appended follow-up turn (overlapping topic: colour preference)");
+  console.log("");
+
+  // ── Step 6: DISTILL 2 — re-dismiss (second real Haiku call, sees overlapping candidates) ──
+
+  console.log("[smart-probe] --- DISTILL 2 (re-dismiss, real Haiku, overlapping candidates) ---");
+  console.log("  (Second live API call — LLM will see the colour fact as a candidate in the pool)");
+  console.log("");
+
+  // dismiss again using the SAME hook (already registered).
+  // appendMessages bumped the mutation marker, so the skip-guard won't no-op.
+  await hook.dismiss([threadA]);
+
+  // Use rawDb to get ids after the second distill
+  const rowsAfterSecond = readAllFactRows(store);
+
+  console.log(`[smart-probe] distill-2 produced ${rowsAfterSecond.length} fact(s) total:`);
+  for (let i = 0; i < rowsAfterSecond.length; i++) {
+    const r = rowsAfterSecond[i]!;
+    const wasFromFirst = firstDistillIds.has(r.id);
+    console.log(`  [${i}] id=${r.id}  fact=${JSON.stringify(r.fact)}${wasFromFirst ? "  [from distill-1]" : "  [new in distill-2]"}`);
+  }
+  console.log("");
+
+  // ── Step 7: Assert STABILITY — original ids UNCHANGED, nothing vanished ────
+
+  let stabilityPass = true;
+  const failedLines: string[] = [];
+
+  for (const [id, text] of firstDistillIds) {
+    const stillExists = rowsAfterSecond.some((r) => r.id === id);
+    if (!stillExists) {
+      stabilityPass = false;
+      failedLines.push(`id=${id}  fact=${JSON.stringify(text)}  → VANISHED`);
+    }
+  }
+
+  if (!stabilityPass) {
+    console.error("[smart-probe] PROBE FAILED — STABILITY VIOLATED: fact(s) vanished after re-distill.");
+    for (const msg of failedLines) {
+      console.error(`  ${msg}`);
+    }
+    console.error("  Original ids from distill-1 must survive distill-2 unchanged (DoD #6).");
+    console.error("  A DELETE-all strategy would cause this — v2-03 delta-apply must not DELETE-all.");
+    rmSync(tmpDir, { recursive: true, force: true });
+    process.exit(1);
+  }
+
+  // Also assert ≥1 fact total after second distill (coherent slice)
+  if (rowsAfterSecond.length === 0) {
+    console.error("[smart-probe] PROBE FAILED — 0 facts after re-distill; incoherent state.");
+    rmSync(tmpDir, { recursive: true, force: true });
+    process.exit(1);
+  }
+
+  console.log(`[smart-probe] STABILITY: all ${firstDistillIds.size} original fact id(s) UNCHANGED after re-distill`);
+  console.log(`[smart-probe] STABILITY: ≥1 fact total after re-distill (${rowsAfterSecond.length} total)`);
+  console.log("");
+
+  console.log("╔══════════════════════════════════════════════════════════════════════╗");
+  console.log("║  PROBE PASSED — STABILITY proven                                     ║");
+  console.log("║  Original fact id(s) UNCHANGED across two real-Haiku distills.       ║");
+  console.log("║  Nothing vanished. Injected slice coherent. DoD #6 satisfied.        ║");
+  console.log("║  Paste this stdout into the PR body = Strike-5 EXECUTED evidence.    ║");
+  console.log("╚══════════════════════════════════════════════════════════════════════╝");
+  console.log("");
+
 } catch (err) {
   console.error(
     `[smart-probe] PROBE FAILED — unexpected error:\n  ${err instanceof Error ? err.message : String(err)}`,
@@ -204,7 +270,7 @@ try {
   process.exit(1);
 }
 
-// ── Step 7: Cleanup ───────────────────────────────────────────────────────
+// ── Step 8: Cleanup ───────────────────────────────────────────────────────
 
 try {
   rmSync(tmpDir, { recursive: true, force: true });

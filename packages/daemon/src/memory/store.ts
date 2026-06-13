@@ -611,6 +611,8 @@ export class MemoryStore {
   }
 
   /**
+   * DEAD as of v2-03 — no per-dismiss or migration caller; remove with the v2-05 cleanup.
+   *
    * Atomic replace of the machine projection (chunk 02, spec D5/D6/D7).
    *
    * ONE flat synchronous `db.transaction`:

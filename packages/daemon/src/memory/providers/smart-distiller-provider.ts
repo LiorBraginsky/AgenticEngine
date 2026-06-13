@@ -34,11 +34,11 @@ export { normalizeFactText };
 
 export const SMART_MODEL = "claude-haiku-4-5";
 /**
- * Cap on the LLM OUTPUT (the JSON fact array). RUNWAY, NOT A CURE.
- * The fact set grows monotonically with the archive (global re-projection is
- * O(total archive), spec §3.3 D8), so ANY fixed cap is eventually re-hit. Raising
- * it (1024 → 4096) buys dogfood headroom; the stop_reason guard in distill() makes
- * the wall OBSERVABLE and NON-CORRUPTING (trigger="reprojection-truncated"), which is
+ * Cap on the LLM OUTPUT (the JSON delta op array). RUNWAY, NOT A CURE.
+ * The v2-03 incremental path outputs ONE conversation's delta (new-tail ops), so the
+ * output is bounded by the new-tail size, not the total archive. Any fixed cap can still
+ * be hit if a single new-tail is unusually large; the stop_reason guard in distill()
+ * makes the wall OBSERVABLE and NON-CORRUPTING (trigger="distill-truncated"), which is
  * the NAMED trigger for the future summarization tier (spec §1, out of scope) — the
  * actual fix. Do not treat a higher cap as the solution.
  */

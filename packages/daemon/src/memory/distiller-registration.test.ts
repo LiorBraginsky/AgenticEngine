@@ -90,7 +90,12 @@ test("STABILITY: stable id + byte-identical text + nothing vanished across 4 re-
   // First dismiss (seeds the fact)
   await hook.dismiss([t]);
 
-  // Capture the stable id after first dismiss
+  // Capture the stable id IMMEDIATELY after the first dismiss (FIX-B: self-contained)
+  const firstIdRow = store.rawDb().query("SELECT id FROM distilled_facts WHERE fact = ?").get("User's name is Lior") as { id: string } | null;
+  expect(firstIdRow).not.toBeNull();
+  const firstId = firstIdRow!.id;
+
+  // Verify the fact exists after first dismiss
   const factsAfterFirst = store.readDistilledFacts(50);
   expect(factsAfterFirst.some((f) => f.fact === "User's name is Lior")).toBe(true);
 
@@ -111,15 +116,17 @@ test("STABILITY: stable id + byte-identical text + nothing vanished across 4 re-
   // (2) Text byte-identical
   expect(liorFacts[0]!.fact).toBe("User's name is Lior");
 
-  // (3) ID unchanged — the stable id from after first dismiss must still be present
-  // We can verify by checking the row count is 1 (not duplicated) and the text is right
+  // (3) Exactly one row — not duplicated
   expect(liorFacts.length).toBe(1);
 
-  // (4) The id via rawDb must be seededFactId (stability test — id from the 2nd call onwards)
+  // (4) FIX-B: row id is UNCHANGED from the first dismiss — the stable-id guarantee
+  const finalIdRow = store.rawDb().query("SELECT id FROM distilled_facts WHERE fact = ?").get("User's name is Lior") as { id: string } | null;
+  expect(finalIdRow).not.toBeNull();
+  expect(finalIdRow!.id).toBe(firstId);
+
+  // (5) seededFactId (from the 2nd+ call's candidate fetch) must match firstId
   if (seededFactId !== null) {
-    const row = store.rawDb().query("SELECT id FROM distilled_facts WHERE fact = ?").get("User's name is Lior") as { id: string } | null;
-    expect(row).not.toBeNull();
-    expect(row!.id).toBe(seededFactId);
+    expect(seededFactId as string).toBe(firstId);
   }
 
   store.close();
@@ -563,11 +570,15 @@ test("MAJOR-3: two-queued-same-target — non-destructive-on-conflict, no corrup
 // ─── 1.6 R1 ATOMICITY TEST ───────────────────────────────────────────────────
 
 /**
- * R1 atomicity: if the delta apply throws partway through (on op 2 of 3),
+ * R1 atomicity: if Phase-3 (the apply tx) throws partway through (on op 2 of 3),
  * NOTHING should land AND the watermark must not advance.
  * Next dismiss retries cleanly (the thread is untouched).
+ *
+ * FIX-C: force a DETERMINISTIC Phase-3 throw by spying on store.insertFact to throw
+ * on the 2nd call (inside the tx). Phase 2 (scan) sees three well-formed ops with
+ * valid string facts — all pass. The throw originates deterministically in Phase 3.
  */
-test("R1 atomicity: throw on op 2 → nothing landed + watermark not advanced", async () => {
+test("R1 atomicity: throw on op 2 (Phase-3 tx) → nothing landed + watermark not advanced", async () => {
   const { store } = freshStore();
   const hook = new ConsolidationHook(store);
   const scanner = new RuleBasedScanner();
@@ -585,9 +596,10 @@ test("R1 atomicity: throw on op 2 → nothing landed + watermark not advanced", 
       return {
         threadId,
         ops: [
+          // All three ops have valid string facts — Phase 2 scan passes all three.
+          // The throw is injected into Phase 3 via the spy below.
           { op: "new", fact: "fact one", canonical: "fact one", topics: [] },
-          // Op 2: use a null fact to trigger NOT NULL violation in Phase 3 tx
-          { op: "new", fact: null as unknown as string, canonical: "null fact", topics: [] },
+          { op: "new", fact: "fact two", canonical: "fact two", topics: [] },
           { op: "new", fact: "fact three", canonical: "fact three", topics: [] },
         ],
         candidateIds: [],
@@ -600,6 +612,21 @@ test("R1 atomicity: throw on op 2 → nothing landed + watermark not advanced", 
 
   registerDistiller(hook, store, atomicTestProvider, scanner);
 
+  // FIX-C: spy on insertFact to throw deterministically on the 2nd call.
+  // This forces the throw INSIDE Phase 3 (the apply tx), not in Phase 2.
+  // Capture the real implementation BEFORE spying so we can delegate to it.
+  const realInsertFact = store.insertFact.bind(store);
+  let insertCallCount = 0;
+  const insertSpy = spyOn(store, "insertFact").mockImplementation((...args) => {
+    insertCallCount++;
+    if (insertCallCount === 2) {
+      // Phase-3 throw: inject a known error on the 2nd insert, INSIDE the tx
+      throw new Error("Phase-3 deterministic test throw on 2nd insertFact call");
+    }
+    // For calls 1 and 3: delegate to the real implementation
+    return realInsertFact(...args);
+  });
+
   const errSpy = spyOn(console, "error").mockImplementation(() => {});
   let threw = false;
   try {
@@ -608,18 +635,17 @@ test("R1 atomicity: throw on op 2 → nothing landed + watermark not advanced", 
     threw = true;
   }
   errSpy.mockRestore();
+  insertSpy.mockRestore();
 
-  // The tx threw — nothing should have landed
-  // (The error may or may not propagate depending on Phase 3 / null-fact scanner path)
-  // Key: the facts table is empty (atomicity holds)
-  void threw; // may or may not throw depending on whether null passes the scanner
+  // Phase 3 threw — the tx was rolled back, so nothing should have landed
+  expect(threw).toBe(true); // Phase-3 error propagates to the caller
 
   const facts = store.readDistilledFacts(50);
   expect(facts.length).toBe(0);
   expect(facts.some((f) => f.fact === "fact one")).toBe(false);
   expect(facts.some((f) => f.fact === "fact three")).toBe(false);
 
-  // Watermark must NOT have advanced
+  // Watermark must NOT have advanced (M1 / D-V3c invariant)
   const stateAfter = store.readThreadDistillState(t);
   expect(stateAfter.distilled_through).toBe(markerBefore.distilled_through);
   expect(stateAfter.distilled_through_turn).toBe(markerBefore.distilled_through_turn);

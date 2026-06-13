@@ -518,7 +518,8 @@ test("smart forget-survives-re-derive (D12): tombstoned message does NOT re-appe
   expect(facts.some((f) => f.fact.includes("secret smart fact"))).toBe(false);
   // "trigger-bump" or "safe fact" should be present — proves re-derive ran
   // (safe fact is included in the new-tail read since gate.forget bumped the marker,
-  //  causing the skip-guard to not fire; watermark is reset by dropDistilledFactsForThread)
+  //  causing the skip-guard to not fire; the tombstoned turn is below the advanced watermark,
+  //  so the re-dismiss never re-reads it; the REDACTION_MARKER content filter is a second backstop)
   expect(facts.length).toBeGreaterThan(0);
 
   store.close();

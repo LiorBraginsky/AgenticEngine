@@ -8,6 +8,7 @@ import { registerDistiller } from "./distiller-registration.js";
 import { DumbTailProvider } from "./providers/dumb-tail-provider.js";
 import { RuleBasedScanner } from "./scanner/memory-scanner.js";
 import type { MemoryProvider } from "./memory-provider.js";
+import { SmartDistillError } from "./providers/smart-distiller-provider.js";
 
 const dumbTailProvider = new DumbTailProvider();
 
@@ -432,5 +433,73 @@ test("MAJOR-3: overlapping dismisses serialize — later-enqueued run B wins ove
   const successEvs = evs.filter((e) => e.trigger === "reprojection");
   expect(successEvs.length).toBe(2);
 
+  store.close();
+});
+
+// ── chunk 05 Task 2: trigger param + Phase-1 truncation mapping ───────────
+
+test("Phase-1 truncation error → distinct trigger='reprojection-truncated' (never-drop preserved)", async () => {
+  const { store } = freshStore();
+  const hook = new ConsolidationHook(store);
+  store.insertDistilledFacts(
+    [{ fact: "prior machine fact", provenance: "thread:prior", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" }],
+    "smart",
+  );
+  const truncatingProvider: MemoryProvider = {
+    id: "smart",
+    distill: async () => { throw new SmartDistillError("truncated at cap", { truncated: true }); },
+    retrieve: async () => [],
+  };
+  registerDistiller(hook, store, truncatingProvider, new RuleBasedScanner());
+  const t = store.createThread();
+  const errSpy = spyOn(console, "error").mockImplementation(() => {});
+  try { await hook.dismiss([t]); } catch { /* rethrow expected */ }
+  expect(errSpy).toHaveBeenCalled();
+  errSpy.mockRestore();
+  const evs = store.readDistillationEvents(t);
+  expect(evs.some((e) => e.trigger === "reprojection-truncated")).toBe(true);
+  expect(evs.some((e) => e.trigger === "reprojection-failed")).toBe(false);
+  const facts = store.readDistilledFacts(50);
+  expect(facts.some((f) => f.fact === "prior machine fact")).toBe(true);
+  const truncEv = evs.find((e) => e.trigger === "reprojection-truncated")!;
+  expect(truncEv.facts_produced).toBe(1);
+  store.close();
+});
+
+test("non-truncation failure still writes 'reprojection-failed' (chunk-02 default unchanged)", async () => {
+  const { store } = freshStore();
+  const hook = new ConsolidationHook(store);
+  const plainFailProvider: MemoryProvider = {
+    id: "smart",
+    distill: async () => { throw new Error("network blip"); },
+    retrieve: async () => [],
+  };
+  registerDistiller(hook, store, plainFailProvider, new RuleBasedScanner());
+  const t = store.createThread();
+  const errSpy = spyOn(console, "error").mockImplementation(() => {});
+  try { await hook.dismiss([t]); } catch { /* expected */ }
+  errSpy.mockRestore();
+  const evs = store.readDistillationEvents(t);
+  expect(evs.some((e) => e.trigger === "reprojection-failed")).toBe(true);
+  expect(evs.some((e) => e.trigger === "reprojection-truncated")).toBe(false);
+  store.close();
+});
+
+test("a non-truncated SmartDistillError (generic parse failure) also keeps 'reprojection-failed'", async () => {
+  const { store } = freshStore();
+  const hook = new ConsolidationHook(store);
+  const parseFailProvider: MemoryProvider = {
+    id: "smart",
+    distill: async () => { throw new SmartDistillError("not valid JSON"); },
+    retrieve: async () => [],
+  };
+  registerDistiller(hook, store, parseFailProvider, new RuleBasedScanner());
+  const t = store.createThread();
+  const errSpy = spyOn(console, "error").mockImplementation(() => {});
+  try { await hook.dismiss([t]); } catch { /* expected */ }
+  errSpy.mockRestore();
+  const evs = store.readDistillationEvents(t);
+  expect(evs.some((e) => e.trigger === "reprojection-failed")).toBe(true);
+  expect(evs.some((e) => e.trigger === "reprojection-truncated")).toBe(false);
   store.close();
 });

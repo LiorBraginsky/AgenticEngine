@@ -243,3 +243,62 @@ test("un-forget: a human edit whose normalized content matches a forgotten row c
   expect(store.isForgottenNormalizedText(normalizeFactText("likes tea"))).toBe(false); // un-forgotten
   store.close();
 });
+
+// ── MINOR-1 RED: option-B atomicity ──────────────────────────────────────────
+// forgetFactAndSources with id1 valid + id2 unknown currently scrubs id1 THEN
+// throws on id2 → partial irreversible scrub. Fix: pre-validate ALL components
+// before any mutation (all-or-nothing).
+
+test("MINOR-1: forgetFactAndSources with one valid + one unknown id throws AND leaves NOTHING changed (all-or-nothing)", () => {
+  const { store, gate } = fresh();
+  const t = store.createThread();
+  const [m1] = store.appendMessages(t, [{ role: "user", content: "valid source content" }], "s");
+  const unknownId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"; // valid UUID shape but unknown
+
+  // Act — must throw (unknown id)
+  expect(() =>
+    gate.forgetFactAndSources("agg fact", `${m1},${unknownId}`, { actor: "user", authored_by: "human" }),
+  ).toThrow();
+
+  // Assert: m1 content BYTE-INTACT (no partial scrub)
+  const db = store.rawDb();
+  const row = db.query("SELECT content FROM messages WHERE id=?").get(m1!) as { content: string };
+  expect(row.content).toBe("valid source content");
+
+  // Assert: NO mutations row for m1
+  const mut = db.query("SELECT id FROM mutations WHERE target_message_id=?").get(m1!);
+  expect(mut).toBeNull();
+
+  // Assert: NO forgotten_facts row written
+  const forgotten = db.query("SELECT id FROM forgotten_facts").all();
+  expect(forgotten.length).toBe(0);
+
+  store.close();
+});
+
+// ── MINOR-2 known limit: un-forget clears on coincidental normalized-text collision ──
+// This documents the CURRENT intentional behavior (per plan addendum MINOR-2).
+// A human edit whose normalized text coincidentally matches a forgotten fact's text
+// clears the forgotten_facts row regardless of any relational connection.
+// This is named as a known limit — do NOT tighten in chunk 04; scope: 2c.
+
+test("KNOWN LIMIT — un-forget clears on coincidental normalized-text collision", () => {
+  const { store, gate } = fresh();
+  const t = store.createThread();
+
+  // Forget a fact for some unrelated reason
+  store.recordForgottenFact({ raw_text: "likes tea", provenance: "some-prov", actor: "u", authored_by: "human" });
+  expect(store.isForgottenNormalizedText(normalizeFactText("likes tea"))).toBe(true);
+
+  // An UNRELATED message happens to have the same normalized text
+  const [mid] = store.appendMessages(t, [{ role: "user", content: "unrelated message" }], "s");
+  // Human edits it with content that normalizes to "likes tea"
+  gate.edit(mid!, "likes tea", { actor: "user", authored_by: "human" });
+
+  // KNOWN LIMIT: the forgotten_facts row is cleared even though this edit has no
+  // relation to the original forget. This is intentional behavior in v0 (edit path
+  // is the only un-forget trigger; provenance-relation scoping is deferred to 2c).
+  expect(store.isForgottenNormalizedText(normalizeFactText("likes tea"))).toBe(false);
+
+  store.close();
+});

@@ -199,11 +199,19 @@ export class MemoryStore {
     tx();
   }
 
-  /** SELECT all distilled_facts ordered by derived_at DESC, limited to `limit` rows. */
+  /**
+   * SELECT all distilled_facts ordered by derived_at DESC, limited to `limit` rows.
+   *
+   * MAJOR-1 fix (relay-004): provider-agnostic read-side suppression.
+   * After fetching, applies suppressForgottenMachineRows() so forgotten machine facts
+   * are excluded regardless of provider. Human rows are never suppressed (5e guard).
+   * The 1000-row cap makes under-fill due to suppression immaterial.
+   */
   readDistilledFacts(limit: number): DistilledFactRow[] {
-    return this.db
+    const rows = this.db
       .query("SELECT fact, provenance, scope, expiry, confidence, authored_by FROM distilled_facts ORDER BY derived_at DESC LIMIT ?")
       .all(limit) as DistilledFactRow[];
+    return this.suppressForgottenMachineRows(rows);
   }
 
   // ---- chunk 04: forgotten_facts primitives (ADR-0015 decision 2/3) ----
@@ -348,7 +356,8 @@ export class MemoryStore {
     let count = 0;
     for (const f of facts) {
       if (f.fact === excludeFactText) continue;
-      const components = f.provenance.split(",").map((p) => p.trim());
+      // m2.3: null-provenance guard — provenance is SQL-nullable even if TS-typed as string
+      const components = (f.provenance ?? "").split(",").map((p) => p.trim());
       if (components.some((c) => idSet.has(c))) count++;
     }
     return count;
@@ -387,9 +396,15 @@ export class MemoryStore {
       )
       .all(now) as DistilledFactRow[];
 
-    // Phase 2: in-code thread-local filter (MINOR-1).
+    // Phase 2: in-code thread-local filter (MINOR-1) + forgotten suppression (MAJOR-1).
+    // Suppression set built once per read (not per-row) for performance.
+    const forgottenNorms = this.buildForgottenNormSet();
     const filtered: DistilledFactRow[] = [];
     for (const row of candidates) {
+      // MAJOR-1 read-side suppression: skip forgotten machine rows BEFORE LIMIT break
+      // so the returned slice is full (suppressed rows don't count against the limit).
+      if (!this.keepRow(row, forgottenNorms)) continue;
+
       const scope = row.scope ?? "cross-thread";
       if (scope === "cross-thread" || scope === "global" || scope === null) {
         filtered.push(row);
@@ -735,6 +750,57 @@ export class MemoryStore {
 
   close(): void {
     this.db.close();
+  }
+
+  // ── MAJOR-1 read-side suppression helpers (relay-004) ───────────────────────
+  //
+  // Provider-agnostic suppression: forgotten machine rows are excluded from BOTH
+  // readDistilledFacts (Hatch VIEW source) and readDistilledFactsForThread (injection).
+  // This is the same one real text-match layer as smart's Layer-T, moved to the shared
+  // read path so ALL providers honor forgotten_facts — not just SmartDistillerProvider.
+  //
+  // The §4 honest ceiling is UNCHANGED: text-match is still THE one real layer.
+  // Smart's in-distill Layer-T + retrieve backstop are KEPT as defense-in-depth.
+  //
+  // 5e-aware (machine-only, bidirectional):
+  //   Keep a row iff: authored_by==='human'
+  //                   OR norm not in forgotten set
+  //                   OR a human fact with the same normalized text exists (human precedence).
+  // Human rows are NEVER suppressed. This mirrors smart's Layer-T exactly (5e-aware).
+
+  /**
+   * Build the forbidden normalized-text set from forgotten_facts for one read call.
+   * Called once per readDistilledFacts / readDistilledFactsForThread to avoid per-row queries.
+   */
+  private buildForgottenNormSet(): Set<string> {
+    const rows = this.readForgottenFacts();
+    return new Set(rows.map((r) => r.normalized_text));
+  }
+
+  /**
+   * Returns true iff the row should be included in the read result.
+   * Suppresses machine rows whose normalized text is in the forgotten set,
+   * unless a human fact with the same text exists (5e-aware).
+   */
+  private keepRow(row: DistilledFactRow, forgottenNorms: Set<string>): boolean {
+    // Human rows are never suppressed (5e guard: human precedence is bidirectional)
+    if (row.authored_by === "human") return true;
+    const norm = normalizeFactText(row.fact);
+    if (!forgottenNorms.has(norm)) return true; // not in forgotten set — keep
+    // 5e-aware: if a human fact with the same normalized text exists → do NOT suppress
+    if (this.hasHumanFactWithNormalizedText(norm)) return true;
+    return false; // machine row + forgotten + no human override → suppress
+  }
+
+  /**
+   * Apply read-side forgotten suppression to a fetched row array.
+   * Used by readDistilledFacts (post-query filter; 1000-row cap makes under-fill immaterial).
+   * Doc comment: provider-agnostic, machine-only, 5e-aware.
+   */
+  private suppressForgottenMachineRows(rows: DistilledFactRow[]): DistilledFactRow[] {
+    const forgottenNorms = this.buildForgottenNormSet();
+    if (forgottenNorms.size === 0) return rows; // fast path: nothing forgotten
+    return rows.filter((row) => this.keepRow(row, forgottenNorms));
   }
 
   private nextTurnIndex(threadId: string): number {

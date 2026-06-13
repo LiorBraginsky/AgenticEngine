@@ -133,20 +133,42 @@ export class WriteGate {
   /**
    * forgetFactAndSources — fact-forget + option-B hard escape (chunk 04 / ADR-0015 decision 3).
    *
-   * 1. Same durable fact-forget record + purge (forgetFact above)
-   * 2. Option B: hard-scrub each message-id source via the existing message path.
-   *    thread:<id> provenance has no specific source messages → no-op (never a whole-thread scrub).
+   * All-or-nothing atomicity (MINOR-1 fix): pre-validate ALL isMessageId components exist
+   * BEFORE any mutation. If any component is unknown, throw WITHOUT scrubbing anything.
+   * This prevents the partial-irreversible-scrub + misleading "not found" defect.
+   *
+   * Cannot use a DB transaction to wrap forget() because forget() also rewrites the
+   * JSONL mirror (a filesystem side-effect a DB tx cannot roll back). Pre-validate instead.
+   *
+   * 1. Compute isMessageId components (empty for thread:<id> prefix).
+   * 2. Pre-validate ALL components resolve (threadOf throws for unknown ids).
+   * 3. Only then: forgetFact(...) + scrub loop.
+   *    thread:<id> provenance → no specific source messages to scrub (never a whole-thread scrub).
    */
   forgetFactAndSources(factText: string, provenance: string, ctx: WriteContext, reason?: string): void {
-    // Step 1: durable fact-forget record + live purge (no scrub of its own)
+    // Step 1: compute isMessageId components (empty for thread:<id> provenance)
+    if (provenance.startsWith("thread:")) {
+      // No source messages to scrub; still record the fact-forget.
+      this.forgetFact(factText, provenance, ctx, reason);
+      return;
+    }
+    const comps = provenance
+      .split(",")
+      .map((p) => p.trim())
+      .filter((p) => isMessageId(p));
+
+    // Step 2: pre-validate ALL components (threadOf throws for unknown ids, already 404-mapped).
+    // Do this BEFORE any mutation so a failure leaves NOTHING changed.
+    for (const comp of comps) {
+      this.threadOf(comp); // throws if unknown — aborts before any write
+    }
+
+    // Step 3: all validated — now mutate (all-or-nothing guarantee satisfied pre-step).
+    // Durable fact-forget record + live purge (no scrub of its own).
     this.forgetFact(factText, provenance, ctx, reason);
-    // Step 2: option B — hard-scrub each isMessageId component via the existing message path.
-    // thread:<id> provenance → no specific source messages to scrub (never a whole-thread scrub).
-    if (provenance.startsWith("thread:")) return;
-    for (const comp of provenance.split(",").map((p) => p.trim())) {
-      if (isMessageId(comp)) {
-        this.forget(comp, ctx, reason); // reuse WriteGate.forget (HARD scrub)
-      }
+    // Option B: hard-scrub each validated component via the existing message path.
+    for (const comp of comps) {
+      this.forget(comp, ctx, reason); // reuse WriteGate.forget (HARD scrub)
     }
   }
 

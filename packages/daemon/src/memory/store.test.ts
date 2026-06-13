@@ -540,6 +540,21 @@ test("countFactsFedByMessages returns how many OTHER distilled facts a set of so
   store.close();
 });
 
+// ---- MINOR-2 NIT: countFactsFedByMessages null-provenance guard ----
+
+test("m2.2 RED: countFactsFedByMessages throws when a machine row has NULL provenance (f.provenance.split on null)", () => {
+  const { store } = freshStore();
+  // Seed a NULL-provenance machine row via rawDb (bypasses insertDistilledFacts typed input)
+  store.rawDb().query(
+    "INSERT INTO distilled_facts (id, fact, provenance, scope, expiry, confidence, authored_by, derived_at, distiller_version) VALUES (?,?,?,?,?,?,?,?,?)",
+  ).run(crypto.randomUUID(), "null-prov fact", null, "cross-thread", null, 1, "machine", Date.now(), "v0");
+
+  // This should NOT throw after the fix (m2.3: null-provenance guard)
+  // Without the fix: f.provenance.split is called on null → TypeError
+  expect(() => store.countFactsFedByMessages(["m1"], "other")).not.toThrow();
+  store.close();
+});
+
 // ---- MINOR-1: readDistilledFactsForThread origin-thread resolved in code ----
 
 test("MINOR-1: a thread-local fact with comma-joined provenance injects into its origin thread (resolved in code)", () => {

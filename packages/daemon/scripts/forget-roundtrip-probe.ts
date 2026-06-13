@@ -2,13 +2,26 @@
  * forget-roundtrip-probe — EXECUTED forget/re-projection round-trip smoke probe (Strike-5).
  *
  * ─── Purpose ─────────────────────────────────────────────────────────────────
- * Proves the chunk-04 forget flow works end-to-end on a REAL on-disk MemoryStore:
+ * Proves the chunk-04 forget flow works end-to-end on a REAL on-disk MemoryStore.
+ * Runs TWO legs:
+ *
+ * LEG A — SmartDistillerProvider (echo-stub, no LLM call):
  *   1. Seed a real store with known messages.
- *   2. Distill (echo-stub re-emitting source content as facts — no LLM call).
+ *   2. Distill (echo-stub re-emitting source content as facts).
  *   3. Forget a specific fact through the REAL Hatch → WriteGate → forgotten_facts path.
  *   4. Re-project with the SAME echo-stub (re-emits same text) — Layer-T must suppress it.
  *   5. Assert (a) the fact stays GONE after re-projection, AND
  *             (b) the source message content is BYTE-INTACT (no scrub on fact-forget path, B1).
+ *
+ * LEG B — DumbTailProvider (provider-agnostic, MAJOR-1 relay-004 fix):
+ *   1. Seed a fresh store with known messages.
+ *   2. DumbTail distill → produces verbatim-content facts.
+ *   3. Forget a fact through REAL Hatch.forgetFact.
+ *   4. DumbTail re-project (re-derives from INTACT source).
+ *   5. Assert the forgotten fact is GONE from:
+ *        (a) Hatch VIEW (readDistilledFacts — read-side suppression)
+ *        (b) injection slice (readDistilledFactsForThread — read-side suppression)
+ *      AND source message content BYTE-INTACT (B1).
  *
  * ─── STRIKE-5 BANNER ─────────────────────────────────────────────────────────
  * This script existing and type-checking is NECESSARY-BUT-NOT-SUFFICIENT.
@@ -20,15 +33,16 @@
  *   bun run packages/daemon/scripts/forget-roundtrip-probe.ts
  *
  * ─── What success looks like ──────────────────────────────────────────────────
+ *   [forget-probe] === LEG A: SmartDistillerProvider (echo-stub) ===
  *   [forget-probe] store seeded: 1 thread, 2 messages
- *   [forget-probe] distill produced 2 fact(s) (echo-stub)
- *   [forget-probe] fact[0]: "hi" (provenance: <msgId0>)
- *   [forget-probe] fact[1]: "my favourite colour is blue" (provenance: <msgId1>)
- *   [forget-probe] forgetting fact: "my favourite colour is blue"
- *   [forget-probe] forgotten_facts rows after forget: 1
- *   [forget-probe] re-projecting (echo-stub re-emits same text)...
- *   [forget-probe] re-projection produced 1 fact(s)
+ *   ...
  *   [forget-probe] fact stays gone: true
+ *   [forget-probe] source message content byte-intact: true  <-- B1 structural invariant
+ *   [forget-probe] === LEG B: DumbTailProvider (provider-agnostic) ===
+ *   [forget-probe] store seeded: 1 thread, 1 message
+ *   ...
+ *   [forget-probe] dumb-tail fact gone from view: true
+ *   [forget-probe] dumb-tail fact gone from inject slice: true
  *   [forget-probe] source message content byte-intact: true  <-- B1 structural invariant
  *   PROBE PASSED
  */
@@ -36,7 +50,9 @@
 console.log("");
 console.log("╔══════════════════════════════════════════════════════════════════════════════╗");
 console.log("║  forget-roundtrip-probe — Strike-5 EXECUTED evidence (chunk 04)             ║");
-console.log("║  Uses echo-stub (no LLM/Keychain required). Requires real on-disk SQLite.   ║");
+console.log("║  LEG A: SmartDistillerProvider (echo-stub, no LLM required)                 ║");
+console.log("║  LEG B: DumbTailProvider (provider-agnostic, MAJOR-1 relay-004 fix)         ║");
+console.log("║  Both legs require real on-disk SQLite.                                     ║");
 console.log("║  Type-check alone is NOT evidence. ORCHESTRATOR runs this for DoD.          ║");
 console.log("╚══════════════════════════════════════════════════════════════════════════════╝");
 console.log("");
@@ -47,6 +63,7 @@ import { join } from "node:path";
 import type Anthropic from "@anthropic-ai/sdk";
 import { MemoryStore } from "../src/memory/store.js";
 import { SmartDistillerProvider, normalizeFactText } from "../src/memory/providers/smart-distiller-provider.js";
+import { DumbTailProvider } from "../src/memory/providers/dumb-tail-provider.js";
 import { WriteGate } from "../src/memory/write-gate.js";
 import { RuleBasedScanner } from "../src/memory/scanner/memory-scanner.js";
 import { Hatch } from "../src/memory/hatch.js";
@@ -86,6 +103,12 @@ const SOURCE_CONTENT_BEFORE = "my favourite colour is blue";
 const tmpDir = mkdtempSync(join(tmpdir(), "forget-probe-"));
 
 try {
+  // ══════════════════════════════════════════════════════════════════════════
+  // LEG A — SmartDistillerProvider (echo-stub; validates smart-path Layer-T)
+  // ══════════════════════════════════════════════════════════════════════════
+  console.log("[forget-probe] === LEG A: SmartDistillerProvider (echo-stub) ===");
+  console.log("");
+
   // ── Step 1: Seed store ─────────────────────────────────────────────────────
 
   const store = new MemoryStore({ dataDir: tmpDir });
@@ -185,25 +208,133 @@ try {
 
   store.close();
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // LEG B — DumbTailProvider (provider-agnostic MAJOR-1 relay-004 fix)
+  // Proves that a dumb-tail fact, forgotten and then re-derived from the intact
+  // source, is GONE from both the Hatch view (readDistilledFacts) and the
+  // injection slice (readDistilledFactsForThread) — read-side suppression.
+  // ══════════════════════════════════════════════════════════════════════════
+
+  const tmpDirB = mkdtempSync(join(tmpdir(), "forget-probe-B-"));
+  let legBFactGoneView = false;
+  let legBFactGoneSlice = false;
+  let legBSourceIntact = false;
+
+  try {
+    console.log("[forget-probe] === LEG B: DumbTailProvider (provider-agnostic MAJOR-1 fix) ===");
+    console.log("");
+
+    const storeB = new MemoryStore({ dataDir: tmpDirB });
+    const gateB = new WriteGate(storeB, new RuleBasedScanner());
+    const hatchB = new Hatch(storeB, gateB);
+
+    const DUMB_CONTENT = "dumb-tail fact content";
+    const threadIdB = storeB.createThread("probe-thread-B");
+    const [msgBId] = storeB.appendMessages(
+      threadIdB,
+      [{ role: "user", content: DUMB_CONTENT }],
+      "probe-session-B",
+    );
+    if (!msgBId) throw new Error("LEG B: appendMessages returned no id");
+
+    console.log(`[forget-probe] LEG B store seeded: 1 thread, 1 message`);
+    console.log(`[forget-probe] LEG B msgBId: ${msgBId}`);
+    console.log("");
+
+    // 1. DumbTail distill → produces verbatim-content fact
+    const dumb = new DumbTailProvider();
+    const distillB1 = await dumb.distill(storeB, threadIdB);
+    storeB.replaceProjection(distillB1.facts, "dumb-tail", [{ threadId: threadIdB, trigger: "distill", factsProduced: distillB1.facts.length }]);
+    console.log(`[forget-probe] LEG B distill1 produced ${distillB1.facts.length} fact(s)`);
+
+    // Confirm initially present in BOTH surfaces
+    const viewB1 = await hatchB.view(threadIdB);
+    const presentInView = viewB1.distilledFacts.some((f) => f.fact === DUMB_CONTENT);
+    console.log(`[forget-probe] LEG B fact initially in view: ${presentInView}`);
+    if (!presentInView) throw new Error("LEG B: fact not in view after initial distill");
+
+    // 2. Forget via REAL Hatch.forgetFact (provenance = msgBId)
+    const forgetCtxB = { actor: "user", authored_by: "human" as const };
+    console.log(`[forget-probe] LEG B forgetting fact: ${JSON.stringify(DUMB_CONTENT)}`);
+    hatchB.forgetFact(DUMB_CONTENT, msgBId, forgetCtxB, "probe-B-forget");
+
+    // 3. DumbTail re-project (re-derives from INTACT source message)
+    console.log("[forget-probe] LEG B re-projecting (DumbTail re-derives from intact source)...");
+    const distillB2 = await dumb.distill(storeB, threadIdB);
+    storeB.replaceProjection(distillB2.facts, "dumb-tail", [{ threadId: threadIdB, trigger: "reprojection", factsProduced: distillB2.facts.length }]);
+    console.log(`[forget-probe] LEG B re-projection produced ${distillB2.facts.length} fact(s) (in raw output before suppression)`);
+    console.log("");
+
+    // 4. Assert: fact GONE from Hatch view (readDistilledFacts — read-side suppression)
+    const viewB2 = await hatchB.view(threadIdB);
+    const factNormB = normalizeFactText(DUMB_CONTENT);
+    legBFactGoneView = !viewB2.distilledFacts.some(
+      (f) => normalizeFactText(f.fact) === factNormB,
+    );
+    console.log(`[forget-probe] LEG B dumb-tail fact gone from view: ${legBFactGoneView}`);
+
+    // 5. Assert: fact GONE from injection slice (readDistilledFactsForThread — read-side suppression)
+    const sliceB = await dumb.retrieve(storeB, threadIdB);
+    legBFactGoneSlice = !sliceB.some((m) => m.content.includes(DUMB_CONTENT));
+    console.log(`[forget-probe] LEG B dumb-tail fact gone from inject slice: ${legBFactGoneSlice}`);
+
+    // 6. Assert: source message BYTE-INTACT (B1)
+    const rawRowB = storeB.rawDb()
+      .query<{ content: string }, string>("SELECT content FROM messages WHERE id = ?")
+      .get(msgBId);
+    legBSourceIntact = rawRowB?.content === DUMB_CONTENT;
+    console.log(`[forget-probe] LEG B source message content byte-intact: ${legBSourceIntact}  <-- B1 structural invariant`);
+    if (rawRowB) {
+      console.log(`[forget-probe] LEG B source message content: ${JSON.stringify(rawRowB.content)}`);
+    }
+    console.log("");
+
+    storeB.close();
+  } catch (legBErr) {
+    console.error(`[forget-probe] LEG B FAILED — unexpected error:\n  ${legBErr instanceof Error ? legBErr.message : String(legBErr)}`);
+    try { rmSync(tmpDirB, { recursive: true, force: true }); } catch { /* ignore */ }
+    process.exit(1);
+  }
+  try { rmSync(tmpDirB, { recursive: true, force: true }); } catch { /* ignore */ }
+
   // ── Step 6: Final verdict ──────────────────────────────────────────────────
 
   if (!factStaysGone) {
-    console.error("[forget-probe] PROBE FAILED — forgotten fact reappeared after re-projection.");
+    console.error("[forget-probe] LEG A FAILED — forgotten fact reappeared after re-projection.");
     console.error("  Layer-T (forgotten_facts.normalized_text) did not suppress it.");
     rmSync(tmpDir, { recursive: true, force: true });
     process.exit(1);
   }
 
   if (!sourceIntact) {
-    console.error("[forget-probe] PROBE FAILED — B1 violated: source message content was scrubbed.");
+    console.error("[forget-probe] LEG A FAILED — B1 violated: source message content was scrubbed.");
     console.error(`  Expected: ${JSON.stringify(SOURCE_CONTENT_BEFORE)}`);
     console.error(`  Actual:   ${JSON.stringify(rawRow?.content)}`);
     rmSync(tmpDir, { recursive: true, force: true });
     process.exit(1);
   }
 
+  if (!legBFactGoneView) {
+    console.error("[forget-probe] LEG B FAILED — dumb-tail forgotten fact REAPPEARED in Hatch view after re-projection.");
+    console.error("  Read-side suppression (readDistilledFacts) did not filter the re-derived row.");
+    process.exit(1);
+  }
+
+  if (!legBFactGoneSlice) {
+    console.error("[forget-probe] LEG B FAILED — dumb-tail forgotten fact REAPPEARED in injection slice after re-projection.");
+    console.error("  Read-side suppression (readDistilledFactsForThread) did not filter the re-derived row.");
+    process.exit(1);
+  }
+
+  if (!legBSourceIntact) {
+    console.error("[forget-probe] LEG B FAILED — B1 violated: dumb-tail source message content was scrubbed.");
+    process.exit(1);
+  }
+
   console.log("╔══════════════════════════════════════════════════════════════════════════════╗");
-  console.log("║  PROBE PASSED — fact stays gone + source intact (B1) after re-projection.   ║");
+  console.log("║  PROBE PASSED — LEG A + LEG B both passed.                                  ║");
+  console.log("║  LEG A: smart fact stays gone + source intact (B1) after re-projection.     ║");
+  console.log("║  LEG B: dumb-tail fact gone from view+slice (MAJOR-1 fix) + source intact.  ║");
   console.log("║  Paste this stdout into the PR body = Strike-5 EXECUTED evidence (chunk 04).║");
   console.log("╚══════════════════════════════════════════════════════════════════════════════╝");
   console.log("");

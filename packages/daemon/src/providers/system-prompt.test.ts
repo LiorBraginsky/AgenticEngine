@@ -7,6 +7,7 @@
  *   (3) never-claim-stateless / "nothing relevant" framing when no [remembered] messages
  *   (4) user can view/edit/delete via the History page
  *   (5) no-fabricated-links rule (link attached automatically post-reply)
+ *   (6) cannot-self-forget (spec §3.6 D-V6d)
  */
 import { test, expect, describe } from "bun:test";
 import {
@@ -147,6 +148,32 @@ describe("D1 requirement 5 — never invent or write out a History link", () => 
     const lower = MEMORY_SELF_CONCEPT.toLowerCase();
     expect(lower.includes("attached") && lower.includes("automatically")).toBe(
       true,
+    );
+  });
+});
+
+// ── D1 requirement (6): cannot self-forget (spec §3.6 D-V6d) ─────────────
+
+describe("D-V6d — self-concept cannot self-forget", () => {
+  test('MEMORY_SELF_CONCEPT contains "You cannot modify, delete, or forget your own memory."', () => {
+    expect(MEMORY_SELF_CONCEPT).toContain(
+      "You cannot modify, delete, or forget your own memory.",
+    );
+  });
+
+  test("MEMORY_SELF_CONCEPT contains the full second sentence verbatim (with em-dash)", () => {
+    expect(MEMORY_SELF_CONCEPT).toContain(
+      "Never claim to have forgotten, changed, or deleted something you remember — only the user can, via the History page.",
+    );
+  });
+
+  test('ADDITIVE guard: "view, edit, and delete" (D1-4) still co-exists with the new clause', () => {
+    expect(MEMORY_SELF_CONCEPT.toLowerCase()).toContain("view, edit, and delete");
+  });
+
+  test("COMPOSED_SYSTEM_PROMPT carries the cannot-self-forget clause through composition", () => {
+    expect(COMPOSED_SYSTEM_PROMPT).toContain(
+      "You cannot modify, delete, or forget your own memory.",
     );
   });
 });

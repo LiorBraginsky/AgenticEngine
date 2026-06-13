@@ -5,7 +5,7 @@
  * Real SQLite everywhere else (mkdtempSync fresh store per test).
  */
 
-import { test, expect, spyOn } from "bun:test";
+import { test, expect, spyOn, describe } from "bun:test";
 import { tmpdir } from "node:os";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
@@ -724,4 +724,23 @@ test("SmartDistillError.truncated defaults to false for ordinary parse failures"
   expect(caught).toBeInstanceOf(SmartDistillError);
   expect((caught as SmartDistillError).truncated).toBe(false);
   store.close();
+});
+
+// ── D-V6e — distiller language preservation (spec §3.6 D-V6e) ─────────────
+
+describe("D-V6e — distiller language preservation", () => {
+  test('SMART_SYSTEM_PROMPT contains "user\'s language" instruction (case-insensitive)', () => {
+    expect(SMART_SYSTEM_PROMPT.toLowerCase()).toContain("user's language");
+  });
+
+  test('SMART_SYSTEM_PROMPT references the "fact" field in the language instruction', () => {
+    expect(SMART_SYSTEM_PROMPT.toLowerCase()).toContain('"fact"');
+  });
+
+  test('SCOPE guard: SMART_SYSTEM_PROMPT does NOT contain "canonical" as a JSON field name (that field is v2-03)', () => {
+    // Guard: new language instruction must not introduce a "canonical" JSON field.
+    // The existing deduplication rule uses "canonical" as an adjective ("one canonical fact") —
+    // that is fine. This guard targets the field form: "canonical": or "canonical" as a key.
+    expect(SMART_SYSTEM_PROMPT).not.toContain('"canonical"');
+  });
 });

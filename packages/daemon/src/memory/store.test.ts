@@ -574,3 +574,27 @@ test("MINOR-1: a thread-local fact with comma-joined provenance injects into its
   expect(there.some((f) => f.fact === "thread-local agg")).toBe(false); // private stays home
   store.close();
 });
+
+// ── v2-02: Task 1 — additive schema (fact_fts, fact_topics, sync trigger, thread_distill_state, replaced_facts) ──
+
+test("v2-02 schema: new tables/index/trigger created additively on a fresh store", () => {
+  const { store, dir } = freshStore();
+  const db = store.rawDb();
+  // FTS5 virtual table must exist (this line throws loudly if FTS5 is absent in bun:sqlite)
+  const fts = db.query("SELECT name FROM sqlite_master WHERE name = 'fact_fts'").get();
+  expect(fts).not.toBeNull();
+  const topics = db.query("SELECT name FROM sqlite_master WHERE name = 'fact_topics'").get();
+  expect(topics).not.toBeNull();
+  const trig = db.query("SELECT name FROM sqlite_master WHERE type='trigger' AND name='trg_distilled_facts_ad'").get();
+  expect(trig).not.toBeNull();
+  const dstate = db.query("SELECT name FROM sqlite_master WHERE name = 'thread_distill_state'").get();
+  expect(dstate).not.toBeNull();
+  const rfacts = db.query("SELECT name FROM sqlite_master WHERE name = 'replaced_facts'").get();
+  expect(rfacts).not.toBeNull();
+  store.close();
+
+  // Re-open the SAME dir (existing-store path): must not throw (idempotent IF NOT EXISTS)
+  const reopened = new MemoryStore({ dataDir: dir });
+  expect(reopened.rawDb().query("SELECT name FROM sqlite_master WHERE name='fact_fts'").get()).not.toBeNull();
+  reopened.close();
+});

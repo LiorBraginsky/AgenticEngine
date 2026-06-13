@@ -632,3 +632,65 @@ worker has no ambiguity:
    `WriteGate.edit` is faithful to the spec's "author/edit path" given the real code. §7.2
    citation test: contradicts no frozen artifact; cheap to extend if a human-pin author path
    later surfaces (it gets the identical clear). Proceed.
+
+---
+
+## Hard-review fold (relay-004): provider-agnostic suppression + option-B atomicity + un-forget limit
+
+> Appended after a conductor hard-review relay (`orchestration/.conveyor/bus/relay-004-chunk04-hardreview.md`) found 1 MUST-FIX MAJOR + 2 MINORs against the IMPLEMENTED branch `chunk/04-forget-contract`. This does NOT redesign chunk 04 — Steps 1–6 are already built and these three fixes layer onto the real code. TDD RED-first; only the LLM `clientFactory` may be stubbed.
+
+### Reality check (verified at file:line on `chunk/04-forget-contract`)
+
+Orchestrator points 1–5 — all CONFIRMED, with two corrections of emphasis:
+
+1. `readDistilledFactsForThread` does NOT filter forgotten text (`store.ts` Phase-1/Phase-2 filter only expiry + thread-local scope). Every provider's `retrieve` reads through it.
+2. DumbTail reads nothing from `forgotten_facts`; FixedMarker checks only `isFactTombstoned("thread:<id>")` (old mutations tombstone).
+3. Only Smart honors `forgotten_facts` (in-distill Layer-T `_getForgottenSuppression` + retrieve backstop `isForgottenNormalizedText`).
+4. Hatch VIEW reads `readDistilledFacts(cap)` (unscoped); injection reads `readDistilledFactsForThread`. Neither filters forgotten → a forgotten dumb-tail/fixed-marker fact, re-derived on the next `replaceProjection`, reappears in BOTH the view and injected slices. CONFIRMED live defect.
+5. Default provider is dumb-tail (`MEMORY_PROVIDER ?? "dumb-tail"`) until chunk 06; the forget UI is live for every provider.
+
+**Two corrections to the relay framing (sharpen, not change, the fix):**
+- **C1** — the immediate purge (`purgeLiveMachineFactsByForget`) already vanishes the fact from the live view on click; the defect is PURELY re-derivation on the next re-projection. So the fix must fire on the READ of the (re-derived) projection, not on the click.
+- **C2** — `replaceProjection` (insert-side) is NOT safe to filter: the just-added §7.1 interleave test (commit a1b231b, `distiller-integration.daemon.test.ts`) deliberately commits a STALE projection and asserts the forgotten row STILL lands in `distilled_facts` (the gap is closed by `retrieve()` + the next distill). An insert-side filter would flip that assertion and rewrite the documented eventually-consistent contract.
+
+### Chosen centralization (MAJOR-1): READ-SIDE suppression only — option (b), NOT (a)
+
+**Decision: read-side suppression in `readDistilledFacts` AND `readDistilledFactsForThread`. Do NOT add insert-side suppression in `replaceProjection`/`insertDistilledFacts`.**
+
+Why (b) not (a): (1) two methods cover BOTH surfaces (Hatch view + injection) for ALL providers — a property of the projection, not one distiller; (2) (a) collides head-on with the frozen §7.1 test (C2); (3) (b) preserves `replaceProjection`'s atomic invariant by NOT touching it. The §4 honest ceiling is UNCHANGED — normalized-text match is still THE one real layer, now fired on the read path for every provider. No "N layers of defense" language introduced.
+
+Invariants preserved:
+- **chunk-02 `replaceProjection` atomic tx** — untouched, byte-for-byte (read-side is the SELECT path).
+- **5e (bidirectional, never suppress a human fact)** — the read filter is machine-only: suppress a row iff `row.authored_by !== 'human'` AND `isForgottenNormalizedText(normalizeFactText(row.fact))` AND NOT `hasHumanFactWithNormalizedText(normalizeFactText(row.fact))`. Mirrors Layer-T exactly; keeps the existing smart 5e test + un-forget intact. Human rows already survive everywhere.
+- **Performance** — build a `Set<normalized_text>` once per read from `readForgottenFacts()` (bounded), then in-memory `.has()` per candidate; `hasHumanFactWithNormalizedText` consulted only on a forgotten-norm hit.
+- **Existing 438 tests + §7.1 test** — read-side suppression is ADDITIVE; no existing test seeds a forgotten fact and asserts it survives a read. Smart's in-distill Layer-T + retrieve backstop — **KEEP as defense-in-depth** (don't churn working tests; relay sanctions this).
+
+### TDD sub-steps (strictly ordered, RED-first)
+
+**MAJOR-1 — provider-agnostic read-side suppression**
+- **M1.1 RED** (`distiller-integration.daemon.test.ts`, `MEMORY_PROVIDER` unset = dumb-tail): seed thread+message; confirm dumb-tail fact present in BOTH `readDistilledFactsForThread` (injection) AND `hatch.view().distilledFacts` (view); `hatch.forgetFact(...)`; re-project (DumbTail re-derives from intact source); assert fact GONE from slice AND view, source `messages.content` byte-intact. RED: re-derived fact reappears in both reads (no forgotten filter).
+- **M1.2 RED** — fixed-marker mirror (provenance `thread:<id>`). RED: FixedMarker:67 checks only `isFactTombstoned`, not `forgotten_facts`.
+- *(optional)* store unit test: `recordForgottenFact` + `insertDistilledFacts` same text → both shared reads exclude it; a human row with same text is NOT excluded.
+- **M1.3 GREEN** (`store.ts`): private `suppressForgottenMachineRows(rows)` — build `Set` from `readForgottenFacts()` once; keep row iff `authored_by==='human' || !forgotten.has(norm) || hasHumanFactWithNormalizedText(norm)`. Apply in `readDistilledFacts` (filter post-query; 1000 cap → under-fill immaterial) AND in `readDistilledFactsForThread` Phase-2 keep-condition BEFORE the LIMIT break (so the slice is full). Doc comment: provider-agnostic, machine-only, 5e-aware, same one real text-match layer fired on the read path.
+- **M1.4** — confirm §7.1 (`:609` still true — replaceProjection untouched), smart Layer-T/5e/retrieve, store replaceProjection/recency all green.
+
+**MINOR-1 — option-B atomicity (`forgetFactAndSources`)**
+Decision: **pre-validate then scrub** (NOT a DB tx — `WriteGate.forget` also rewrites the JSONL mirror, a filesystem side-effect a tx can't roll back).
+- **m1.1 RED** (`write-gate.test.ts`): `m1` valid + `m2` valid-UUID-but-unknown; `forgetFactAndSources("agg", \`m1,m2\`, ...)` throws; assert `m1` content byte-intact + no mutations row + (decision) no forgotten record made. RED: current loop scrubs `m1` first, then `forget(m2)` throws → `m1` already destroyed.
+- **m1.2 GREEN** (`write-gate.ts forgetFactAndSources`): compute `comps` (empty for `thread:` prefix); **pre-validate ALL components resolve (via `threadOf`, already 404-mapped) BEFORE any mutation**; only then `forgetFact(...)` + the scrub loop. Failure path leaves NOTHING changed (all-or-nothing). Update doc comment. Happy-path test stays green.
+
+**MINOR-2 — un-forget over-clear (acknowledge+test) + `countFactsFedByMessages` null guard**
+- **m2.1** (`write-gate.test.ts`): "KNOWN LIMIT — un-forget clears on coincidental normalized-text collision" — `recordForgottenFact("likes tea")`; an UNRELATED human `edit` normalizing to "likes tea" clears the row. Assert the suppression WAS lifted (pins current behavior as intentional). **Recommendation: do NOT tighten in chunk 04 — leave for 2c** (no human-fact author path in v0; the message-edit clear is the only path and fires rarely; provenance-relation scoping has no real trigger to validate against). Name the limit in `## Approaches A1` + flag for spec §4.
+- **m2.2 RED** (`store.test.ts`): seed a NULL-provenance machine row via `rawDb()`; `countFactsFedByMessages(["m1"], "other")` throws (`f.provenance.split` on null). 
+- **m2.3 GREEN** (`store.ts countFactsFedByMessages`): `(f.provenance ?? "").split(",")` — one line.
+
+### Re-verify
+`bun test` whole suite (each new test RED-without→GREEN) · `lint:strict` · `typecheck` · frozen `git diff main -- packages/protocol` + `mock-agent.ts` empty (fixes touch only `store.ts`/`write-gate.ts`/tests) · grep "3 layers" no hits · re-run the EXECUTED forget round-trip probe, ADD a dumb-tail leg (forget a dumb-tail fact → re-project → gone from view+slice, source intact). "Forget sticks under dumb-tail" is behavioral — the probe RUN (+ M1.1) is the evidence, not written+typechecked.
+
+### Known limit named (relay-004 MINOR-2, ties to `## Approaches A1`)
+The message-edit un-forget clears any `forgotten_facts` row matching the edit's normalized text regardless of relation — a coincidental text collision lifts suppression. Within the §4 best-effort ceiling; the load-bearing human-fact author trigger is reserved for 2c. Pinned by a test asserting current behavior.
+
+### ADR worthy: no
+Completes the already-accepted ADR-0015 decision-3 best-effort intent for ALL providers (same one real text-match layer, moved to the shared read path so it is provider-agnostic). chunk-02 `replaceProjection` preserved byte-for-byte → no freeze-gate. Citation test: contradicts no frozen artifact (`@agentic/protocol`/`mock-agent.ts` untouched; replaceProjection tx untouched; §7.1 `:609` still true). Considered option (a) insert-side → would have rewritten the §7.1 contract → rejected in favor of (b). No ADR, no freeze-gate, no FLAG.
+
+## Status: Done (hard-review fold appended — execution-ready)

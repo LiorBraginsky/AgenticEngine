@@ -598,3 +598,122 @@ test("v2-02 schema: new tables/index/trigger created additively on a fresh store
   expect(reopened.rawDb().query("SELECT name FROM sqlite_master WHERE name='fact_fts'").get()).not.toBeNull();
   reopened.close();
 });
+
+// ── v2-02: Task 2 — insertFact ──
+
+test("v2-02 insertFact returns a stable id and writes fact_fts + fact_topics", () => {
+  const { store } = freshStore();
+  const id = store.insertFact({
+    fact: "User's name is Lior", canonical: "user name lior", provenance: "thread:t1",
+    scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine",
+    topics: ["about-user", "relationships"],
+  }, "smart-v2");
+  expect(typeof id).toBe("string");
+  const db = store.rawDb();
+  const df = db.query("SELECT fact FROM distilled_facts WHERE id = ?").get(id) as { fact: string };
+  expect(df.fact).toBe("User's name is Lior");
+  const fts = db.query("SELECT canonical FROM fact_fts WHERE fact_id = ?").get(id) as { canonical: string };
+  expect(fts.canonical).toBe("user name lior");
+  const tags = db.query("SELECT topic FROM fact_topics WHERE fact_id = ? ORDER BY topic").all(id) as { topic: string }[];
+  expect(tags.map((t) => t.topic)).toEqual(["about-user", "relationships"]);
+  store.close();
+});
+
+// ── v2-02: Task 3 — updateFactById, recordReplacedFact, appendToFactById, deleteFactById ──
+
+test("v2-02 updateFactById REPLACEs the row in place (same id), refreshes fact_fts, and records the replaced text", () => {
+  const { store } = freshStore();
+  const id = store.insertFact({
+    fact: "User has 3 siblings", canonical: "user 3 siblings", provenance: "thread:t1",
+    scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: ["about-user"],
+  }, "smart-v2");
+  store.updateFactById(id, {
+    fact: "User has 2 siblings", canonical: "user 2 siblings", confidence: 1, topics: ["about-user", "family"],
+  }, { actor: "machine", reason: "contradiction" }, "smart-v2");
+  const db = store.rawDb();
+  const df = db.query("SELECT fact FROM distilled_facts WHERE id = ?").get(id) as { fact: string };
+  expect(df.fact).toBe("User has 2 siblings");
+  const fts = db.query("SELECT canonical FROM fact_fts WHERE fact_id = ?").all(id) as { canonical: string }[];
+  expect(fts.length).toBe(1);
+  expect(fts[0]!.canonical).toBe("user 2 siblings");
+  const tags = (db.query("SELECT topic FROM fact_topics WHERE fact_id = ? ORDER BY topic").all(id) as { topic: string }[]).map((t) => t.topic);
+  expect(tags).toEqual(["about-user", "family"]);
+  const replaced = store.readReplacedFacts(id);
+  expect(replaced.some((r) => r.replaced_text === "User has 3 siblings")).toBe(true);
+  store.close();
+});
+
+test("v2-02 recordReplacedFact standalone records text without an update", () => {
+  const { store } = freshStore();
+  const id = store.insertFact({
+    fact: "keep", canonical: "keep", provenance: "thread:t1",
+    scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: ["x"],
+  }, "smart-v2");
+  store.recordReplacedFact(id, "older text", { actor: "machine", reason: "audit" });
+  expect(store.readReplacedFacts(id).some((r) => r.replaced_text === "older text")).toBe(true);
+  store.close();
+});
+
+test("v2-02 appendToFactById appends until the cap, then refuses (returns false past APPEND_LIST_CAP)", () => {
+  const { store } = freshStore();
+  const id = store.insertFact({
+    fact: "User likes: tea", canonical: "user likes tea", provenance: "thread:t1",
+    scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: ["preferences"],
+  }, "smart-v2");
+  // APPEND_LIST_CAP = 8; initial fact has 1 item, so 7 more fits before refusal
+  for (let i = 1; i < 8; i++) {
+    expect(store.appendToFactById(id, `item${i}`, `user likes item${i}`)).toBe(true);
+  }
+  expect(store.appendToFactById(id, "overflow", "user likes overflow")).toBe(false);
+  store.close();
+});
+
+test("v2-02 deleteFactById removes the row and (via trigger) its fact_fts + fact_topics rows", () => {
+  const { store } = freshStore();
+  const id = store.insertFact({
+    fact: "ephemeral", canonical: "ephemeral", provenance: "thread:t1",
+    scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: ["x", "y"],
+  }, "smart-v2");
+  expect(store.deleteFactById(id)).toBe(true);
+  const db = store.rawDb();
+  expect(db.query("SELECT 1 FROM distilled_facts WHERE id = ?").get(id)).toBeNull();
+  expect(db.query("SELECT 1 FROM fact_fts WHERE fact_id = ?").get(id)).toBeNull();
+  expect(db.query("SELECT 1 FROM fact_topics WHERE fact_id = ?").get(id)).toBeNull();
+  store.close();
+});
+
+// ── v2-02: Task 4 — BM25 candidate-fetch ──
+
+test("v2-02 fetchCandidates surfaces a contradicting fact carrying a DIFFERENT topic tag (tags WIDEN, never filter)", () => {
+  const { store } = freshStore();
+  store.insertFact({
+    fact: "User has 3 siblings", canonical: "user has 3 siblings family", provenance: "thread:t1",
+    scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: ["about-user"],
+  }, "smart-v2");
+  store.insertFact({
+    fact: "User has 2 siblings", canonical: "user has 2 siblings family", provenance: "thread:t2",
+    scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: ["relationships"],
+  }, "smart-v2");
+  const candidates = store.fetchCandidates("user has siblings family");
+  const facts = candidates.map((c) => c.fact);
+  expect(facts).toContain("User has 3 siblings");
+  expect(facts).toContain("User has 2 siblings");
+  const a = candidates.find((c) => c.fact === "User has 3 siblings")!;
+  expect(typeof a.id).toBe("string");
+  expect(a.topics).toEqual(["about-user"]);
+  store.close();
+});
+
+test("v2-02 fetchCandidates returns at most CANDIDATE_TOP_K rows and tolerates punctuation in the query", () => {
+  const { store } = freshStore();
+  for (let i = 0; i < 15; i++) {
+    store.insertFact({
+      fact: `fact ${i} about deployment`, canonical: `fact ${i} about deployment`, provenance: "thread:t1",
+      scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: ["projects"],
+    }, "smart-v2");
+  }
+  const candidates = store.fetchCandidates("deployment: the (script)?");
+  expect(candidates.length).toBeLessThanOrEqual(10); // CANDIDATE_TOP_K = 10
+  expect(candidates.length).toBeGreaterThan(0);
+  store.close();
+});

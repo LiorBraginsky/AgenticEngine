@@ -11,6 +11,49 @@ export interface MemoryStoreOptions {
   dataDir: string;
 }
 
+/** Named build-time constants (spec §9 — dogfood scale). */
+export const CANDIDATE_TOP_K = 10;
+export const APPEND_LIST_CAP = 8;
+
+/** Input to insert one fact + its derived FTS/topic rows (v2-02). `canonical` and
+ * `topics` are SUPPLIED by the caller (v2-03 distiller) — the store stores+matches,
+ * never computes them. */
+export interface InsertFactInput {
+  fact: string;            // user-language display text
+  canonical: string;       // LLM-normalized match key (→ fact_fts)
+  provenance: string;
+  scope: "thread-local" | "cross-thread" | "global";
+  expiry: number | null;
+  confidence: number;
+  authored_by: "human" | "machine";
+  topics: string[];
+}
+
+export interface UpdateFactInput {
+  fact: string;
+  canonical: string;
+  confidence: number;
+  topics: string[];
+}
+
+export interface ReplacedFactRow {
+  replaced_text: string;
+  actor: string | null;
+  reason: string | null;
+  created_at: number;
+}
+
+export interface FactCandidate {
+  id: string;        // the stable distilled_facts.id
+  fact: string;      // user-language display text (from distilled_facts)
+  topics: string[];  // the fact's tags (from fact_topics)
+}
+
+export interface ThreadDistillState {
+  marker: number;
+  distilled_through: number;
+}
+
 /** Minimal input to record a quarantine marker (MF-03 5d). */
 export interface QuarantineMarkerInput {
   target_id: string;
@@ -85,6 +128,18 @@ export function isUuidShaped(s: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
 }
 
+/**
+ * Turn arbitrary caller text into a safe FTS5 MATCH expression: lowercase, strip
+ * everything but word chars + spaces, drop empties, quote each token, OR-join.
+ * "deployment: the (script)?" → '"deployment" OR "the" OR "script"'. Returns ""
+ * when no usable token survives (caller treats "" as "no candidates").
+ */
+export function toFtsOrQuery(raw: string): string {
+  const tokens = raw.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return "";
+  return tokens.map((t) => `"${t}"`).join(" OR ");
+}
+
 export class MemoryStore {
   private readonly db: Database;
   private readonly threadsDir: string;
@@ -139,6 +194,12 @@ export class MemoryStore {
         this.mirror(threadId, { event: "message", id, turn_index: base + i, role: m.role, content: m.content, session_id: sessionId, created_at: now });
       });
       this.db.query("UPDATE threads SET last_active_at = ? WHERE thread_id = ?").run(now, threadId);
+      // v2-02: bump the per-thread mutation marker atomically with the message insert
+      // (NOT tied to last_active_at — the marker tracks ALL mutations: append/edit/forget)
+      this.db.query(
+        `INSERT INTO thread_distill_state (thread_id, marker, distilled_through) VALUES (?, 1, 0)
+         ON CONFLICT(thread_id) DO UPDATE SET marker = marker + 1`,
+      ).run(threadId);
     });
     tx();
     return ids;
@@ -752,6 +813,155 @@ export class MemoryStore {
     this.db.close();
   }
 
+  // ── v2-02: stable-id delta primitives ─────────────────────────────────────
+
+  /**
+   * Insert ONE fact with a stable id, writing its derived rows in the SAME tx:
+   *   distilled_facts (display text) + fact_fts (canonical match key) + fact_topics (tags).
+   * Returns the stable id. v2-02 delta-apply primitive (spec §3.3) — the id stays put
+   * across dismisses (no DELETE-all). `canonical`/`topics` come from the caller.
+   */
+  insertFact(f: InsertFactInput, distillerVersion: string): string {
+    const id = crypto.randomUUID();
+    const now = Date.now();
+    const tx = this.db.transaction(() => {
+      this.db.query(
+        "INSERT INTO distilled_facts (id, fact, provenance, scope, expiry, confidence, authored_by, derived_at, distiller_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ).run(id, f.fact, f.provenance, f.scope, f.expiry ?? null, f.confidence, f.authored_by, now, distillerVersion);
+      this.writeFactDerived(id, f.canonical, f.topics);
+    });
+    tx();
+    return id;
+  }
+
+  /** Durably record a fact's prior text for audit (spec §3.2 m4). STANDALONE primitive
+   * (chunk scope) — callable independently of updateFactById; updateFactById calls it. */
+  recordReplacedFact(factId: string, replacedText: string, ctx: { actor: string; reason?: string }): void {
+    this.db.query(
+      "INSERT INTO replaced_facts (id, fact_id, replaced_text, actor, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+    ).run(crypto.randomUUID(), factId, replacedText, ctx.actor, ctx.reason ?? null, Date.now());
+  }
+
+  /**
+   * REPLACE a fact's content in place (id UNCHANGED — stability), refreshing its
+   * fact_fts + fact_topics rows and DURABLY recording the prior text (recordReplacedFact)
+   * for audit (spec §3.2 m4). All in one tx. Returns false if `id` does not exist.
+   * Does NOT do the 5e human-precedence / concurrency gating — that is the v2-03
+   * delta-apply caller's job; this primitive is the unconditional in-place REPLACE.
+   */
+  updateFactById(id: string, u: UpdateFactInput, ctx: { actor: string; reason?: string }, distillerVersion: string): boolean {
+    const tx = this.db.transaction((): boolean => {
+      const prior = this.db.query("SELECT fact FROM distilled_facts WHERE id = ?").get(id) as { fact: string } | null;
+      if (prior === null) return false;
+      this.recordReplacedFact(id, prior.fact, ctx);
+      this.db.query(
+        "UPDATE distilled_facts SET fact = ?, confidence = ?, distiller_version = ?, derived_at = ? WHERE id = ?",
+      ).run(u.fact, u.confidence, distillerVersion, Date.now(), id);
+      this.db.query("DELETE FROM fact_fts WHERE fact_id = ?").run(id);
+      this.db.query("DELETE FROM fact_topics WHERE fact_id = ?").run(id);
+      this.writeFactDerived(id, u.canonical, u.topics);
+      return true;
+    });
+    return tx();
+  }
+
+  /**
+   * APPEND a same-kind item to a fact's display list (spec §3.2 m1, capped at
+   * APPEND_LIST_CAP). The fact's `fact` text becomes prior + "; " + item; its fact_fts
+   * canonical is REPLACED with `appendedCanonical` — the CALLER (v2-03) must pass the
+   * FULL merged canonical (all items) so BM25 can still find the fact by its earlier
+   * items. Returns false (refuse) if the fact already holds >= APPEND_LIST_CAP items
+   * (the v2-03 distiller then emits a `new` fact instead) or if id absent.
+   * List length counted by "; " separators + 1.
+   */
+  appendToFactById(id: string, item: string, appendedCanonical: string): boolean {
+    const tx = this.db.transaction((): boolean => {
+      const row = this.db.query("SELECT fact FROM distilled_facts WHERE id = ?").get(id) as { fact: string } | null;
+      if (row === null) return false;
+      const itemCount = row.fact.split("; ").length;
+      if (itemCount >= APPEND_LIST_CAP) return false;
+      const merged = `${row.fact}; ${item}`;
+      this.db.query("UPDATE distilled_facts SET fact = ?, derived_at = ? WHERE id = ?").run(merged, Date.now(), id);
+      this.db.query("UPDATE fact_fts SET canonical = ? WHERE fact_id = ?").run(appendedCanonical, id);
+      return true;
+    });
+    return tx();
+  }
+
+  /** Read the durable replaced-text audit trail for a fact id (spec §3.2 m4). */
+  readReplacedFacts(factId: string): ReplacedFactRow[] {
+    return this.db.query(
+      "SELECT replaced_text, actor, reason, created_at FROM replaced_facts WHERE fact_id = ? ORDER BY created_at ASC",
+    ).all(factId) as ReplacedFactRow[];
+  }
+
+  /** Delete one fact by id. The AFTER DELETE trigger cleans fact_fts + fact_topics.
+   * Returns true if a row was deleted. v2-04's fact-forget reuses this. */
+  deleteFactById(id: string): boolean {
+    const result = this.db.query("DELETE FROM distilled_facts WHERE id = ? RETURNING id").all(id);
+    return result.length > 0;
+  }
+
+  /**
+   * BM25 candidate-fetch over the FULL distilled_facts corpus (spec §3.4 D-V4b — the
+   * FROZEN B1 invariant: tags WIDEN recall, they NEVER reduce the candidate set).
+   * Matches on fact_fts.canonical; returns the top CANDIDATE_TOP_K by BM25 rank, with
+   * the user-language display `fact` (joined from distilled_facts) + topics (from
+   * fact_topics). The caller (v2-03) passes a free-text `query` (the new fact's canonical).
+   * `query` is sanitized into a safe OR-of-quoted-terms (toFtsOrQuery) so punctuation
+   * can never produce a MATCH syntax error.
+   */
+  fetchCandidates(query: string): FactCandidate[] {
+    const ftsQuery = toFtsOrQuery(query);
+    if (ftsQuery === "") return [];
+    const rows = this.db.query(
+      `SELECT f.fact_id AS id, d.fact AS fact
+         FROM fact_fts f
+         JOIN distilled_facts d ON d.id = f.fact_id
+         WHERE fact_fts MATCH ?
+         ORDER BY bm25(fact_fts)
+         LIMIT ?`,
+    ).all(ftsQuery, CANDIDATE_TOP_K) as { id: string; fact: string }[];
+    return rows.map((r) => ({
+      id: r.id,
+      fact: r.fact,
+      topics: (this.db.query("SELECT topic FROM fact_topics WHERE fact_id = ? ORDER BY topic").all(r.id) as { topic: string }[]).map((t) => t.topic),
+    }));
+  }
+
+  // ── v2-02: thread mutation marker ─────────────────────────────────────────
+
+  /** Bump the per-thread mutation marker (spec §3.3 D-V3b). Upserts the side-table
+   * row so threads created before v2-02 get one lazily. Called on append/edit/forget —
+   * NOT tied to last_active_at (which only append touches). Returns the new marker. */
+  bumpThreadMarker(threadId: string): number {
+    this.db.query(
+      `INSERT INTO thread_distill_state (thread_id, marker, distilled_through) VALUES (?, 1, 0)
+       ON CONFLICT(thread_id) DO UPDATE SET marker = marker + 1`,
+    ).run(threadId);
+    return this.readThreadMarker(threadId);
+  }
+
+  /** Current mutation marker for a thread (0 if no state row yet). */
+  readThreadMarker(threadId: string): number {
+    const row = this.db.query("SELECT marker FROM thread_distill_state WHERE thread_id = ?").get(threadId) as { marker: number } | null;
+    return row?.marker ?? 0;
+  }
+
+  /** Record the marker value the distiller has covered (v2-03 reads marker vs this to skip). */
+  advanceDistilledThrough(threadId: string, marker: number): void {
+    this.db.query(
+      `INSERT INTO thread_distill_state (thread_id, marker, distilled_through) VALUES (?, ?, ?)
+       ON CONFLICT(thread_id) DO UPDATE SET distilled_through = excluded.distilled_through`,
+    ).run(threadId, marker, marker);
+  }
+
+  /** Read both markers (0/0 if no row yet). */
+  readThreadDistillState(threadId: string): ThreadDistillState {
+    const row = this.db.query("SELECT marker, distilled_through FROM thread_distill_state WHERE thread_id = ?").get(threadId) as ThreadDistillState | null;
+    return row ?? { marker: 0, distilled_through: 0 };
+  }
+
   // ── MAJOR-1 read-side suppression helpers (relay-004) ───────────────────────
   //
   // Provider-agnostic suppression: forgotten machine rows are excluded from BOTH
@@ -801,6 +1011,16 @@ export class MemoryStore {
     const forgottenNorms = this.buildForgottenNormSet();
     if (forgottenNorms.size === 0) return rows; // fast path: nothing forgotten
     return rows.filter((row) => this.keepRow(row, forgottenNorms));
+  }
+
+  /** Write the derived fact_fts + fact_topics rows for a fact id: one fact_fts row
+   * carrying the space-joined topics string; one fact_topics row PER topic.
+   * Private; called inside insertFact/updateFactById txns. */
+  private writeFactDerived(id: string, canonical: string, topics: string[]): void {
+    this.db.query("INSERT INTO fact_fts (fact_id, canonical, topic) VALUES (?, ?, ?)")
+      .run(id, canonical, topics.join(" "));
+    const insTopic = this.db.query("INSERT INTO fact_topics (fact_id, topic) VALUES (?, ?)");
+    for (const t of topics) insTopic.run(id, t);
   }
 
   private nextTurnIndex(threadId: string): number {

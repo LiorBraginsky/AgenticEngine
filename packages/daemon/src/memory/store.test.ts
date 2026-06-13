@@ -574,3 +574,263 @@ test("MINOR-1: a thread-local fact with comma-joined provenance injects into its
   expect(there.some((f) => f.fact === "thread-local agg")).toBe(false); // private stays home
   store.close();
 });
+
+// ── v2-02: Task 1 — additive schema (fact_fts, fact_topics, sync trigger, thread_distill_state, replaced_facts) ──
+
+test("v2-02 schema: new tables/index/trigger created additively on a fresh store", () => {
+  const { store, dir } = freshStore();
+  const db = store.rawDb();
+  // FTS5 virtual table must exist (this line throws loudly if FTS5 is absent in bun:sqlite)
+  const fts = db.query("SELECT name FROM sqlite_master WHERE name = 'fact_fts'").get();
+  expect(fts).not.toBeNull();
+  const topics = db.query("SELECT name FROM sqlite_master WHERE name = 'fact_topics'").get();
+  expect(topics).not.toBeNull();
+  const trig = db.query("SELECT name FROM sqlite_master WHERE type='trigger' AND name='trg_distilled_facts_ad'").get();
+  expect(trig).not.toBeNull();
+  const dstate = db.query("SELECT name FROM sqlite_master WHERE name = 'thread_distill_state'").get();
+  expect(dstate).not.toBeNull();
+  const rfacts = db.query("SELECT name FROM sqlite_master WHERE name = 'replaced_facts'").get();
+  expect(rfacts).not.toBeNull();
+  store.close();
+
+  // Re-open the SAME dir (existing-store path): must not throw (idempotent IF NOT EXISTS)
+  const reopened = new MemoryStore({ dataDir: dir });
+  expect(reopened.rawDb().query("SELECT name FROM sqlite_master WHERE name='fact_fts'").get()).not.toBeNull();
+  reopened.close();
+});
+
+// ── v2-02: Task 2 — insertFact ──
+
+test("v2-02 insertFact returns a stable id and writes fact_fts + fact_topics", () => {
+  const { store } = freshStore();
+  const id = store.insertFact({
+    fact: "User's name is Lior", canonical: "user name lior", provenance: "thread:t1",
+    scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine",
+    topics: ["about-user", "relationships"],
+  }, "smart-v2");
+  expect(typeof id).toBe("string");
+  const db = store.rawDb();
+  const df = db.query("SELECT fact FROM distilled_facts WHERE id = ?").get(id) as { fact: string };
+  expect(df.fact).toBe("User's name is Lior");
+  const fts = db.query("SELECT canonical FROM fact_fts WHERE fact_id = ?").get(id) as { canonical: string };
+  expect(fts.canonical).toBe("user name lior");
+  const tags = db.query("SELECT topic FROM fact_topics WHERE fact_id = ? ORDER BY topic").all(id) as { topic: string }[];
+  expect(tags.map((t) => t.topic)).toEqual(["about-user", "relationships"]);
+  store.close();
+});
+
+// ── v2-02: Task 3 — updateFactById, recordReplacedFact, appendToFactById, deleteFactById ──
+
+test("v2-02 updateFactById REPLACEs the row in place (same id), refreshes fact_fts, and records the replaced text", () => {
+  const { store } = freshStore();
+  const id = store.insertFact({
+    fact: "User has 3 siblings", canonical: "user 3 siblings", provenance: "thread:t1",
+    scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: ["about-user"],
+  }, "smart-v2");
+  store.updateFactById(id, {
+    fact: "User has 2 siblings", canonical: "user 2 siblings", confidence: 1, topics: ["about-user", "family"],
+  }, { actor: "machine", reason: "contradiction" }, "smart-v2");
+  const db = store.rawDb();
+  const df = db.query("SELECT fact FROM distilled_facts WHERE id = ?").get(id) as { fact: string };
+  expect(df.fact).toBe("User has 2 siblings");
+  const fts = db.query("SELECT canonical FROM fact_fts WHERE fact_id = ?").all(id) as { canonical: string }[];
+  expect(fts.length).toBe(1);
+  expect(fts[0]!.canonical).toBe("user 2 siblings");
+  const tags = (db.query("SELECT topic FROM fact_topics WHERE fact_id = ? ORDER BY topic").all(id) as { topic: string }[]).map((t) => t.topic);
+  expect(tags).toEqual(["about-user", "family"]);
+  const replaced = store.readReplacedFacts(id);
+  expect(replaced.some((r) => r.replaced_text === "User has 3 siblings")).toBe(true);
+  store.close();
+});
+
+test("v2-02 recordReplacedFact standalone records text without an update", () => {
+  const { store } = freshStore();
+  const id = store.insertFact({
+    fact: "keep", canonical: "keep", provenance: "thread:t1",
+    scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: ["x"],
+  }, "smart-v2");
+  store.recordReplacedFact(id, "older text", { actor: "machine", reason: "audit" });
+  expect(store.readReplacedFacts(id).some((r) => r.replaced_text === "older text")).toBe(true);
+  store.close();
+});
+
+test("v2-02 appendToFactById appends until the cap, then refuses (returns false past APPEND_LIST_CAP)", () => {
+  const { store } = freshStore();
+  const id = store.insertFact({
+    fact: "User likes: tea", canonical: "user likes tea", provenance: "thread:t1",
+    scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: ["preferences"],
+  }, "smart-v2");
+  // APPEND_LIST_CAP = 8; initial fact has 1 item, so 7 more fits before refusal
+  for (let i = 1; i < 8; i++) {
+    expect(store.appendToFactById(id, `item${i}`, `user likes item${i}`)).toBe(true);
+  }
+  expect(store.appendToFactById(id, "overflow", "user likes overflow")).toBe(false);
+  store.close();
+});
+
+test("v2-02 deleteFactById removes the row and (via trigger) its fact_fts + fact_topics rows", () => {
+  const { store } = freshStore();
+  const id = store.insertFact({
+    fact: "ephemeral", canonical: "ephemeral", provenance: "thread:t1",
+    scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: ["x", "y"],
+  }, "smart-v2");
+  expect(store.deleteFactById(id)).toBe(true);
+  const db = store.rawDb();
+  expect(db.query("SELECT 1 FROM distilled_facts WHERE id = ?").get(id)).toBeNull();
+  expect(db.query("SELECT 1 FROM fact_fts WHERE fact_id = ?").get(id)).toBeNull();
+  expect(db.query("SELECT 1 FROM fact_topics WHERE fact_id = ?").get(id)).toBeNull();
+  store.close();
+});
+
+// ── v2-02: Task 4 — BM25 candidate-fetch ──
+
+test("v2-02 fetchCandidates surfaces a contradicting fact carrying a DIFFERENT topic tag (tags WIDEN, never filter)", () => {
+  const { store } = freshStore();
+  store.insertFact({
+    fact: "User has 3 siblings", canonical: "user has 3 siblings family", provenance: "thread:t1",
+    scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: ["about-user"],
+  }, "smart-v2");
+  store.insertFact({
+    fact: "User has 2 siblings", canonical: "user has 2 siblings family", provenance: "thread:t2",
+    scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: ["relationships"],
+  }, "smart-v2");
+  const candidates = store.fetchCandidates("user has siblings family");
+  const facts = candidates.map((c) => c.fact);
+  expect(facts).toContain("User has 3 siblings");
+  expect(facts).toContain("User has 2 siblings");
+  const a = candidates.find((c) => c.fact === "User has 3 siblings")!;
+  expect(typeof a.id).toBe("string");
+  expect(a.topics).toEqual(["about-user"]);
+  store.close();
+});
+
+test("v2-02 fetchCandidates returns at most CANDIDATE_TOP_K rows and tolerates punctuation in the query", () => {
+  const { store } = freshStore();
+  for (let i = 0; i < 15; i++) {
+    store.insertFact({
+      fact: `fact ${i} about deployment`, canonical: `fact ${i} about deployment`, provenance: "thread:t1",
+      scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: ["projects"],
+    }, "smart-v2");
+  }
+  const candidates = store.fetchCandidates("deployment: the (script)?");
+  expect(candidates.length).toBeLessThanOrEqual(10); // CANDIDATE_TOP_K = 10
+  expect(candidates.length).toBeGreaterThan(0);
+  store.close();
+});
+
+// ── v2-02: Task 5 — count-equality SYNC GATE (one test per delete path) + mutation marker ──
+
+function assertDerivedInSync(store: MemoryStore): void {
+  const db = store.rawDb();
+  const dfCount = (db.query("SELECT COUNT(*) AS n FROM distilled_facts").get() as { n: number }).n;
+  const ftsCount = (db.query("SELECT COUNT(*) AS n FROM fact_fts").get() as { n: number }).n;
+  expect(ftsCount).toBe(dfCount);
+  const orphans = (db.query(
+    "SELECT COUNT(*) AS n FROM fact_topics WHERE fact_id NOT IN (SELECT id FROM distilled_facts)",
+  ).get() as { n: number }).n;
+  expect(orphans).toBe(0);
+}
+
+function seedTwoFacts(store: MemoryStore): { a: string; b: string } {
+  const a = store.insertFact({ fact: "fact A", canonical: "fact a", provenance: "thread:tA",
+    scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: ["x"] }, "smart-v2");
+  const b = store.insertFact({ fact: "fact B", canonical: "fact b", provenance: "thread:tB",
+    scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: ["y", "z"] }, "smart-v2");
+  return { a, b };
+}
+
+test("v2-02 SYNC GATE: deleteFactById keeps fact_fts == distilled_facts, no orphan topics", () => {
+  const { store } = freshStore();
+  const { a } = seedTwoFacts(store);
+  store.deleteFactById(a);
+  assertDerivedInSync(store);
+  store.close();
+});
+
+test("v2-02 SYNC GATE: dropDistilledFactsByProvenance keeps derived tables in sync", () => {
+  const { store } = freshStore();
+  seedTwoFacts(store);
+  store.dropDistilledFactsByProvenance("thread:tA");
+  assertDerivedInSync(store);
+  store.close();
+});
+
+test("v2-02 SYNC GATE: dropDistilledFactsForThread keeps derived tables in sync", () => {
+  const { store } = freshStore();
+  seedTwoFacts(store);
+  store.dropDistilledFactsForThread("tB");
+  assertDerivedInSync(store);
+  store.close();
+});
+
+test("v2-02 SYNC GATE: dropAllDistilledFacts (migration wipe) keeps derived tables in sync", () => {
+  const { store } = freshStore();
+  seedTwoFacts(store);
+  store.dropAllDistilledFacts();
+  assertDerivedInSync(store);
+  store.close();
+});
+
+test("v2-02 SYNC GATE: purgeLiveMachineFactsByForget keeps derived tables in sync", () => {
+  const { store } = freshStore();
+  const { a } = seedTwoFacts(store);
+  store.purgeLiveMachineFactsByForget("thread:tA", "no-text-match");
+  assertDerivedInSync(store);
+  expect(store.rawDb().query("SELECT 1 FROM distilled_facts WHERE id = ?").get(a)).toBeNull();
+  store.close();
+});
+
+test("v2-02 SYNC GATE: updateFactById REPLACE leaves exactly one fact_fts row (no desync)", () => {
+  const { store } = freshStore();
+  const { a } = seedTwoFacts(store);
+  store.updateFactById(a, { fact: "fact A2", canonical: "fact a2", confidence: 1, topics: ["x", "w"] },
+    { actor: "machine", reason: "test" }, "smart-v2");
+  assertDerivedInSync(store);
+  store.close();
+});
+
+test("v2-02 mutation marker: appendMessages bumps marker; bumpThreadMarker also bumps", () => {
+  const { store } = freshStore();
+  const t = store.createThread();
+  expect(store.readThreadMarker(t)).toBe(0);
+  store.appendMessages(t, [{ role: "user", content: "hi" }], "s1");
+  expect(store.readThreadMarker(t)).toBe(1);
+  store.appendMessages(t, [{ role: "user", content: "again" }], "s2");
+  expect(store.readThreadMarker(t)).toBe(2);
+  store.bumpThreadMarker(t); // simulates the edit/forget bump site
+  expect(store.readThreadMarker(t)).toBe(3);
+  store.close();
+});
+
+test("v2-02 distilled_through: advanceDistilledThrough records the marker the distiller covered", () => {
+  const { store } = freshStore();
+  const t = store.createThread();
+  store.appendMessages(t, [{ role: "user", content: "hi" }], "s1");
+  store.advanceDistilledThrough(t, store.readThreadMarker(t));
+  const state = store.readThreadDistillState(t);
+  expect(state.marker).toBe(1);
+  expect(state.distilled_through).toBe(1);
+  store.close();
+});
+
+test("v2-02 write-gate integration: edit bumps the thread marker", () => {
+  const { store } = freshStore();
+  const gate = new WriteGate(store, new RuleBasedScanner());
+  const t = store.createThread();
+  const [mid] = store.appendMessages(t, [{ role: "user", content: "original" }], "s1");
+  const markerAfterAppend = store.readThreadMarker(t);
+  gate.edit(mid!, "revised content", { actor: "user", authored_by: "human" });
+  expect(store.readThreadMarker(t)).toBe(markerAfterAppend + 1);
+  store.close();
+});
+
+test("v2-02 write-gate integration: forget bumps the thread marker", () => {
+  const { store } = freshStore();
+  const gate = new WriteGate(store, new RuleBasedScanner());
+  const t = store.createThread();
+  const [mid] = store.appendMessages(t, [{ role: "user", content: "to forget" }], "s1");
+  const markerAfterAppend = store.readThreadMarker(t);
+  gate.forget(mid!, { actor: "user", authored_by: "human" });
+  expect(store.readThreadMarker(t)).toBe(markerAfterAppend + 1);
+  store.close();
+});

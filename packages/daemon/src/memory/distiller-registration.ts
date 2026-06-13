@@ -2,6 +2,7 @@ import type { ConsolidationHook } from "./consolidation-hook.js";
 import type { MemoryStore } from "./store.js";
 import type { MemoryProvider, DistillResult } from "./memory-provider.js";
 import type { MemoryScanner } from "./scanner/memory-scanner.js";
+import { SmartDistillError } from "./providers/smart-distiller-provider.js";
 
 /**
  * Wire the distiller as the consolidation-hook's batch handler.
@@ -58,15 +59,22 @@ async function doOneRun(
 ): Promise<void> {
   // ── Local failure helper (DRY — used by all three phase catch blocks) ──
   // On any phase failure: read the surviving MACHINE projection size, write one
-  // `reprojection-failed` event row per dismissed thread (independent inserts —
-  // no atomicity needed since nothing was dropped), console.error, then the
-  // caller rethrows so index.ts logs the non-fatal error.
-  const recordReprojectionFailure = (err: unknown, phase: string): void => {
+  // event row per dismissed thread (independent inserts — no atomicity needed since
+  // nothing was dropped), console.error, then the caller rethrows so index.ts logs
+  // the non-fatal error. `trigger` defaults to chunk-02's "reprojection-failed";
+  // the Phase-1 catch passes "reprojection-truncated" for the output-truncation case
+  // so the History distinguishes the truncation wall (spec §2 D-E) from a transient
+  // failure. Additive: free-text distillation_events.trigger column → no schema migration.
+  const recordReprojectionFailure = (
+    err: unknown,
+    phase: string,
+    trigger: string = "reprojection-failed",
+  ): void => {
     const currentSize = (store.rawDb()
       .query("SELECT COUNT(*) AS n FROM distilled_facts WHERE authored_by != 'human'")
       .get() as { n: number }).n;
     for (const id of dismissedThreadIds) {
-      store.insertDistillationEvent(id, "reprojection-failed", currentSize, provider.id);
+      store.insertDistillationEvent(id, trigger, currentSize, provider.id);
     }
     console.error(`[distiller] ${phase} failed; existing projection preserved:`, err);
   };
@@ -76,7 +84,13 @@ async function doOneRun(
   try {
     result = await provider.distill(store, triggerThreadId);
   } catch (err) {
-    recordReprojectionFailure(err, "provider.distill");
+    // Truncation (stop_reason:"max_tokens") → DISTINCT trigger; any other error keeps
+    // the default. The truncation knowledge lives at the one site holding the error.
+    const trigger =
+      err instanceof SmartDistillError && err.truncated
+        ? "reprojection-truncated"
+        : "reprojection-failed";
+    recordReprojectionFailure(err, "provider.distill", trigger);
     throw err; // surface so index.ts catch can log the non-fatal error
   }
 

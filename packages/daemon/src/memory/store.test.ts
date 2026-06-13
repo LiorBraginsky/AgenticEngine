@@ -821,7 +821,7 @@ test("v2-05: rebuildDerivedForHumanFacts indexes a human fact that has no derive
     "INSERT INTO distilled_facts (id, fact, provenance, scope, expiry, confidence, authored_by, derived_at, distiller_version) VALUES ('h1','User pins: name is Lior','thread:t','cross-thread',NULL,1,'human',1,'pre-v2')",
   ).run();
   expect((db.query("SELECT COUNT(*) AS n FROM fact_fts").get() as { n: number }).n).toBe(0);
-  const n = store.rebuildDerivedForHumanFacts("v2-05-migration");
+  const n = store.rebuildDerivedForHumanFacts();
   expect(n).toBe(1);
   const dfCount = (db.query("SELECT COUNT(*) AS n FROM distilled_facts").get() as { n: number }).n;
   const ftsCount = (db.query("SELECT COUNT(*) AS n FROM fact_fts").get() as { n: number }).n;
@@ -836,8 +836,8 @@ test("v2-05: rebuildDerivedForHumanFacts is idempotent (no duplicate derived row
   db.query(
     "INSERT INTO distilled_facts (id, fact, provenance, scope, expiry, confidence, authored_by, derived_at, distiller_version) VALUES ('h1','name is Lior',NULL,'cross-thread',NULL,1,'human',1,'pre-v2')",
   ).run();
-  store.rebuildDerivedForHumanFacts("v2-05-migration");
-  store.rebuildDerivedForHumanFacts("v2-05-migration");
+  store.rebuildDerivedForHumanFacts();
+  store.rebuildDerivedForHumanFacts();
   expect((db.query("SELECT COUNT(*) AS n FROM fact_fts WHERE fact_id='h1'").get() as { n: number }).n).toBe(1);
   store.close();
 });

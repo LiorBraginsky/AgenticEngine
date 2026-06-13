@@ -899,10 +899,11 @@ export class MemoryStore {
    * Idempotent: clears then re-writes derived rows per human id. canonical =
    * normalizeFactText(fact) (D-V4c: match on canonical; display stays the row's fact);
    * topics = [] (human facts carry no LLM tags). Returns the count of human rows reindexed.
-   * _distillerVersion reserved for parity with other writers; not persisted (human rows
-   * have no LLM-assigned version to overwrite).
+   * distillerVersion param omitted: human rows are not associated with a distiller version
+   * (they have no LLM-assigned version to overwrite), and the migration version string has
+   * no target column to persist it to.
    */
-  rebuildDerivedForHumanFacts(_distillerVersion: string): number {
+  rebuildDerivedForHumanFacts(): number {
     const tx = this.db.transaction((): number => {
       const humans = this.db
         .query("SELECT id, fact FROM distilled_facts WHERE authored_by = 'human'")

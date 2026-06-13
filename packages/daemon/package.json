@@ -9,7 +9,8 @@
     "memory-smoke": "bun run scripts/memory-smoke.ts",
     "keychain-set": "bun run scripts/keychain-set.ts",
     "keychain-prod-probe": "bun run scripts/keychain-prod-probe.ts",
-    "smart-distiller-probe": "bun run scripts/smart-distiller-probe.ts"
+    "smart-distiller-probe": "bun run scripts/smart-distiller-probe.ts",
+    "migrate-distiller-v2": "bun run scripts/migrate-distiller-v2.ts"
   },
   "dependencies": {
     "@agentic/protocol": "workspace:*",

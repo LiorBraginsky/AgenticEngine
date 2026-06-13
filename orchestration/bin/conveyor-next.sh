@@ -66,7 +66,7 @@ if [ -z "$next_chunk" ]; then
   exit 3
 fi
 
-nn="$(basename "$next_chunk" | grep -oE '^[0-9]+')"
+nn="$(basename "$next_chunk" | grep -oE '^(v[0-9]+-)?[0-9]+')"
 title="$(grep -m1 -E '^#[[:space:]]' "$next_chunk" | sed -E 's/^#[[:space:]]*//')"
 rel="${next_chunk#"$REPO_ROOT"/}"
 branch="$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD)"

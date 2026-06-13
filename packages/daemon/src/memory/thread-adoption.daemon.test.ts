@@ -8,6 +8,8 @@ import { WriteGate } from "./write-gate.js";
 import { ThreadLifecycle } from "./thread-lifecycle.js";
 import { DumbTailProvider } from "./providers/dumb-tail-provider.js";
 import { RuleBasedScanner } from "./scanner/memory-scanner.js";
+import { ConsolidationHook } from "./consolidation-hook.js";
+import { registerDistiller } from "./distiller-registration.js";
 import { TokenStore } from "./token-store.js";
 
 let dataDir: string;
@@ -117,11 +119,14 @@ test("DoD#4 — adopted-id FIRST turn still runs the MF-02 cross-thread retrieve
   const provider = new DumbTailProvider();
   const lifecycle = new ThreadLifecycle(store, new WriteGate(store, new RuleBasedScanner()), provider);
 
-  // Thread A: state a fact and distill it (simulating a prior dismiss).
+  // Thread A: state a fact and distill it via the registration path (simulating a prior dismiss).
+  // v2-03: distill() now returns DistillDelta; use registerDistiller + hook.dismiss instead of
+  //        the old provider.distill(store, tA) + store.insertDistilledFacts(result.facts, ...).
+  const hook = new ConsolidationHook(store);
+  registerDistiller(hook, store, provider, new RuleBasedScanner());
   const tA = store.createThread();
   store.appendMessages(tA, [{ role: "user", content: "deploy is yeet.sh" }], "sa");
-  const result = await provider.distill(store, tA);
-  store.insertDistilledFacts(result.facts, "dumb-tail");
+  await hook.dismiss([tA]);
 
   // Thread B: a FIRST turn that ADOPTS a fresh client UUID (unknown to the store).
   const adoptId = crypto.randomUUID();

@@ -1,22 +1,25 @@
 /**
- * smart-distiller-provider.ts — LLM-backed memory distiller (Haiku).
+ * smart-distiller-provider.ts — LLM-backed incremental memory distiller (Haiku).
  *
  * id = "smart". Non-default; selected via MEMORY_PROVIDER=smart + resolvable key.
  *
- * Architecture: implements the chunk-02 MemoryProvider port. `distill` runs in
- * Phase-1 compute seam (outside any tx — the LLM await lives here). Builds a
- * tombstone/quarantine-honored digest, calls Haiku via an injectable clientFactory,
- * parses defensively, and applies three best-effort fact-forget post-filters.
+ * Architecture: implements the v2-03 MemoryProvider port. `distill` runs in the
+ * Phase-1 compute seam (outside any tx — the LLM await lives here). Reads ONLY
+ * the just-ended thread's NEW TAIL (since its last distill_through_turn watermark),
+ * fetches FTS5/BM25 candidates over the FULL corpus (outside any tx), asks Haiku
+ * to propose a DistillDelta of targeted FactOps, and returns the delta.
  *
- * NEVER-THROW CONTRACT: any failure surfaces as a rejected promise to chunk-02's
- * Phase-1 catch (→ recordReprojectionFailure). distill() does NOT swallow errors.
+ * NEVER-THROW CONTRACT: any failure surfaces as a rejected promise to registration's
+ * Phase-1 catch (→ recordDistillFailure). distill() does NOT swallow errors.
  *
- * Best-effort post-filter layers are MITIGATIONS, not guarantees. A generative
- * distiller can rephrase forgotten content in ways the filters cannot detect.
+ * The dead Layer-1/Layer-T/Layer-P projection post-filters are DROPPED from distill
+ * (they filtered a full projection that no longer exists; forget rewiring is v2-04 and
+ * the store read-side suppression still covers the live slice).
+ * _getForgottenSuppression removed (3.0b — orphaned). retrieve kept exactly as-is.
  */
 
 import Anthropic from "@anthropic-ai/sdk";
-import type { MemoryProvider, DistillResult, DistilledFact } from "../memory-provider.js";
+import type { MemoryProvider, DistilledFact, DistillDelta, FactOp } from "../memory-provider.js";
 import type { MemoryStore } from "../store.js";
 import type { SessionMessage } from "../../providers/provider.js";
 import { REDACTION_MARKER } from "../schema.js";
@@ -31,11 +34,11 @@ export { normalizeFactText };
 
 export const SMART_MODEL = "claude-haiku-4-5";
 /**
- * Cap on the LLM OUTPUT (the JSON fact array). RUNWAY, NOT A CURE.
- * The fact set grows monotonically with the archive (global re-projection is
- * O(total archive), spec §3.3 D8), so ANY fixed cap is eventually re-hit. Raising
- * it (1024 → 4096) buys dogfood headroom; the stop_reason guard in distill() makes
- * the wall OBSERVABLE and NON-CORRUPTING (trigger="reprojection-truncated"), which is
+ * Cap on the LLM OUTPUT (the JSON delta op array). RUNWAY, NOT A CURE.
+ * The v2-03 incremental path outputs ONE conversation's delta (new-tail ops), so the
+ * output is bounded by the new-tail size, not the total archive. Any fixed cap can still
+ * be hit if a single new-tail is unusually large; the stop_reason guard in distill()
+ * makes the wall OBSERVABLE and NON-CORRUPTING (trigger="distill-truncated"), which is
  * the NAMED trigger for the future summarization tier (spec §1, out of scope) — the
  * actual fix. Do not treat a higher cap as the solution.
  */
@@ -66,6 +69,50 @@ Rules:
 - If no facts are extractable, output [].
 - Emit facts in order from most recent / most relevant to least recent, so that the most useful facts appear first.
 - Write each "fact" in the SAME language the user used in the conversation (e.g. a Ukrainian conversation yields a Ukrainian "fact"); do not translate the user's language into English.`;
+
+// ── v2-03 delta system prompt ──────────────────────────────────────────────
+
+/**
+ * System prompt for the incremental delta distiller (v2-03).
+ *
+ * The LLM receives:
+ *   - The new-tail text (messages the user sent since the last distill watermark).
+ *   - A numbered candidate pool (1..K) of existing facts from the store.
+ *
+ * It must return ONLY a JSON array of FactOps; no prose, no fences.
+ *
+ * Asymmetric-risk bias: "replace" is destructive (loses a fact).
+ * Prompt instructs: emit "replace" ONLY for a genuine contradiction;
+ * when uncertain, prefer "new" or "append", NEVER "replace".
+ *
+ * D-V6e (language preservation): "fact" is in the user's language.
+ * D-V4c (canonical): "canonical" is a lowercased English match key.
+ * Q6 (topics vocabulary): coarse, prompt-nudged, lowercase-kebab.
+ */
+export const SMART_DELTA_SYSTEM_PROMPT = `You are an incremental memory distiller. You will receive:
+1. A NEW TAIL: the recent messages from a conversation thread.
+2. A CANDIDATE POOL: numbered existing facts from the memory store (ordinals 1..K).
+
+Output ONLY a JSON array of ops (no prose, no markdown fences). Each element:
+{
+  "op": "new" | "append" | "replace",
+  "fact": "<fact text in the USER's language>",
+  "canonical": "<lowercased English match key for dedup/search>",
+  "topics": ["#about-user" | "#preferences" | "#projects" | "#relationships" | ...],
+  "targetOrdinal": <integer 1..K, ONLY for "append" or "replace">,
+  "expectedTargetText": "<the exact fact text at that ordinal, ONLY for "replace">"
+}
+
+Rules:
+- "fact": write in the SAME language the user used (e.g. Ukrainian conversation → Ukrainian fact). Do NOT translate.
+- "canonical": always a lowercased English phrase for FTS5 matching (e.g. "user likes tea").
+- "topics": use #about-user, #preferences, #projects, #relationships; add others sparingly.
+- op:"replace" ONLY for a genuine, clear contradiction of a shown candidate — copy its ordinal into "targetOrdinal" AND its exact text into "expectedTargetText".
+- op:"append" to add a same-kind item to an existing candidate — copy its ordinal into "targetOrdinal".
+- op:"new" for all other facts not contradicting any shown candidate.
+- When uncertain, prefer "new" or "append". NEVER use "replace" speculatively — it is destructive.
+- Never emit a "global" scope. Never produce prose.
+- Return [] if nothing new is worth recording.`;
 
 // ── Error type ─────────────────────────────────────────────────────────────
 
@@ -242,6 +289,100 @@ export function parseFacts(raw: string): DistilledFact[] {
   return facts;
 }
 
+// ── v2-03 delta op parser ──────────────────────────────────────────────────
+
+/**
+ * Parse the raw LLM response into FactOp[].
+ *
+ * Defensive steps:
+ *   1. Strip optional ```json ... ``` fence.
+ *   2. JSON.parse in try/catch → throw SmartDistillError on failure.
+ *   3. Assert top-level is an array → throw SmartDistillError if not.
+ *   4. Per-element: validate shape; drop malformed ops (one bad ≠ whole failure).
+ *      Valid op ∈ {"new","append","replace"}. Non-empty fact string. canonical string
+ *      (default "" → caller falls back to normalizeFactText). topics array.
+ *      targetOrdinal: small positive integer (optional). expectedTargetText: string (optional).
+ *      Never emit a global-scoped anything (no scope field on FactOp — enforced by port).
+ *
+ * Throws SmartDistillError on non-JSON or non-array response.
+ * Returns [] if all elements are malformed.
+ */
+export function parseOps(raw: string): FactOp[] {
+  // Step 1: strip optional ```json ... ``` fence (and bare ``` ... ``` fence)
+  let cleaned = raw.trim();
+  cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "");
+  cleaned = cleaned.trim();
+
+  // Step 2: JSON.parse
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch (e) {
+    throw new SmartDistillError(
+      `[smart-distiller] LLM delta response is not valid JSON: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+
+  // Step 3: assert array
+  if (!Array.isArray(parsed)) {
+    throw new SmartDistillError(
+      `[smart-distiller] LLM delta response is not a JSON array; got: ${typeof parsed}`,
+    );
+  }
+
+  // Step 4: per-element validate and collect good ops
+  const validOps = new Set(["new", "append", "replace"]);
+  const ops: FactOp[] = [];
+
+  for (const item of parsed) {
+    if (typeof item !== "object" || item === null) continue;
+
+    const obj = item as Record<string, unknown>;
+
+    // Validate 'op': must be "new" | "append" | "replace"
+    if (typeof obj["op"] !== "string" || !validOps.has(obj["op"])) continue;
+
+    // Validate 'fact': non-empty string
+    if (typeof obj["fact"] !== "string" || obj["fact"].trim() === "") continue;
+
+    // Validate 'canonical': string (may be empty — caller falls back to normalizeFactText)
+    const canonical = typeof obj["canonical"] === "string" ? obj["canonical"] : "";
+
+    // Validate 'topics': array of strings
+    const topicsRaw = obj["topics"];
+    const topics: string[] = Array.isArray(topicsRaw)
+      ? (topicsRaw as unknown[]).filter((t): t is string => typeof t === "string")
+      : [];
+
+    // Optional 'targetOrdinal': small positive integer
+    let targetOrdinal: number | undefined;
+    if (obj["targetOrdinal"] !== undefined) {
+      const ord = obj["targetOrdinal"];
+      if (typeof ord === "number" && Number.isInteger(ord) && ord >= 1) {
+        targetOrdinal = ord;
+      }
+      // malformed targetOrdinal → drop the field but keep the op (demote to new on apply)
+    }
+
+    // Optional 'expectedTargetText': string
+    let expectedTargetText: string | undefined;
+    if (typeof obj["expectedTargetText"] === "string") {
+      expectedTargetText = obj["expectedTargetText"];
+    }
+
+    ops.push({
+      op: obj["op"] as FactOp["op"],
+      fact: obj["fact"],
+      canonical,
+      topics,
+      ...(targetOrdinal !== undefined ? { targetOrdinal } : {}),
+      ...(expectedTargetText !== undefined ? { expectedTargetText } : {}),
+    });
+  }
+
+  return ops;
+}
+
 // ── DI options (mirrors anthropic-api-provider.ts pattern) ────────────────
 
 export interface SmartDistillerOptions {
@@ -258,20 +399,28 @@ export interface SmartDistillerOptions {
 // ── Provider class ─────────────────────────────────────────────────────────
 
 /**
- * SmartDistillerProvider — LLM-backed distiller (Haiku).
+ * SmartDistillerProvider — LLM-backed incremental distiller (Haiku).
  *
  * id = "smart". Non-default; register via MEMORY_PROVIDER=smart.
  *
- * distill(store, triggerThreadId):
- *   1. buildDigest → if empty → short-circuit {threadId, facts:[]} (no LLM call)
- *   2. LLM call (Haiku, outside any tx — Phase-1 compute seam)
- *   3. parseFacts → defensive parse
- *   4. Layer-1 post-filter: drop facts whose provenance is isFactTombstoned
- *   5. Layer-2 post-filter: drop facts whose normalized text matches a tombstoned
- *      fact's normalized text (MITIGATION only — exact-after-normalize, not fuzzy)
- *   6. Return {threadId: triggerThreadId, facts}
+ * distill(store, triggerThreadId) — v2-03 incremental flow:
+ *   1. Read distilled_through_turn (resilient, R2).
+ *   2. readNewTailSince(threadId, distilled_through_turn) — filter tombstones/quarantine.
+ *   3. Empty tail → short-circuit {ops:[], candidateIds:[]} (no LLM call).
+ *   4. Build tail text; fetchCandidates(tailText) (≤K=10, FTS5/BM25 full corpus).
+ *   5. Build numbered candidate pool (1..K → {fact, topics}).
+ *   6. ONE LLM call (SMART_DELTA_SYSTEM_PROMPT; outside any tx — Phase-1 compute seam).
+ *   7. stop_reason guard → throw SmartDistillError({truncated:true}).
+ *   8. parseOps(rawText) → FactOp[] (defensive; drops malformed ops).
+ *   9. Return DistillDelta {threadId, ops, candidateIds, distilledThroughMarker, distilledThroughTurn}.
  *
- * Any failure (LLM/parse) rejects — routes to recordReprojectionFailure in chunk-02.
+ * Dead Layer-1/Layer-T/Layer-P projection post-filters DROPPED (they filtered a full
+ * projection that no longer exists; forget rewiring is v2-04; store read-side suppression
+ * covers the live slice).
+ *
+ * _getForgottenSuppression removed (3.0b — orphaned). retrieve KEPT exactly as-is.
+ *
+ * Any failure (LLM/parse) rejects — routes to registration's never-drop failure path.
  */
 export class SmartDistillerProvider implements MemoryProvider {
   readonly id = "smart";
@@ -313,68 +462,88 @@ export class SmartDistillerProvider implements MemoryProvider {
   }
 
   /**
-   * Distill the full tombstone-honored archive into a deduplicated fact set.
+   * Incremental distill — reads the new tail since the last distill watermark.
    *
-   * NEVER-THROW: LLM/parse failures surface as rejected promises to chunk-02's
-   * Phase-1 catch (recordReprojectionFailure). This method does NOT swallow errors.
+   * NEVER-THROW: LLM/parse failures surface as rejected promises to registration's
+   * Phase-1 catch (recordDistillFailure). This method does NOT swallow errors.
    *
-   * Post-filter layers (chunk 04 / ADR-0015 decision 3 — re-sourced from forgotten_facts):
-   *   Layer-T: THE one real text-match layer (normalized text ∈ forgotten_facts).
-   *            5e-aware: does NOT suppress when a human fact with the same text exists.
-   *   Layer-P: opportunistic nudge — provenance-SET equality (not intersection).
-   *            Fires rarely because provenance is unstable across re-projections.
-   *   Layer-X: soft LLM exclusion nudge in system prompt. A generative model can ignore it.
-   * These are MITIGATIONS, not guarantees. A generative distiller can rephrase.
+   * The dead Layer-1/Layer-T/Layer-P projection post-filters are NOT applied here —
+   * they filtered a full projection that no longer exists. The store read-side
+   * suppression (MAJOR-1, relay-004) covers the live slice. _getForgottenSuppression
+   * removed (3.0b — orphaned). retrieve is kept for the retrieve() path.
    */
-  async distill(store: MemoryStore, triggerThreadId: string): Promise<DistillResult> {
-    // Phase 1a: build digest (tombstone/quarantine-honored)
-    const { text: digest, empty } = buildDigest(store);
+  async distill(store: MemoryStore, triggerThreadId: string): Promise<DistillDelta> {
+    // Phase 1: read watermark (resilient R2 — column may be absent on pre-v2-03 stores)
+    const state = store.readThreadDistillState(triggerThreadId);
+    const sinceTurn = state.distilled_through_turn;
 
-    // 5b: empty archive → short-circuit without LLM call
-    if (empty) {
-      return { threadId: triggerThreadId, facts: [] };
+    // Phase 2: read new tail since the watermark (tombstone/quarantine-honored).
+    // `readNewTailSince` uses `turn_index > sinceTurn` (strict greater-than).
+    // `sinceTurn = -1` is the sentinel for "never distilled yet" (schema default).
+    // A thread's first message is at turn_index = 0, so turn_index > -1 = all messages.
+    // After a real distill the watermark is advanced to maxTurnIndex (≥ 0), so
+    // -1 correctly captures only the first-distill case without a special branch.
+    const allTail = store.readNewTailSince(triggerThreadId, sinceTurn);
+
+    // Filter: drop REDACTION_MARKER (tombstoned) and quarantined messages
+    const tail = allTail.filter(
+      (m) =>
+        m.content !== REDACTION_MARKER &&
+        !store.isMessageQuarantined(m.id),
+    );
+
+    // Phase 3: empty tail → short-circuit (no LLM call)
+    const distilledThroughMarker = store.readThreadMarker(triggerThreadId);
+    const distilledThroughTurn = store.maxTurnIndex(triggerThreadId);
+
+    if (tail.length === 0) {
+      return {
+        threadId: triggerThreadId,
+        ops: [],
+        candidateIds: [],
+        distilledThroughMarker,
+        distilledThroughTurn,
+      };
     }
 
-    // Phase 1b: LLM call (outside any SQLite tx — grill #6 seam)
+    // Phase 4: build tail text — "[role|id] content" line format, one line per message
+    const tailText = tail
+      .map((m) => `[${m.role}|${m.id}] ${m.content}`)
+      .join("\n");
+
+    // Phase 4b: FTS5/BM25 candidate fetch over FULL corpus (outside any tx)
+    const candidates = store.fetchCandidates(tailText);
+    const candidateIds = candidates.map((c) => c.id);
+
+    // Phase 5: build numbered candidate pool for the prompt (1..K → {fact, topics})
+    const poolLines = candidates.map((c, i) => {
+      const topicsStr = c.topics.length > 0 ? ` [${c.topics.join(", ")}]` : "";
+      return `${i + 1}. ${c.fact}${topicsStr}`;
+    });
+    const poolSection =
+      poolLines.length > 0
+        ? `\nEXISTING FACTS (candidates 1..${candidates.length}):\n${poolLines.join("\n")}`
+        : "\nEXISTING FACTS: (none yet)";
+
+    // Phase 6: ONE LLM call (outside any tx — grill #6 seam)
     const client = this.getClient();
 
-    // Collect forgotten suppression data for all three post-filter layers.
-    // Re-sourced from forgotten_facts (chunk 04) — not from deleted distilled_facts rows.
-    const { norms: forgottenNorms, provSets: forgottenProvSets, rawTexts: forgottenRawTexts } =
-      this._getForgottenSuppression(store);
-
-    // Layer-X (soft nudge): forgotten fact texts appended as LLM exclusion block.
-    // A generative model can ignore this instruction — the load-bearing mechanism
-    // is Layer-T (normalized text match). This is a soft nudge, not a guarantee.
-    let systemText = SMART_SYSTEM_PROMPT;
-    if (forgottenRawTexts.length > 0) {
-      const exclusionLines = forgottenRawTexts.map((t) => `- ${t}`).join("\n");
-      systemText =
-        SMART_SYSTEM_PROMPT +
-        `\n\nDo NOT emit any fact equivalent to these previously-forgotten facts:\n${exclusionLines}`;
-    }
+    const userContent = `NEW TAIL:\n${tailText}${poolSection}`;
 
     const response = await client.messages.create({
       model: SMART_MODEL,
       max_tokens: SMART_MAX_TOKENS,
       thinking: { type: "disabled" },
-      system: [{ type: "text", text: systemText }],
-      messages: [{ role: "user", content: digest }],
+      system: [{ type: "text", text: SMART_DELTA_SYSTEM_PROMPT }],
+      messages: [{ role: "user", content: userContent }],
     });
 
-    // Output-truncation guard (ADR-0012 5b — distillation must be observable, never
-    // silent corruption; spec §2 D-E / q#006). The fact set (LLM OUTPUT) grows
-    // monotonically with the archive (global re-projection, O(total archive), D8);
-    // once it outgrows max_tokens the JSON is truncated mid-array. Do NOT parse the
-    // partial body — throw a DISTINCT truncation error so chunk-02's Phase-1 catch can
-    // route it to trigger="reprojection-truncated" (the NAMED trigger for the future
-    // summarization tier, spec §1) instead of the generic "reprojection-failed".
+    // Phase 7: output-truncation guard — throw a DISTINCT truncation error
+    // so registration can route to trigger="distill-truncated" (not "distill-failed").
     if (response.stop_reason === "max_tokens") {
       throw new SmartDistillError(
-        "[smart-distiller] LLM output hit the SMART_MAX_TOKENS cap (stop_reason=max_tokens); " +
-          "the fact JSON is truncated. Not parsing the partial body. Raising the cap is runway, " +
-          "not a cure — at O(total archive) the cap is eventually re-hit; the real fix is the " +
-          "summarization tier (out of scope).",
+        "[smart-distiller] LLM delta output hit the SMART_MAX_TOKENS cap (stop_reason=max_tokens); " +
+          "the op array is truncated. Not parsing the partial body.",
         { truncated: true },
       );
     }
@@ -388,77 +557,22 @@ export class SmartDistillerProvider implements MemoryProvider {
       }
     }
 
-    // Phase 1c: defensive parse (throws SmartDistillError on bad JSON/non-array)
-    const parsed = parseFacts(rawText);
+    // Phase 8: defensive parse (throws SmartDistillError on bad JSON/non-array; drops malformed ops)
+    const ops = parseOps(rawText);
 
-    // Phase 1d: best-effort post-filters (one real layer + two opportunistic nudges)
-    //
-    // Layer-1 — provenance tombstone filter (sourced from mutations via isFactTombstoned):
-    //   Drop facts whose provenance is tombstoned (message-redaction path).
-    //   Comma-joined provenances: drop if ANY component is tombstoned.
-    //   (MITIGATION: the LLM can assign a new provenance to re-express the same fact.)
-    const afterLayer1 = parsed.filter((f) => {
-      const components = f.provenance.split(",").map((p) => p.trim());
-      return !components.some((p) => store.isFactTombstoned(p));
-    });
-
-    // Layer-T — the ONE real text-match layer (sourced from forgotten_facts.normalized_text):
-    //   Drop candidates whose normalized text is in the forgotten set.
-    //   5e-aware: do NOT suppress when a human-authored distilled_fact with the same
-    //   normalized text exists (ADR-0015 decision 4 / ADR-0012 5e).
-    //   (MITIGATION: exact-after-normalize match; a rephrased fact defeats this.)
-    const afterLayerT = afterLayer1.filter((f) => {
-      const norm = normalizeFactText(f.fact);
-      if (!forgottenNorms.has(norm)) return true; // not forgotten — keep
-      // 5e-aware: human fact with same text → do NOT suppress
-      if (store.hasHumanFactWithNormalizedText(norm)) return true;
-      return false; // forgotten + no human override → drop
-    });
-
-    // Layer-P — opportunistic nudge (provenance-SET equality, NOT intersection):
-    //   Drop iff the candidate's normalized provenance SET equals a forgotten provenance set.
-    //   Fires rarely because provenance is unstable across re-projections (ADR-0015 root #2).
-    //   NOT marketed as defense — opportunistic/audit only.
-    const afterLayerP = afterLayerT.filter((f) => {
-      const candidateSet = sortedSet(f.provenance);
-      return !forgottenProvSets.some((fs) => setsEqual(candidateSet, fs));
-    });
-
-    return { threadId: triggerThreadId, facts: afterLayerP };
-  }
-
-  /**
-   * Collect the suppression data from forgotten_facts for all post-filter layers.
-   * Re-named from _getTombstonedTexts (chunk 04) — re-sourced from forgotten_facts,
-   * not from distilled_facts + isFactTombstoned (the dead MAJOR-1 path deleted here).
-   *
-   * Returns:
-   *   norms:    Set<string>   — normalized texts (Layer-T match key)
-   *   provSets: Set<string>[] — sorted provenance sets (Layer-P match key)
-   *   rawTexts: string[]      — raw fact texts (Layer-X LLM exclusion nudge)
-   */
-  private _getForgottenSuppression(store: MemoryStore): {
-    norms: Set<string>;
-    provSets: Set<string>[];
-    rawTexts: string[];
-  } {
-    const rows = store.readForgottenFacts();
-    const norms = new Set<string>();
-    const provSets: Set<string>[] = [];
-    const rawTexts: string[] = [];
-    for (const row of rows) {
-      norms.add(row.normalized_text);
-      rawTexts.push(row.raw_text);
-      if (row.provenance) {
-        provSets.push(sortedSet(row.provenance));
-      }
-    }
-    return { norms, provSets, rawTexts };
+    // Phase 9: return the delta
+    return {
+      threadId: triggerThreadId,
+      ops,
+      candidateIds,
+      distilledThroughMarker,
+      distilledThroughTurn,
+    };
   }
 
   /**
    * Compose the bounded distilled slice for injection at a new thread's start.
-   * Identical contract to DumbTailProvider.retrieve and FixedMarkerProvider.retrieve.
+   * Identical contract to DumbTailProvider.retrieve.
    *
    * Defense-in-depth (chunk 04 / D-F):
    *   - Existing: excludes any fact whose provenance is tombstoned (F1 backstop).
@@ -483,24 +597,8 @@ export class SmartDistillerProvider implements MemoryProvider {
   }
 }
 
-// ── Internal helpers ──────────────────────────────────────────────────────────
-
-/** Build a sorted Set<string> from a comma-joined provenance string. */
-function sortedSet(provenance: string): Set<string> {
-  return new Set(
-    provenance
-      .split(",")
-      .map((p) => p.trim())
-      .filter(Boolean)
-      .sort(),
-  );
-}
-
-/** Compare two Sets for equality (provenance-SET equality, not intersection). */
-function setsEqual(a: Set<string>, b: Set<string>): boolean {
-  if (a.size !== b.size) return false;
-  for (const v of a) {
-    if (!b.has(v)) return false;
-  }
-  return true;
-}
+// Note: sortedSet / setsEqual / Layer-P (provenance-SET equality filter) were dropped in
+// v2-03 — the distill path no longer runs a full projection post-filter.
+// _getForgottenSuppression (which built provSets) was removed in 3.0b: the private helper
+// was orphaned when the Layer-1/T/P post-filters were dropped from distill(); the store
+// read-side suppression (MAJOR-1, relay-004) covers the live slice. forget rewiring is v2-04.

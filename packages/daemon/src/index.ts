@@ -236,7 +236,8 @@ export function startDaemon(port: number = DAEMON_PORT, provider?: AgentProvider
         // ── CM-03: dismiss = close(ws). After the flush, consolidate EVERY active
         //    (not-yet-dismissed) thread on this connection (spec §3.2; ADR-0014 d.2).
         //    dismiss ⇒ persist + distill (ADR-0012): the thread is NOT deleted.
-        //    D5: ONE batch dismiss fires ONE projection rebuild (not per-thread).
+        //    v2-03 incremental: handler fires once with the batch; the distiller runs N
+        //    independent per-thread incremental distills (§3.3 D-V3e).
         //    B1 discipline: the whole batch is non-fatal — log, never crash, never block
         //    cleanup. finally always records all ids so a failed batch never retry-loops.
         const toDismiss = [...(ws.data.touchedThreadIds ?? [])].filter(

@@ -1,12 +1,11 @@
 import { DumbTailProvider } from "./providers/dumb-tail-provider.js";
-import { FixedMarkerProvider } from "./providers/fixed-marker-provider.js";
 import { SmartDistillerProvider } from "./providers/smart-distiller-provider.js";
 import type { MemoryProvider } from "./memory-provider.js";
 import { resolveAnthropicKey, type ResolveResult } from "../secrets/cloud-secrets.js";
 
 const REGISTRY = new Map<string, MemoryProvider>([
   ["dumb-tail", new DumbTailProvider()],
-  ["fixed-marker", new FixedMarkerProvider()],
+  // fixed-marker retired in v2-03 (spec §6). Default stays dumb-tail; flip to smart is v2-05.
 ]);
 
 /** Options accepted by buildMemoryProvider.

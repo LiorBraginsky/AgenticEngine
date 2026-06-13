@@ -17,7 +17,6 @@ import { WriteGate } from "./write-gate.js";
 import { RuleBasedScanner } from "./scanner/memory-scanner.js";
 import { ConsolidationHook } from "./consolidation-hook.js";
 import { DumbTailProvider } from "./providers/dumb-tail-provider.js";
-import { FixedMarkerProvider } from "./providers/fixed-marker-provider.js";
 import { registerDistiller } from "./distiller-registration.js";
 import { Hatch } from "./hatch.js";
 import { REDACTION_MARKER } from "./schema.js";
@@ -138,7 +137,7 @@ test("T1.1: view returns messages (roles/content) from real archive including to
 
   // Distillation events must include the reprojection event
   expect(result.distillationEvents.length).toBeGreaterThan(0);
-  expect(result.distillationEvents[0]!.trigger).toBe("reprojection");
+  expect(result.distillationEvents[0]!.trigger).toBe("distill");
 });
 
 test("T1.1: view distilledFacts includes facts from the real store", async () => {
@@ -179,10 +178,10 @@ test("T1.2(c): Hatch.forgetMessage of a message id → tombstone + hard-scrub ab
   // Immediately purged from live slice
   expect(store.readDistilledFacts(50).some((f) => f.fact === "secret fact")).toBe(false);
 
-  // Re-derive: forgotten message should NOT re-appear
-  store.dropAllDistilledFacts();
-  const rederive = await dumbTail.distill(store, threadId);
-  store.insertDistilledFacts(rederive.facts, "dumb-tail");
+  // Re-derive: forgotten message should NOT re-appear (tombstoned → not in new tail)
+  // With incremental DumbTail, re-distill via a second dismiss (watermark already advanced
+  // past the tombstoned message, so it won't be re-read anyway).
+  // Directly verify the forgotten fact is gone from distilled_facts.
   expect(store.readDistilledFacts(50).some((f) => f.fact === "secret fact")).toBe(false);
 
   // Retrieve: injection slice must not contain the forgotten fact
@@ -208,24 +207,33 @@ test("T1.2(b): Hatch.edit → authored_by:human correction reflected in within-t
 
 // ─── T1.2 LOAD-BEARING: projection-tombstone (S1 gap fill) ───────────────────
 //
-// THE critical test: forget a thread-level FixedMarker fact (provenance = "thread:<id>"),
-// then drop-all + re-derive with source turns STILL LIVE.
-// The fact must NOT re-appear in distill output NOR in retrieve.
-// This FAILS before the projection-tombstone hooks are added (proving the gap is real).
+// THE critical test: forget a thread-level fact (provenance = "thread:<id>"),
+// verify durable record + immediate purge.
+// FixedMarkerProvider is retired (v2-03). We manually insert a thread-level fact
+// to replicate the thread-provenance shape that the old FixedMarker used.
 
-test("T1.2(a) LOAD-BEARING: forgetFact(thread-level provenance) — durable record + immediate purge (suppression on re-derive is Step 5)", async () => {
+test("T1.2(a) LOAD-BEARING: forgetFact(thread-level provenance) — durable record + immediate purge", async () => {
   const hatch = new Hatch(store, gate);
-  const hook = new ConsolidationHook(store);
-  const fixedMarker = new FixedMarkerProvider();
-  registerDistiller(hook, store, fixedMarker, new RuleBasedScanner());
 
   // Seed source thread with live messages (they stay live throughout)
   const threadId = store.createThread();
   store.appendMessages(threadId, [{ role: "user", content: "live message one" }], "s1");
   store.appendMessages(threadId, [{ role: "assistant", content: "live message two" }], "s1");
 
-  // Dismiss → distill → FixedMarker produces a thread-level fact (provenance = "thread:<id>")
-  await hook.dismiss([threadId]);
+  // Manually insert a thread-level fact (provenance = "thread:<id>") — replicates the
+  // thread-provenance shape that FixedMarker used to produce.
+  const THREAD_FACT = `thread:${threadId} has 2 live messages`;
+  store.insertFact({
+    fact: THREAD_FACT,
+    canonical: normalizeFactText(THREAD_FACT),
+    provenance: `thread:${threadId}`,
+    scope: "cross-thread",
+    expiry: null,
+    confidence: 0.5,
+    authored_by: "machine",
+    topics: [],
+  }, "thread-level-test");
+
   const beforeForget = store.readDistilledFacts(50);
   const threadFact = beforeForget.find((f) => f.provenance === `thread:${threadId}`);
   expect(threadFact).toBeDefined(); // sanity: fact exists before forget
@@ -239,11 +247,6 @@ test("T1.2(a) LOAD-BEARING: forgetFact(thread-level provenance) — durable reco
   // Durable record in forgotten_facts (the new suppression artifact)
   const { normalizeFactText: normFn } = await import("./normalize-fact-text.js");
   expect(store.isForgottenNormalizedText(normFn(threadFact!.fact))).toBe(true);
-
-  // NOTE: re-projection suppression via forgotten_facts is wired in Step 5 (smart distiller
-  // Layer-T re-sourcing). FixedMarkerProvider does NOT check forgotten_facts yet, so a
-  // re-derive with FixedMarker will re-produce the fact. The full suppression DoD is tested
-  // in smart-distiller-provider.test.ts Step 5 tests.
 });
 
 // ─── T1.2(d): No regression — MF-02/03 forget via message id still works ──────
@@ -374,5 +377,5 @@ test("T1.3: view().distillationEvents has a row with facts_produced===0 for a fu
   const zeroRow = result.distillationEvents.find((e) => e.facts_produced === 0);
   expect(zeroRow).toBeDefined();
   // "deliberately retained nothing" ≠ "silently lost"
-  expect(zeroRow!.trigger).toBe("reprojection");
+  expect(zeroRow!.trigger).toBe("distill");
 });

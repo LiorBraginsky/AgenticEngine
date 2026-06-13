@@ -111,18 +111,15 @@ test("DoD#1: a poisoned turn is quarantined at the gate — archived (lossless) 
   expect(markers.length).toBeGreaterThan(0);
   expect(markers.some((m) => m.rule === "injection-directive")).toBe(true);
 
-  // Step 5: distill the thread — the quarantined message must be SKIPPED by the
-  // DumbTailProvider (isMessageQuarantined filter) and therefore produce NO fact.
+  // Step 5: the production dismiss already ran when the WS closed (via the real dismiss handler).
+  // v2-03: distill() now returns DistillDelta (not result.facts). The production dismiss path
+  // already ran on WS close, so we assert directly on readDistilledFacts.
+  // The quarantined message must NOT have produced a distilled fact.
   const dumbTail = new DumbTailProvider();
-  const distillResult = await dumbTail.distill(store, threadA);
-  // The poisoned user message yields no fact (quarantined).
-  // The assistant message (if any) may produce a fact, but the poisoned content
-  // must not appear in the facts at all.
-  expect(distillResult.facts.some((f) => f.fact.includes("ignore previous instructions"))).toBe(false);
-
-  // Step 6: insert any clean facts and assert the injected slice cannot contain poison.
-  store.insertDistilledFacts(distillResult.facts, "dumb-tail");
   expect(store.readDistilledFacts(50).some((f) => f.fact.includes("ignore previous instructions"))).toBe(false);
+
+  // Step 6: additional retrieve() check — the injected slice must also be poison-free.
+  // (readDistilledFacts check above already covers this, but retrieve() is the actual injection path)
 
   // Step 7: INJECTION-POINT (retrieve) — a fresh thread's slice must not contain poison.
   const freshThread = store.createThread();

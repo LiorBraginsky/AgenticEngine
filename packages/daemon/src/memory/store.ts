@@ -52,6 +52,7 @@ export interface FactCandidate {
 export interface ThreadDistillState {
   marker: number;
   distilled_through: number;
+  distilled_through_turn: number;
 }
 
 /** Minimal input to record a quarantine marker (MF-03 5d). */
@@ -196,8 +197,9 @@ export class MemoryStore {
       this.db.query("UPDATE threads SET last_active_at = ? WHERE thread_id = ?").run(now, threadId);
       // v2-02: bump the per-thread mutation marker atomically with the message insert
       // (NOT tied to last_active_at — the marker tracks ALL mutations: append/edit/forget)
+      // v2-03: also carries distilled_through_turn in the INSERT (column now in schema).
       this.db.query(
-        `INSERT INTO thread_distill_state (thread_id, marker, distilled_through) VALUES (?, 1, 0)
+        `INSERT INTO thread_distill_state (thread_id, marker, distilled_through, distilled_through_turn) VALUES (?, 1, 0, 0)
          ON CONFLICT(thread_id) DO UPDATE SET marker = marker + 1`,
       ).run(threadId);
     });
@@ -596,9 +598,12 @@ export class MemoryStore {
     return result.length;
   }
 
-  /** DELETE all rows from distilled_facts (used for swap-proof test / machine rebuild).
-   * MF-03 5e guard: never deletes a human-authored distilled fact — human-pinned facts
-   * survive a full machine re-derive cycle. */
+  /**
+   * ONE-TIME MIGRATION ONLY (v2-05 §3.8). NOT a per-dismiss path.
+   * DELETE all machine-authored rows from distilled_facts (5e guard: human-pinned
+   * facts survive). Used exclusively by the explicit migration script — never by the
+   * incremental distiller's per-dismiss flow.
+   */
   dropAllDistilledFacts(): void {
     this.db.query("DELETE FROM distilled_facts WHERE authored_by != 'human'").run();
   }
@@ -936,7 +941,7 @@ export class MemoryStore {
    * NOT tied to last_active_at (which only append touches). Returns the new marker. */
   bumpThreadMarker(threadId: string): number {
     this.db.query(
-      `INSERT INTO thread_distill_state (thread_id, marker, distilled_through) VALUES (?, 1, 0)
+      `INSERT INTO thread_distill_state (thread_id, marker, distilled_through, distilled_through_turn) VALUES (?, 1, 0, 0)
        ON CONFLICT(thread_id) DO UPDATE SET marker = marker + 1`,
     ).run(threadId);
     return this.readThreadMarker(threadId);
@@ -951,15 +956,98 @@ export class MemoryStore {
   /** Record the marker value the distiller has covered (v2-03 reads marker vs this to skip). */
   advanceDistilledThrough(threadId: string, marker: number): void {
     this.db.query(
-      `INSERT INTO thread_distill_state (thread_id, marker, distilled_through) VALUES (?, ?, ?)
+      `INSERT INTO thread_distill_state (thread_id, marker, distilled_through, distilled_through_turn) VALUES (?, ?, ?, 0)
        ON CONFLICT(thread_id) DO UPDATE SET distilled_through = excluded.distilled_through`,
     ).run(threadId, marker, marker);
   }
 
-  /** Read both markers (0/0 if no row yet). */
+  /**
+   * Read all three markers (0/0/0 if no row yet).
+   *
+   * R2 RESILIENT READ: on a pre-v2-03 live store the `distilled_through_turn` column
+   * may not exist in `thread_distill_state` (the table was created without it and
+   * `CREATE TABLE IF NOT EXISTS` is a no-op). A naive `SELECT distilled_through_turn`
+   * would CRASH. Guard: PRAGMA table_info to detect absence; if absent, default to 0
+   * — meaning the whole thread is "new tail" until v2-05 adds the column via migration.
+   * Any interim duplicates from default-0 whole-thread reads are wiped by v2-05 §3.8.
+   */
   readThreadDistillState(threadId: string): ThreadDistillState {
-    const row = this.db.query("SELECT marker, distilled_through FROM thread_distill_state WHERE thread_id = ?").get(threadId) as ThreadDistillState | null;
-    return row ?? { marker: 0, distilled_through: 0 };
+    if (!this._hasDistilledThroughTurnColumn()) {
+      const row = this.db.query("SELECT marker, distilled_through FROM thread_distill_state WHERE thread_id = ?").get(threadId) as { marker: number; distilled_through: number } | null;
+      return row ? { ...row, distilled_through_turn: 0 } : { marker: 0, distilled_through: 0, distilled_through_turn: 0 };
+    }
+    const row = this.db.query("SELECT marker, distilled_through, distilled_through_turn FROM thread_distill_state WHERE thread_id = ?").get(threadId) as ThreadDistillState | null;
+    return row ?? { marker: 0, distilled_through: 0, distilled_through_turn: 0 };
+  }
+
+  /**
+   * Returns messages with turn_index > sinceTurn, tombstone/quarantine-honored,
+   * applying the same "latest HUMAN correction wins, else latest correction" COALESCE
+   * as readThreadMessagesForDistill. Ordered ASC by turn_index.
+   * sinceTurn = 0 ⇒ whole thread (first distill of a thread).
+   * Used by v2-03 SmartDistillerProvider + DumbTailProvider for new-tail incremental reads.
+   */
+  readNewTailSince(threadId: string, sinceTurn: number): MessageForDistillRow[] {
+    const rows = this.db
+      .query(
+        `SELECT m.id AS id, m.role AS role, m.content AS content,
+                MAX(CASE WHEN x.kind = 'tombstone' THEN 1 ELSE 0 END) AS tombstoned,
+                COALESCE(
+                  (SELECT replacement_content FROM mutations
+                     WHERE target_message_id = m.id AND kind = 'correction' AND authored_by = 'human'
+                     ORDER BY created_at DESC LIMIT 1),
+                  (SELECT replacement_content FROM mutations
+                     WHERE target_message_id = m.id AND kind = 'correction'
+                     ORDER BY created_at DESC LIMIT 1)
+                ) AS correction
+         FROM messages m
+         LEFT JOIN mutations x ON x.target_message_id = m.id
+         WHERE m.thread_id = ? AND m.turn_index > ?
+         GROUP BY m.id
+         ORDER BY m.turn_index ASC`,
+      )
+      .all(threadId, sinceTurn) as TailRow[];
+    return rows.map((r) => ({
+      id: r.id,
+      role: r.role,
+      content: r.tombstoned ? REDACTION_MARKER : (r.correction ?? r.content),
+    }));
+  }
+
+  /** COALESCE(MAX(turn_index), 0) for a thread — the highest turn_index stored, or 0. */
+  maxTurnIndex(threadId: string): number {
+    const row = this.db
+      .query("SELECT COALESCE(MAX(turn_index), 0) AS n FROM messages WHERE thread_id = ?")
+      .get(threadId) as { n: number };
+    return row.n;
+  }
+
+  /**
+   * Advance the distilled_through_turn watermark (upsert).
+   * R2: only written on stores that have the column (fresh v2-03+); never called
+   * on pre-v2-03 live stores in the per-dismiss path (column guard in readThreadDistillState).
+   */
+  advanceDistilledThroughTurn(threadId: string, turn: number): void {
+    if (!this._hasDistilledThroughTurnColumn()) return; // R2: no-op on pre-v2-03 store shape
+    this.db.query(
+      `INSERT INTO thread_distill_state (thread_id, marker, distilled_through, distilled_through_turn) VALUES (?, 0, 0, ?)
+       ON CONFLICT(thread_id) DO UPDATE SET distilled_through_turn = excluded.distilled_through_turn`,
+    ).run(threadId, turn);
+  }
+
+  /**
+   * R2 column-presence cache: PRAGMA table_info to check whether the `distilled_through_turn`
+   * column exists in `thread_distill_state`. Cached after first check — schema cannot change
+   * at runtime. Returns true for fresh v2-03+ stores; false for pre-v2-03 live stores.
+   */
+  private _distilledThroughTurnColumnPresent: boolean | null = null;
+  private _hasDistilledThroughTurnColumn(): boolean {
+    if (this._distilledThroughTurnColumnPresent !== null) {
+      return this._distilledThroughTurnColumnPresent;
+    }
+    const cols = this.db.query("PRAGMA table_info(thread_distill_state)").all() as { name: string }[];
+    this._distilledThroughTurnColumnPresent = cols.some((c) => c.name === "distilled_through_turn");
+    return this._distilledThroughTurnColumnPresent;
   }
 
   // ── MAJOR-1 read-side suppression helpers (relay-004) ───────────────────────

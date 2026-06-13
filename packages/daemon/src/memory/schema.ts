@@ -127,11 +127,15 @@ BEGIN
 END;
 
 -- Per-thread mutation marker (bumped on append/edit/forget — NOT last_active_at) +
--- distilled_through (the marker the distiller last covered). Additive side table, NO ALTER on threads.
+-- distilled_through (the marker the distiller last covered) +
+-- distilled_through_turn (v2-03: max turn_index covered by the last distill run,
+--   used by the new-tail read. Live-store column add owned by v2-05 migration;
+--   reads are resilient to its absence — see store.ts R2 guard). Additive side table, NO ALTER on threads.
 CREATE TABLE IF NOT EXISTS thread_distill_state (
-  thread_id         TEXT PRIMARY KEY,
-  marker            INTEGER NOT NULL DEFAULT 0,
-  distilled_through INTEGER NOT NULL DEFAULT 0
+  thread_id              TEXT PRIMARY KEY,
+  marker                 INTEGER NOT NULL DEFAULT 0,
+  distilled_through      INTEGER NOT NULL DEFAULT 0,
+  distilled_through_turn INTEGER NOT NULL DEFAULT 0
 );
 
 -- Durable audit of REPLACE-overwritten fact text (spec §3.2 m4 auditability).

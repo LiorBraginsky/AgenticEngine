@@ -1,7 +1,12 @@
 import type { MemoryStore } from "./store.js";
 import type { SessionMessage } from "../providers/provider.js";
 
-/** A re-derivable projection of the archive. Disposable; never a source of truth. */
+/**
+ * A row in the STATEFUL, incrementally-accumulated derived fact store
+ * (ADR-0012 Amendment 2026-06-13); stable id; auditable + forgettable,
+ * NOT pure f(archive). Persists unchanged until (a) a genuinely-contradicting
+ * new fact replaces it, (b) the user edits it, or (c) the user/forget removes it.
+ */
 export interface DistilledFact {
   fact: string;
   provenance: string; // a messages.id (or a JSON ref) the fact was derived FROM
@@ -11,33 +16,53 @@ export interface DistilledFact {
   authored_by: "machine"; // v0 distiller is always machine-authored
 }
 
-/** Distillation outcome — observable even when empty (5b). NEVER throws. */
+/** @deprecated Use DistillDelta instead. Left for reference by old providers during migration. */
 export interface DistillResult {
   threadId: string;
   facts: DistilledFact[]; // may be [] — "deliberately retained nothing"
 }
 
+/** ONE targeted change to the stable-id fact store, proposed by the distiller (spec §3.1). */
+export interface FactOp {
+  op: "new" | "append" | "replace";
+  fact: string;            // user-language DISPLAY text (D-V6e language preserved)
+  canonical: string;       // LLM-normalized match key → fact_fts (D-V4c). Empty ⇒ caller falls back to normalizeFactText(fact).
+  topics: string[];        // coarse LLM tags (§3.5); WIDEN recall only (B1)
+  targetOrdinal?: number;  // 1..K index into the candidate list shown to the LLM (NOT a uuid — [grill B2])
+  expectedTargetText?: string; // candidate text the LLM reasoned about (optimistic-concurrency — [grill M5])
+}
+
+/** The incremental delta a dismiss produces (spec §3.1). NOT a full projection. */
+export interface DistillDelta {
+  threadId: string;
+  ops: FactOp[];
+  candidateIds: string[];           // the candidate ids in ordinal order; candidateIds[targetOrdinal-1] resolves the target (orchestrator-blessed port extension)
+  distilledThroughMarker: number;   // the mutation marker this delta covers ([grill M4])
+  distilledThroughTurn: number;     // the max turn_index this delta covered (new-tail watermark, R2)
+}
+
 /**
- * The swappable distillation/retrieval seam (spec §3.2 invariant 2; ADR-0010 posture).
- * THIN, one id field, no `kind`. A new distiller later = a new impl of THIS port +
- * re-run the projection — no source-of-truth migration (invariant 3).
+ * The swappable distillation/retrieval seam.
  *
- * ASYNC: matches AgentProvider precedent. DumbTailProvider returns Promise.resolve()
- * at zero cost. Smart distiller (future) will need network/LLM calls (Q3 — Lior approved).
+ * STATEFUL: the fact store is a STATEFUL, incrementally-accumulated derived store
+ * (ADR-0012 Amendment 2026-06-13). NOT pure f(archive) — path-dependent.
+ *
+ * `distill` reads ONLY the just-ended thread's NEW TAIL (since its last distill
+ * watermark — §3.1 [grill M4]) and proposes a DELTA of targeted FactOps over the
+ * STABLE-id fact store. FTS5 + any LLM call run OUTSIDE any tx. NOT a re-derivable
+ * projection — the fact store is STATEFUL (ADR-0012 Amendment 2026-06-13). A failure
+ * rejects to registration's never-drop failure path.
  */
 export interface MemoryProvider {
-  readonly id: string; // "dumb-tail", "fixed-marker" (the swap-proof second impl)
+  readonly id: string;
 
   /**
-   * Returns the COMPLETE projection over the whole tombstone-honored archive
-   * (iterates `listThreads()`). `threadId` is the TRIGGER thread (recorded in
-   * `DistillResult.threadId`), not a filter.
-   *
-   * Read-only over messages/mutations (lossless, §4.2). MUST honor tombstones —
-   * a forgotten message never yields a fact (F1). Each provider iterates ALL
-   * threads regardless of which thread triggered the distillation.
+   * Reads ONLY the just-ended thread's NEW TAIL (since its last distill watermark — §3.1 [grill M4])
+   * and proposes a DELTA of targeted FactOps over the STABLE-id fact store. FTS5 + any LLM call run
+   * OUTSIDE any tx. NOT a re-derivable projection — the fact store is STATEFUL (ADR-0012 Amendment
+   * 2026-06-13). A failure rejects to registration's never-drop failure path.
    */
-  distill(store: MemoryStore, threadId: string): Promise<DistillResult>;
+  distill(store: MemoryStore, threadId: string): Promise<DistillDelta>;
 
   /**
    * Compose the bounded distilled slice to inject at a NEW thread's start.

@@ -145,15 +145,26 @@ try {
   console.log("  (This is a live API call — requires internet + valid key + billing)");
   console.log("");
 
-  const result = await provider.distill(store, triggerThreadId);
+  // v2-03: distill() returns DistillDelta (ops, not facts). Use the registration path
+  // (registerDistiller + hook.dismiss) to drive distillation and read facts from the store.
+  // This matches how the daemon actually drives distillation.
+  const { ConsolidationHook } = await import("../src/memory/consolidation-hook.js");
+  const { registerDistiller } = await import("../src/memory/distiller-registration.js");
+  const { RuleBasedScanner } = await import("../src/memory/scanner/memory-scanner.js");
+
+  const hook = new ConsolidationHook(store);
+  registerDistiller(hook, store, provider, new RuleBasedScanner());
+  await hook.dismiss([triggerThreadId]);
+
+  const facts = store.readDistilledFacts(50);
 
   // ── Step 5: Print each produced fact (NEVER print the key) ───────────────
 
-  console.log(`[smart-probe] distill returned ${result.facts.length} fact(s):`);
+  console.log(`[smart-probe] distill produced ${facts.length} fact(s) (via registration path):`);
   console.log("");
 
-  for (let i = 0; i < result.facts.length; i++) {
-    const f = result.facts[i]!;
+  for (let i = 0; i < facts.length; i++) {
+    const f = facts[i]!;
     console.log(`[smart-probe] fact[${i}]: {`);
     console.log(`  fact:       ${JSON.stringify(f.fact)}`);
     console.log(`  scope:      ${JSON.stringify(f.scope)}`);
@@ -167,7 +178,7 @@ try {
 
   // ── Step 6: Assert ≥1 fact ────────────────────────────────────────────────
 
-  if (result.facts.length >= 1) {
+  if (facts.length >= 1) {
     console.log("╔══════════════════════════════════════════════════════════════════════╗");
     console.log("║  PROBE PASSED — ≥1 fact produced                                     ║");
     console.log("║  Paste this stdout into the PR body = Strike-5 EXECUTED evidence.    ║");

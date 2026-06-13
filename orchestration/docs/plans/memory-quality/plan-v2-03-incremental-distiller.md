@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. All paths are repo-relative to `/Users/lior/WebstormProjects/playground/AgenticEngine`.
 
-## Status: In progress (Phase 2 — implementation)
+## Status: In progress (Phase 2) — Step 1 DONE (commit 6301bdb: delta port + registration delta-apply + STABILITY/idempotence/asymmetric tests GREEN; R1 spec-literal ONE-tx composed, no fallback; R2 resilient read verified). Step 2 DONE (commit 02ae9da: SmartDistiller incremental delta rewrite, 22/0, language preserved). Step 3 in progress (incl. 3 carry-over fixes: watermark sentinel -1, unused `_getForgottenSuppression` 6133, await-no-effect 80007).
 
 **Goal:** Replace the global-re-projection distiller strategy (`distill()` → full projection; `replaceProjection` = DELETE-all + INSERT) with an incremental, stable-id distiller that returns a `DistillDelta` of targeted `FactOp`s and applies them in one rule-gated transaction — delivering the STABILITY guarantee the 2026-06-13 demo proved missing.
 

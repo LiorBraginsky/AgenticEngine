@@ -7,6 +7,8 @@ import { WriteGate } from "./write-gate.js";
 import { ThreadLifecycle } from "./thread-lifecycle.js";
 import { DumbTailProvider } from "./providers/dumb-tail-provider.js";
 import { RuleBasedScanner } from "./scanner/memory-scanner.js";
+import { ConsolidationHook } from "./consolidation-hook.js";
+import { registerDistiller } from "./distiller-registration.js";
 
 const dumbTailProvider = new DumbTailProvider();
 
@@ -87,11 +89,14 @@ test("endTurn flushes only the DELTA (new messages this turn), not the hydrated 
 
 test("a NEW thread is injected with the cross-thread distilled slice (injection-point)", async () => {
   const { store, lifecycle } = freshTL();
-  // Thread A: state a fact, then distill it (simulating a prior dismiss).
+  // Thread A: state a fact, then distill it via the registration path (simulating a prior dismiss).
+  // v2-03: distill() now returns DistillDelta; use registerDistiller + hook.dismiss instead of
+  //        the old dumbTailProvider.distill(store, tA) + store.insertDistilledFacts(result.facts, ...).
+  const hook = new ConsolidationHook(store);
+  registerDistiller(hook, store, dumbTailProvider, new RuleBasedScanner());
   const tA = store.createThread();
   store.appendMessages(tA, [{ role: "user", content: "deploy is yeet.sh" }], "sa");
-  const result = await dumbTailProvider.distill(store, tA);
-  store.insertDistilledFacts(result.facts, "dumb-tail");
+  await hook.dismiss([tA]);
   // Thread B: a fresh session_start with NO thread_id mints B and injects A's fact.
   const begin = await lifecycle.beginTurn({ type: "session_start", trigger: "user", text: "hi" });
   expect(begin.priorMessages).toContainEqual({ role: "user", content: "[remembered] deploy is yeet.sh" });
@@ -99,11 +104,14 @@ test("a NEW thread is injected with the cross-thread distilled slice (injection-
 
 test("injected cross-thread slice is NOT re-persisted into the new thread (delta-flush guard)", async () => {
   const { store, lifecycle } = freshTL();
-  // Thread A: state a fact, distill it.
+  // Thread A: state a fact, distill it via registration path.
+  // v2-03: distill() now returns DistillDelta; use registerDistiller + hook.dismiss instead of
+  //        the old dumbTailProvider.distill(store, tA) + store.insertDistilledFacts(result.facts, ...).
+  const hook = new ConsolidationHook(store);
+  registerDistiller(hook, store, dumbTailProvider, new RuleBasedScanner());
   const tA = store.createThread();
   store.appendMessages(tA, [{ role: "user", content: "fact A" }], "sa");
-  const result = await dumbTailProvider.distill(store, tA);
-  store.insertDistilledFacts(result.facts, "dumb-tail");
+  await hook.dismiss([tA]);
   // Thread B: beginTurn injects A's distilled fact into priorMessages.
   const b = await lifecycle.beginTurn({ type: "session_start", trigger: "user", text: "hi" });
   lifecycle.bindSession("sb", b.threadId, b.priorMessages.length);

@@ -94,7 +94,7 @@ export class WriteGate {
     // Append the redaction event line so the audit trail records that a forget occurred.
     this.store.mirrorEvent(threadId, { event: "forget", target_message_id: messageId, actor: ctx.actor, created_at: now });
     // purge any live distilled_facts rows referencing the forgotten content (grill S2)
-    // Both message-level provenance (DumbTail shape) and thread-level provenance (FixedMarker shape).
+    // Message-level provenance shape (DumbTail). Thread-level provenance was FixedMarker (retired v2-03).
     this.store.dropDistilledFactsByProvenance(messageId);
     this.store.dropDistilledFactsForThread(threadId);
     // N1: any quarantine_markers row for this messageId is intentionally left — the tombstone

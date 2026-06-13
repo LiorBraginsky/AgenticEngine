@@ -7,17 +7,18 @@
  *
  * LEG A — SmartDistillerProvider (echo-stub, no LLM call):
  *   1. Seed a real store with known messages.
- *   2. Distill (echo-stub re-emitting source content as facts).
+ *   2. Distill via registerDistiller + hook.dismiss (echo-stub re-emitting source content as FactOps).
  *   3. Forget a specific fact through the REAL Hatch → WriteGate → forgotten_facts path.
- *   4. Re-project with the SAME echo-stub (re-emits same text) — Layer-T must suppress it.
- *   5. Assert (a) the fact stays GONE after re-projection, AND
+ *   4. Re-distill with the SAME echo-stub — watermark blocks re-distill unless new messages added.
+ *      Assertion: fact gone from readDistilledFacts (both purge + read-side suppression).
+ *   5. Assert (a) the fact stays GONE after re-distill, AND
  *             (b) the source message content is BYTE-INTACT (no scrub on fact-forget path, B1).
  *
  * LEG B — DumbTailProvider (provider-agnostic, MAJOR-1 relay-004 fix):
  *   1. Seed a fresh store with known messages.
- *   2. DumbTail distill → produces verbatim-content facts.
+ *   2. DumbTail distill via registerDistiller + hook.dismiss.
  *   3. Forget a fact through REAL Hatch.forgetFact.
- *   4. DumbTail re-project (re-derives from INTACT source).
+ *   4. DumbTail re-distill (after new message bump so skip-guard doesn't fire).
  *   5. Assert the forgotten fact is GONE from:
  *        (a) Hatch VIEW (readDistilledFacts — read-side suppression)
  *        (b) injection slice (readDistilledFactsForThread — read-side suppression)
@@ -45,6 +46,11 @@
  *   [forget-probe] dumb-tail fact gone from inject slice: true
  *   [forget-probe] source message content byte-intact: true  <-- B1 structural invariant
  *   PROBE PASSED
+ *
+ * ─── v2-03 adaptation ─────────────────────────────────────────────────────────
+ * distill() now returns DistillDelta (ops, not facts). We drive distill via the
+ * registration path (registerDistiller + hook.dismiss) and read facts from
+ * store.readDistilledFacts() instead of result.facts.
  */
 
 console.log("");
@@ -67,31 +73,32 @@ import { DumbTailProvider } from "../src/memory/providers/dumb-tail-provider.js"
 import { WriteGate } from "../src/memory/write-gate.js";
 import { RuleBasedScanner } from "../src/memory/scanner/memory-scanner.js";
 import { Hatch } from "../src/memory/hatch.js";
+import { ConsolidationHook } from "../src/memory/consolidation-hook.js";
+import { registerDistiller } from "../src/memory/distiller-registration.js";
 
-// ── Echo stub (no real LLM) ─────────────────────────────────────────────────
-// Parses the digest and re-emits each [role|msgId] content line as a fact.
-// This is the same echo-stub pattern as makeEchoStub in distiller-integration.daemon.test.ts.
+// ── Echo stub (no real LLM) — v2-03 FactOp format ──────────────────────────
+// Parses "[role|msgId] content" lines from the NEW TAIL section and returns FactOps.
+// Matches the echo-stub pattern in distiller-integration.daemon.test.ts.
 
 function makeEchoClient(): Anthropic {
   return {
     messages: {
       create: async (params: { messages: { role: string; content: string }[] }) => {
-        const digestText = params.messages[0]?.content ?? "";
-        const lines = digestText.split("\n");
-        const facts: { fact: string; provenance: string; scope: string; expiry: null; confidence: number }[] = [];
+        const userContent = params.messages[0]?.content ?? "";
+        const lines = userContent.split("\n");
+        const ops: { op: string; fact: string; canonical: string; topics: string[] }[] = [];
         for (const line of lines) {
           const m = line.match(/^\[([^\|]+)\|([^\]]+)\]\s+(.+)$/);
           if (m) {
-            facts.push({
+            ops.push({
+              op: "new",
               fact: m[3]!,
-              provenance: m[2]!,
-              scope: "cross-thread" as const,
-              expiry: null,
-              confidence: 0.8,
+              canonical: (m[3]!).toLowerCase(),
+              topics: [],
             });
           }
         }
-        return { content: [{ type: "text", text: JSON.stringify(facts) }] };
+        return { content: [{ type: "text", text: JSON.stringify(ops) }], stop_reason: "end_turn" };
       },
     },
   } as unknown as Anthropic;
@@ -131,30 +138,33 @@ try {
   console.log(`[forget-probe] msg1Id: ${msg1Id}`);
   console.log("");
 
-  // ── Step 2: First distill (echo-stub) — produces facts from messages ───────
+  // ── Step 2: First distill via registration path ──────────────────────────
+  // v2-03: distill() returns DistillDelta; use registerDistiller + hook.dismiss.
+  // Read facts from store.readDistilledFacts() after dismiss.
 
+  const hook = new ConsolidationHook(store);
   const provider = new SmartDistillerProvider({ client: makeEchoClient() });
-  const distill1 = await provider.distill(store, threadId);
+  registerDistiller(hook, store, provider, new RuleBasedScanner());
 
-  console.log(`[forget-probe] distill1 produced ${distill1.facts.length} fact(s):`);
-  for (let i = 0; i < distill1.facts.length; i++) {
-    const f = distill1.facts[i]!;
+  await hook.dismiss([threadId]);
+
+  const facts1 = store.readDistilledFacts(50);
+  console.log(`[forget-probe] distill1 produced ${facts1.length} fact(s):`);
+  for (let i = 0; i < facts1.length; i++) {
+    const f = facts1[i]!;
     console.log(`[forget-probe] fact[${i}]: ${JSON.stringify(f.fact)} (provenance: ${f.provenance})`);
   }
   console.log("");
 
-  if (distill1.facts.length < 2) {
-    throw new Error(`Expected ≥2 facts from echo-stub, got ${distill1.facts.length}`);
+  if (facts1.length < 2) {
+    throw new Error(`Expected ≥2 facts from echo-stub, got ${facts1.length}`);
   }
 
   // Find the fact for the known content
-  const knownFact = distill1.facts.find((f) => f.fact === KNOWN_FACT);
+  const knownFact = facts1.find((f) => f.fact === KNOWN_FACT);
   if (!knownFact) {
     throw new Error(`Could not find the expected fact "${KNOWN_FACT}" in distill1 output`);
   }
-
-  // Persist facts to distilled_facts (simulates what the daemon does after distill)
-  store.insertDistilledFacts(distill1.facts, "smart");
 
   // ── Step 3: Forget the fact through REAL Hatch → WriteGate → forgotten_facts ─
 
@@ -174,13 +184,23 @@ try {
   console.log(`[forget-probe] forgotten row normalized_text: ${JSON.stringify(forgottenRows[0]!.normalized_text)}`);
   console.log("");
 
-  // ── Step 4: Re-project with echo-stub (re-emits the SAME text under a fresh provenance) ──
+  // ── Step 4: Re-project with echo-stub ─────────────────────────────────────
+  // v2-03 incremental: the watermark was advanced after the first dismiss, so a
+  // second dismiss with no new messages would be a skip-guard no-op. To force
+  // a re-distill, append a bump message so the skip-guard fires.
+  // The forgotten fact's provenance (thread:<threadId>) was purged from distilled_facts
+  // by purgeLiveMachineFactsByForget. The read-side suppression (forgotten_facts text check)
+  // is an additional backstop. We check both surfaces.
 
-  console.log("[forget-probe] re-projecting (echo-stub re-emits same text with its message id)...");
-  const distill2 = await provider.distill(store, threadId);
-  console.log(`[forget-probe] re-projection produced ${distill2.facts.length} fact(s)`);
-  for (let i = 0; i < distill2.facts.length; i++) {
-    const f = distill2.facts[i]!;
+  console.log("[forget-probe] adding bump message to force re-distill...");
+  store.appendMessages(threadId, [{ role: "user", content: "bump" }], "probe-bump");
+  console.log("[forget-probe] re-projecting (echo-stub re-emits same text with fresh FactOps)...");
+  await hook.dismiss([threadId]);
+
+  const facts2 = store.readDistilledFacts(50);
+  console.log(`[forget-probe] re-projection found ${facts2.length} fact(s) in distilled_facts`);
+  for (let i = 0; i < facts2.length; i++) {
+    const f = facts2[i]!;
     console.log(`[forget-probe] re-projected fact[${i}]: ${JSON.stringify(f.fact)}`);
   }
   console.log("");
@@ -188,7 +208,7 @@ try {
   // ── Step 5: Assert (a) fact stays GONE ─────────────────────────────────────
 
   const factNorm = normalizeFactText(KNOWN_FACT);
-  const factStaysGone = !distill2.facts.some(
+  const factStaysGone = !facts2.some(
     (f) => normalizeFactText(f.fact) === factNorm,
   );
   console.log(`[forget-probe] fact stays gone: ${factStaysGone}`);
@@ -241,11 +261,14 @@ try {
     console.log(`[forget-probe] LEG B msgBId: ${msgBId}`);
     console.log("");
 
-    // 1. DumbTail distill → produces verbatim-content fact
+    // 1. DumbTail distill via registration path
+    const hookB = new ConsolidationHook(storeB);
     const dumb = new DumbTailProvider();
-    const distillB1 = await dumb.distill(storeB, threadIdB);
-    storeB.replaceProjection(distillB1.facts, "dumb-tail", [{ threadId: threadIdB, trigger: "distill", factsProduced: distillB1.facts.length }]);
-    console.log(`[forget-probe] LEG B distill1 produced ${distillB1.facts.length} fact(s)`);
+    registerDistiller(hookB, storeB, dumb, new RuleBasedScanner());
+    await hookB.dismiss([threadIdB]);
+
+    const factsB1 = storeB.readDistilledFacts(50);
+    console.log(`[forget-probe] LEG B distill1 produced ${factsB1.length} fact(s)`);
 
     // Confirm initially present in BOTH surfaces
     const viewB1 = await hatchB.view(threadIdB);
@@ -253,16 +276,25 @@ try {
     console.log(`[forget-probe] LEG B fact initially in view: ${presentInView}`);
     if (!presentInView) throw new Error("LEG B: fact not in view after initial distill");
 
-    // 2. Forget via REAL Hatch.forgetFact (provenance = msgBId)
+    // 2. Forget via REAL Hatch.forgetFact
+    // NOTE: gate.forget(messageId) drops ALL thread-level distilled facts via
+    // dropDistilledFactsForThread. forgetFact does a targeted forget.
+    // Since DumbTail uses message-level provenance (msgBId), purgeLiveMachineFactsByForget
+    // purges by that provenance directly.
     const forgetCtxB = { actor: "user", authored_by: "human" as const };
     console.log(`[forget-probe] LEG B forgetting fact: ${JSON.stringify(DUMB_CONTENT)}`);
     hatchB.forgetFact(DUMB_CONTENT, msgBId, forgetCtxB, "probe-B-forget");
 
-    // 3. DumbTail re-project (re-derives from INTACT source message)
+    // 3. DumbTail re-distill: add a bump message so skip-guard fires
+    // v2-03 incremental: watermark already advanced past msgBId — re-distill won't re-produce it.
+    // The forgotten_facts text check (isForgottenNormalizedText) is an additional backstop.
+    console.log("[forget-probe] LEG B adding bump message to force re-distill...");
+    storeB.appendMessages(threadIdB, [{ role: "user", content: "bump-B" }], "probe-B-bump");
     console.log("[forget-probe] LEG B re-projecting (DumbTail re-derives from intact source)...");
-    const distillB2 = await dumb.distill(storeB, threadIdB);
-    storeB.replaceProjection(distillB2.facts, "dumb-tail", [{ threadId: threadIdB, trigger: "reprojection", factsProduced: distillB2.facts.length }]);
-    console.log(`[forget-probe] LEG B re-projection produced ${distillB2.facts.length} fact(s) (in raw output before suppression)`);
+    await hookB.dismiss([threadIdB]);
+
+    const factsB2 = storeB.readDistilledFacts(50);
+    console.log(`[forget-probe] LEG B re-projection produced ${factsB2.length} fact(s) (before suppression check)`);
     console.log("");
 
     // 4. Assert: fact GONE from Hatch view (readDistilledFacts — read-side suppression)
@@ -343,20 +375,8 @@ try {
   console.error(
     `[forget-probe] PROBE FAILED — unexpected error:\n  ${err instanceof Error ? err.message : String(err)}`,
   );
-  if (err instanceof Error && err.stack) {
-    console.error(`  stack: ${err.stack}`);
-  }
   try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
   process.exit(1);
 }
 
-// ── Cleanup ─────────────────────────────────────────────────────────────────
-
-try {
-  rmSync(tmpDir, { recursive: true, force: true });
-  console.log(`[forget-probe] cleaned up tmpDir`);
-} catch (cleanErr) {
-  console.warn(`[forget-probe] warning: cleanup failed — ${cleanErr instanceof Error ? cleanErr.message : String(cleanErr)}`);
-}
-
-process.exit(0);
+try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }

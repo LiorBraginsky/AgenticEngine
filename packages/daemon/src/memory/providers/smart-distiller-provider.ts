@@ -15,7 +15,7 @@
  * The dead Layer-1/Layer-T/Layer-P projection post-filters are DROPPED from distill
  * (they filtered a full projection that no longer exists; forget rewiring is v2-04 and
  * the store read-side suppression still covers the live slice).
- * _getForgottenSuppression and retrieve are kept exactly as they are.
+ * _getForgottenSuppression removed (3.0b — orphaned). retrieve kept exactly as-is.
  */
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -418,7 +418,7 @@ export interface SmartDistillerOptions {
  * projection that no longer exists; forget rewiring is v2-04; store read-side suppression
  * covers the live slice).
  *
- * _getForgottenSuppression and retrieve KEPT exactly as they are.
+ * _getForgottenSuppression removed (3.0b — orphaned). retrieve KEPT exactly as-is.
  *
  * Any failure (LLM/parse) rejects — routes to registration's never-drop failure path.
  */
@@ -470,7 +470,7 @@ export class SmartDistillerProvider implements MemoryProvider {
    * The dead Layer-1/Layer-T/Layer-P projection post-filters are NOT applied here —
    * they filtered a full projection that no longer exists. The store read-side
    * suppression (MAJOR-1, relay-004) covers the live slice. _getForgottenSuppression
-   * and retrieve are kept for the retrieve() path.
+   * removed (3.0b — orphaned). retrieve is kept for the retrieve() path.
    */
   async distill(store: MemoryStore, triggerThreadId: string): Promise<DistillDelta> {
     // Phase 1: read watermark (resilient R2 — column may be absent on pre-v2-03 stores)
@@ -479,12 +479,11 @@ export class SmartDistillerProvider implements MemoryProvider {
 
     // Phase 2: read new tail since the watermark (tombstone/quarantine-honored).
     // `readNewTailSince` uses `turn_index > sinceTurn` (strict greater-than).
-    // `sinceTurn = 0` is the DEFAULT (never-distilled) watermark; a thread's first
-    // message is at turn_index = 0, so we pass -1 to include it
-    // (turn_index > -1 = all messages). After a real distill the watermark is
-    // advanced to maxTurnIndex (≥ 0), so the -1 substitution only fires for the
-    // never-distilled case.
-    const allTail = store.readNewTailSince(triggerThreadId, sinceTurn === 0 ? -1 : sinceTurn);
+    // `sinceTurn = -1` is the sentinel for "never distilled yet" (schema default).
+    // A thread's first message is at turn_index = 0, so turn_index > -1 = all messages.
+    // After a real distill the watermark is advanced to maxTurnIndex (≥ 0), so
+    // -1 correctly captures only the first-distill case without a special branch.
+    const allTail = store.readNewTailSince(triggerThreadId, sinceTurn);
 
     // Filter: drop REDACTION_MARKER (tombstoned) and quarantined messages
     const tail = allTail.filter(
@@ -572,37 +571,8 @@ export class SmartDistillerProvider implements MemoryProvider {
   }
 
   /**
-   * Collect the suppression data from forgotten_facts for all post-filter layers.
-   * Re-named from _getTombstonedTexts (chunk 04) — re-sourced from forgotten_facts,
-   * not from distilled_facts + isFactTombstoned (the dead MAJOR-1 path deleted here).
-   *
-   * Returns:
-   *   norms:    Set<string>   — normalized texts (Layer-T match key)
-   *   provSets: Set<string>[] — sorted provenance sets (Layer-P match key)
-   *   rawTexts: string[]      — raw fact texts (Layer-X LLM exclusion nudge)
-   */
-  private _getForgottenSuppression(store: MemoryStore): {
-    norms: Set<string>;
-    provSets: Set<string>[];
-    rawTexts: string[];
-  } {
-    const rows = store.readForgottenFacts();
-    const norms = new Set<string>();
-    const provSets: Set<string>[] = [];
-    const rawTexts: string[] = [];
-    for (const row of rows) {
-      norms.add(row.normalized_text);
-      rawTexts.push(row.raw_text);
-      if (row.provenance) {
-        provSets.push(sortedSet(row.provenance));
-      }
-    }
-    return { norms, provSets, rawTexts };
-  }
-
-  /**
    * Compose the bounded distilled slice for injection at a new thread's start.
-   * Identical contract to DumbTailProvider.retrieve and FixedMarkerProvider.retrieve.
+   * Identical contract to DumbTailProvider.retrieve.
    *
    * Defense-in-depth (chunk 04 / D-F):
    *   - Existing: excludes any fact whose provenance is tombstoned (F1 backstop).
@@ -627,21 +597,8 @@ export class SmartDistillerProvider implements MemoryProvider {
   }
 }
 
-// ── Internal helpers ──────────────────────────────────────────────────────────
-
-/** Build a sorted Set<string> from a comma-joined provenance string. */
-function sortedSet(provenance: string): Set<string> {
-  return new Set(
-    provenance
-      .split(",")
-      .map((p) => p.trim())
-      .filter(Boolean)
-      .sort(),
-  );
-}
-
-// Note: setsEqual was used by Layer-P in the old global-reprojection distill path.
-// Layer-P (provenance-SET equality filter) was dropped in v2-03 (the distill path no
-// longer runs a full projection post-filter). The function is removed; _getForgottenSuppression
-// still builds provSets for completeness but they are not consumed in the distill path.
-// setsEqual would be restored if a future pass re-introduces Layer-P in some form.
+// Note: sortedSet / setsEqual / Layer-P (provenance-SET equality filter) were dropped in
+// v2-03 — the distill path no longer runs a full projection post-filter.
+// _getForgottenSuppression (which built provSets) was removed in 3.0b: the private helper
+// was orphaned when the Layer-1/T/P post-filters were dropped from distill(); the store
+// read-side suppression (MAJOR-1, relay-004) covers the live slice. forget rewiring is v2-04.

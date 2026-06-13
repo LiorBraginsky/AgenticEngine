@@ -635,9 +635,13 @@ test("R1 atomicity: throw on op 2 → nothing landed + watermark not advanced", 
 
 /**
  * R2 missing-column: create thread_distill_state WITHOUT distilled_through_turn,
- * then run store init + readThreadDistillState → no crash, defaults to 0.
+ * then run store init + readThreadDistillState → no crash, defaults to -1.
+ *
+ * v2-03 NOTE: the sentinel is -1 ("never distilled yet"), NOT 0. A sentinel of 0 would
+ * conflate "never distilled" with "distilled through turn 0", causing turn-0 messages
+ * to be re-emitted as duplicate facts on the second dismiss. -1 is the correct default.
  */
-test("R2 missing-column: pre-v2-03 store without distilled_through_turn → no crash, defaults 0", async () => {
+test("R2 missing-column: pre-v2-03 store without distilled_through_turn → no crash, defaults -1", async () => {
   const { store } = freshStore();
 
   // Simulate a pre-v2-03 store shape: drop the column by recreating the table without it.
@@ -665,7 +669,7 @@ test("R2 missing-column: pre-v2-03 store without distilled_through_turn → no c
   // Insert a row manually (without distilled_through_turn)
   db.exec("INSERT INTO thread_distill_state (thread_id, marker, distilled_through) VALUES ('test-thread', 5, 3)");
 
-  // Read — must not crash, distilled_through_turn defaults to 0
+  // Read — must not crash, distilled_through_turn defaults to -1 (v2-03 sentinel: "never distilled yet")
   let state: { marker: number; distilled_through: number; distilled_through_turn: number } | null = null;
   let threw = false;
   try {
@@ -678,7 +682,7 @@ test("R2 missing-column: pre-v2-03 store without distilled_through_turn → no c
   expect(state).not.toBeNull();
   expect(state!.marker).toBe(5);
   expect(state!.distilled_through).toBe(3);
-  expect(state!.distilled_through_turn).toBe(0); // defaults to 0 when column absent
+  expect(state!.distilled_through_turn).toBe(-1); // defaults to -1 (v2-03 sentinel) when column absent
 
   store.close();
 });

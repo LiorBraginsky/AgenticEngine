@@ -40,14 +40,19 @@ function buildSmartProvider(resolveKey: () => ResolveResult): MemoryProvider | n
 
 /**
  * Select the active MemoryProvider by the MEMORY_PROVIDER env var.
- * Defaults to "dumb-tail". Unknown ids fall back to "dumb-tail" with a
- * console.error (never throws — ADR-0010 gotcha-#9 posture).
+ * Defaults to "smart" (chunk-06 flip); no-key environments fall back to dumb-tail with a loud log.
+ * Unknown ids fall back to "dumb-tail" with a console.error (never throws — ADR-0010 gotcha-#9 posture).
  *
  * opts.resolveKey — injectable key-resolver (test seam; Strike-4: no shell-out
  * in unit tests). Production callers omit this; the real resolveAnthropicKey is used.
  */
 export function buildMemoryProvider(opts?: BuildMemoryProviderOpts): MemoryProvider {
-  const id = process.env["MEMORY_PROVIDER"] ?? "dumb-tail";
+  // memory-quality §3.4 / q#001 Sub-4: the dumb-tail->smart default flip lands in THIS
+  // last chunk, after chunk-03's real-API probe ran green + chunks 04/05 merged. Safety
+  // net unchanged: on the smart branch a no-key environment fires a loud console.error
+  // (with fixHint) and falls back to the still-registered dumb-tail provider — the daemon
+  // stays up and keyless test environments exercise that fallback BY DESIGN (grill #10).
+  const id = process.env["MEMORY_PROVIDER"] ?? "smart";
 
   if (id === "smart") {
     const resolveKey = opts?.resolveKey ?? resolveAnthropicKey;

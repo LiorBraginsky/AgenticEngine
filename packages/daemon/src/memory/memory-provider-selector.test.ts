@@ -58,10 +58,23 @@ test("MEMORY_PROVIDER=smart + NO key => console.error fired AND provider.id === 
   expect(provider.id).toBe("dumb-tail");
 });
 
-test("MEMORY_PROVIDER unset => provider.id === 'dumb-tail' (default UNCHANGED — chunk-04 guard)", async () => {
+test("MEMORY_PROVIDER unset => default routes to smart (chunk-06 flip; resolvable key => id 'smart')", async () => {
   delete process.env["MEMORY_PROVIDER"];
   const { buildMemoryProvider } = await import("./memory-provider-selector.js");
-  // No resolveKey injection: production path; key is never consulted for dumb-tail
-  const provider = buildMemoryProvider();
+  // Inject a resolvable key so the default's smart branch is deterministic + offline.
+  // The point under test: env-unset now defaults to "smart" (was "dumb-tail" pre-flip).
+  const provider = buildMemoryProvider({ resolveKey: () => fakeOk });
+  expect(provider.id).toBe("smart");
+});
+
+test("MEMORY_PROVIDER unset + NO key => default falls back to dumb-tail with loud log (keyless-env path)", async () => {
+  delete process.env["MEMORY_PROVIDER"];
+  const { buildMemoryProvider } = await import("./memory-provider-selector.js");
+  const errSpy = spyOn(console, "error").mockImplementation(() => {});
+  const provider = buildMemoryProvider({ resolveKey: () => fakeMissing });
+  expect(errSpy).toHaveBeenCalled();
+  const allText = errSpy.mock.calls.map((c) => c.join(" ")).join(" ");
+  expect(allText).toContain(fakeMissing.fixHint);
+  errSpy.mockRestore();
   expect(provider.id).toBe("dumb-tail");
 });

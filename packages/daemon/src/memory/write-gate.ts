@@ -117,7 +117,7 @@ export class WriteGate {
    * DOES NOT call dropDistilledFactsByProvenance/dropDistilledFactsForThread — those are message-path.
    * 5e guard: deleteMachineFactsByForget carries authored_by != 'human' guard.
    */
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- ctx and reason are positional (Hatch calls with all 4 args); argsIgnorePattern not configured
   forgetFact(factText: string, provenance: string, ctx: WriteContext, reason?: string): void {
     const norm = normalizeFactText(factText);
     // Durable delete via trigger-backed deleteFactById loop (5e guard inside)

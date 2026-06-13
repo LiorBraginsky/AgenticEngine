@@ -212,7 +212,7 @@ async function parseBody(req: Request): Promise<ParseResult> {
  *
  * Real error conditions:
  *   1. "not found" throw from WriteGate.threadOf → 404 target_not_found
- *      (forgetMessage path, when target message UUID is not in messages table)
+ *      (handleEdit path, when the target message UUID is not in the messages table)
  *   2. UUID-shape seam invariant throw from store.tombstoneFact → 400 bad_target_shape
  *      (defensive — normally unreachable via intent-dispatch: the fact path never calls
  *      tombstoneFact; the message path routes through WriteGate.forget which calls threadOf)

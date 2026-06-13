@@ -13,9 +13,9 @@
  *   - v1 replaceProjection/insertDistilledFacts(result.facts) patterns removed.
  *   - forget-survives-re-derive tests adapted: re-derive now = re-dismiss (incremental).
  *   - The old §7.1 interleave test is REMOVED (it exercised the old replaceProjection path
- *     that no longer exists; the eventually-consistent guarantee is now covered by the
- *     read-side suppression that fires on every store read regardless of provider).
- * // v2-04: durable-delete forget stays-gone test goes here.
+ *     that no longer exists; the eventually-consistent guarantee is now provided by durable
+ *     delete — the row is gone from the DB, not suppressed on read).
+ * // v2-04: durable-delete forget stays-gone tests live in write-gate.test.ts.
  */
 import { test, expect, beforeAll, afterAll, spyOn } from "bun:test";
 import { tmpdir } from "node:os";
@@ -574,14 +574,13 @@ test("smart failure-keeps-projection: throwing stub => prior facts INTACT, disti
   store.close();
 });
 
-// ─── MAJOR-1: provider-agnostic suppression (DumbTail) ────────────────────────
+// ─── MAJOR-1: provider-agnostic durable delete (DumbTail) ────────────────────
 //
-// M1.1: A fact forgotten via hatch.forgetFact is suppressed from both
-// readDistilledFacts and readDistilledFactsForThread via read-side suppression
-// (store.ts keepRow). With incremental DumbTail, re-dismiss after forget only
-// reads messages that are NEWER than the current watermark — so the forgotten
-// message won't be re-produced anyway. But read-side suppression also covers
-// the live slice immediately.
+// M1.1: A fact forgotten via hatch.forgetFact is durably deleted from
+// distilled_facts (the row is gone). Both readDistilledFacts and
+// readDistilledFactsForThread therefore return no matching row. With incremental
+// DumbTail, re-dismiss after forget only reads messages that are NEWER than
+// the current watermark — so the forgotten message won't be re-produced anyway.
 
 import { Hatch } from "./hatch.js";
 import { normalizeFactText } from "./providers/smart-distiller-provider.js";
@@ -629,11 +628,11 @@ test("M1.1: DumbTail — forgotten fact stays GONE from both injection slice and
 
 // ─── M1.2 was FixedMarker — RETIRED (v2-03) ─────────────────────────────────
 // The thread-level provenance shape ("thread:<id>") was unique to FixedMarkerProvider
-// which is now gone. The store read-side suppression (keepRow) still covers any
+// which is now gone. Durable delete (deleteMachineFactsByForget) removes any
 // machine fact regardless of provenance shape. The test below verifies that a
-// manually-inserted thread-level-provenance fact is also suppressed correctly.
+// manually-inserted thread-level-provenance fact is also durably deleted.
 
-test("thread-level provenance fact also suppressed by read-side suppression after forget (FixedMarker shape, no provider needed)", async () => {
+test("thread-level provenance fact is durably deleted after forget (FixedMarker shape, no provider needed)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "mq04-thread-prov-"));
   const store = new MemoryStore({ dataDir: dir });
   const gate = new WriteGate(store, new RuleBasedScanner());
@@ -663,7 +662,7 @@ test("thread-level provenance fact also suppressed by read-side suppression afte
   // 2. Forget the fact (provenance = "thread:<tId>")
   hatch.forgetFact(THREAD_FACT, `thread:${tId}`, { actor: "user", authored_by: "human" }, "M1.2-replacement");
 
-  // 3. Assert: fact GONE from hatch view (readDistilledFacts — read-side suppression)
+  // 3. Assert: fact GONE from hatch view (readDistilledFacts — row durably deleted)
   const viewAfter = await hatch.view(tId);
   expect(viewAfter.distilledFacts.some((f) => normalizeFactText(f.fact) === normalizeFactText(THREAD_FACT))).toBe(false);
 

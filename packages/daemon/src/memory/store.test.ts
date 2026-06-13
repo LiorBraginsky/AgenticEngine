@@ -491,7 +491,7 @@ test("clearForgottenByNormalizedText removes the un-forget row(s)", () => {
   store.close();
 });
 
-test("purgeLiveMachineFactsByForget deletes by provenance OR normalized text, never a human row", () => {
+test("deleteMachineFactsByForget deletes by provenance OR normalized text, never a human row", () => {
   const { store } = freshStore();
   store.insertDistilledFacts([
     { fact: "fav colour: blue", provenance: "m1,m2", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
@@ -500,20 +500,20 @@ test("purgeLiveMachineFactsByForget deletes by provenance OR normalized text, ne
   store.rawDb().query(
     "INSERT INTO distilled_facts (id, fact, provenance, scope, expiry, confidence, authored_by, derived_at, distiller_version) VALUES (?,?,?,?,?,?,?,?,?)",
   ).run(crypto.randomUUID(), "fav colour: blue", "different", "cross-thread", null, 1, "human", Date.now(), "manual");
-  const n = store.purgeLiveMachineFactsByForget("m1,m2", normalizeFactText("fav colour: blue"));
+  const n = store.deleteMachineFactsByForget("m1,m2", normalizeFactText("fav colour: blue"));
   expect(n).toBe(1); // machine row gone
   const rows = store.readDistilledFacts(50);
   expect(rows.some((r) => r.authored_by === "human")).toBe(true); // human row survives
   store.close();
 });
 
-test("purgeLiveMachineFactsByForget catches a comma-joined row by TEXT when provenance differs (no purge-miss)", () => {
+test("deleteMachineFactsByForget catches a comma-joined row by TEXT when provenance differs (no purge-miss)", () => {
   const { store } = freshStore();
   store.insertDistilledFacts([
     { fact: "User favourite colour is blue", provenance: "x,y,z", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
   ], "smart");
   // forgotten with a DIFFERENT provenance shape but the same normalized text
-  const n = store.purgeLiveMachineFactsByForget("m1", normalizeFactText("User favourite colour is blue"));
+  const n = store.deleteMachineFactsByForget("m1", normalizeFactText("User favourite colour is blue"));
   expect(n).toBe(1);
   store.close();
 });
@@ -747,10 +747,10 @@ test("v2-02 SYNC GATE: dropAllDistilledFacts (migration wipe) keeps derived tabl
   store.close();
 });
 
-test("v2-02 SYNC GATE: purgeLiveMachineFactsByForget keeps derived tables in sync", () => {
+test("v2-02 SYNC GATE: deleteMachineFactsByForget keeps derived tables in sync", () => {
   const { store } = freshStore();
   const { a } = seedTwoFacts(store);
-  store.purgeLiveMachineFactsByForget("thread:tA", "no-text-match");
+  store.deleteMachineFactsByForget("thread:tA", "no-text-match");
   assertDerivedInSync(store);
   expect(store.rawDb().query("SELECT 1 FROM distilled_facts WHERE id = ?").get(a)).toBeNull();
   store.close();

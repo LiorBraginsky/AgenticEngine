@@ -353,7 +353,6 @@ export class MemoryStore {
    * Durable-delete of machine-authored distilled_facts whose provenance OR normalized fact text
    * matches the given arguments (AND authored_by != 'human' — 5e guard).
    *
-   * v2-04 fact-forget primitive: replaces purgeLiveMachineFactsByForget.
    * Calls deleteFactById (which fires the AFTER DELETE trigger cleaning fact_fts + fact_topics)
    * for each matching row, all in one db.transaction. Returns the count deleted.
    *
@@ -376,38 +375,6 @@ export class MemoryStore {
       // deleteFactById fires the AFTER DELETE trigger for each row (cleans fact_fts + fact_topics)
       for (const row of toDelete) {
         this.deleteFactById(row.id);
-      }
-      return toDelete.length;
-    });
-    return tx();
-  }
-
-  /**
-   * Purge live machine-authored distilled_facts whose provenance OR normalized fact text
-   * matches the given arguments (AND authored_by != 'human' — 5e guard).
-   *
-   * SQLite cannot call normalizeFactText in SQL, so the text match happens in code:
-   * read all machine rows, delete those that match by provenance OR by normalized text.
-   * Wrapped in one db.transaction for atomicity. Returns the count deleted.
-   *
-   * Both provenance match and text match are checked so a re-derived fact with a
-   * DIFFERENT provenance shape (unstable across re-projections) is still caught by text.
-   */
-  purgeLiveMachineFactsByForget(provenance: string, normalizedText: string): number {
-    const tx = this.db.transaction((): number => {
-      const candidates = this.db
-        .query("SELECT id, fact, provenance FROM distilled_facts WHERE authored_by != 'human'")
-        .all() as { id: string; fact: string; provenance: string }[];
-
-      const toDelete = candidates.filter(
-        (c) => c.provenance === provenance || normalizeFactText(c.fact) === normalizedText,
-      );
-
-      if (toDelete.length === 0) return 0;
-
-      // Delete by id (batch delete inside the same tx)
-      for (const row of toDelete) {
-        this.db.query("DELETE FROM distilled_facts WHERE id = ?").run(row.id);
       }
       return toDelete.length;
     });

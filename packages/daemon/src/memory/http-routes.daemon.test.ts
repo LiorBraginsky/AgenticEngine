@@ -191,7 +191,7 @@ test("T2.1c-7: POST /memory/forget with missing target_type → 400 bad_body", a
 });
 
 // v2-04: T2.1c-8 GET /memory/cofed test removed. countFactsFedByMessages was removed
-// in v2-04 along with option B. The /memory/cofed route will be removed in Task 2 (2.2).
+// in v2-04 along with option B. The /memory/cofed route was removed in Task 2 (2.2); the → 404 test passes.
 
 // Test 7: POST /memory/edit with token → 204 and correction row on disk (authored_by:human).
 // The T1 hatch tests already prove edit→distill→retrieve injection (Fix-2 cross-thread test

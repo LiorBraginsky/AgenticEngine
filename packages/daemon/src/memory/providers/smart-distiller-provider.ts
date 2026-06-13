@@ -30,7 +30,16 @@ export { normalizeFactText };
 // ── Tunable constants (exported for unit tests) ────────────────────────────
 
 export const SMART_MODEL = "claude-haiku-4-5";
-export const SMART_MAX_TOKENS = 1024;
+/**
+ * Cap on the LLM OUTPUT (the JSON fact array). RUNWAY, NOT A CURE.
+ * The fact set grows monotonically with the archive (global re-projection is
+ * O(total archive), spec §3.3 D8), so ANY fixed cap is eventually re-hit. Raising
+ * it (1024 → 4096) buys dogfood headroom; the stop_reason guard in distill() makes
+ * the wall OBSERVABLE and NON-CORRUPTING (trigger="reprojection-truncated"), which is
+ * the NAMED trigger for the future summarization tier (spec §1, out of scope) — the
+ * actual fix. Do not treat a higher cap as the solution.
+ */
+export const SMART_MAX_TOKENS = 4096;
 /** Per-thread message count limit before loud truncation. */
 export const SMART_DIGEST_MAX_MSGS_PER_THREAD = 50;
 

@@ -8,7 +8,8 @@ import { registerDistiller } from "./distiller-registration.js";
 import { DumbTailProvider } from "./providers/dumb-tail-provider.js";
 import { RuleBasedScanner } from "./scanner/memory-scanner.js";
 import type { MemoryProvider } from "./memory-provider.js";
-import { SmartDistillError } from "./providers/smart-distiller-provider.js";
+import { SmartDistillError, SmartDistillerProvider } from "./providers/smart-distiller-provider.js";
+import type { Anthropic } from "@anthropic-ai/sdk";
 
 const dumbTailProvider = new DumbTailProvider();
 
@@ -501,5 +502,47 @@ test("a non-truncated SmartDistillError (generic parse failure) also keeps 'repr
   const evs = store.readDistillationEvents(t);
   expect(evs.some((e) => e.trigger === "reprojection-failed")).toBe(true);
   expect(evs.some((e) => e.trigger === "reprojection-truncated")).toBe(false);
+  store.close();
+});
+
+// ── chunk 05 Task 3: E2E never-drop on truncated path (real SmartDistillerProvider) ──
+
+function maxTokensAnthropic(): Anthropic {
+  return {
+    messages: {
+      create: async () => ({
+        stop_reason: "max_tokens",
+        content: [{ type: "text", text: '[{"fact":"x","provenance":"p"' }],
+      }),
+    },
+  } as unknown as Anthropic;
+}
+
+test("E2E never-drop on truncation: real SmartDistillerProvider + stubbed max_tokens → prior projection intact, reprojection-truncated written, error rethrown", async () => {
+  const { store } = freshStore();
+  const hook = new ConsolidationHook(store);
+  store.insertDistilledFacts(
+    [{ fact: "machine fact M", provenance: "thread:m", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" }],
+    "smart",
+  );
+  store.rawDb().query(
+    "INSERT INTO distilled_facts (id, fact, provenance, scope, expiry, confidence, authored_by, derived_at, distiller_version) VALUES (?,?,?,?,?,?,?,?,?)",
+  ).run(crypto.randomUUID(), "human fact H", "thread:h", "cross-thread", null, 1, "human", Date.now(), "manual");
+  const provider = new SmartDistillerProvider({ client: maxTokensAnthropic() });
+  registerDistiller(hook, store, provider, new RuleBasedScanner());
+  const t = store.createThread();
+  store.appendMessages(t, [{ role: "user", content: "trigger a re-projection" }], "s1");
+  const errSpy = spyOn(console, "error").mockImplementation(() => {});
+  let caught: unknown = null;
+  try { await hook.dismiss([t]); } catch (err) { caught = err; }
+  expect(errSpy).toHaveBeenCalled();
+  errSpy.mockRestore();
+  expect(caught).not.toBeNull();
+  const facts = store.readDistilledFacts(50);
+  expect(facts.some((f) => f.fact === "machine fact M")).toBe(true);
+  expect(facts.some((f) => f.fact === "human fact H")).toBe(true);
+  const evs = store.readDistillationEvents(t);
+  expect(evs.some((e) => e.trigger === "reprojection-truncated")).toBe(true);
+  expect(evs.some((e) => e.trigger === "reprojection-failed")).toBe(false);
   store.close();
 });

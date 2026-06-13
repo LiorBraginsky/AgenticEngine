@@ -30,6 +30,8 @@ export interface FactOp {
   topics: string[];        // coarse LLM tags (§3.5); WIDEN recall only (B1)
   targetOrdinal?: number;  // 1..K index into the candidate list shown to the LLM (NOT a uuid — [grill B2])
   expectedTargetText?: string; // candidate text the LLM reasoned about (optimistic-concurrency — [grill M5])
+  // NOTE: no scope field — machine facts are ALWAYS cross-thread (relay-006 MINOR-4);
+  // thread-local is human-only (5f preserved in readDistilledFactsForThread).
 }
 
 /** The incremental delta a dismiss produces (spec §3.1). NOT a full projection. */

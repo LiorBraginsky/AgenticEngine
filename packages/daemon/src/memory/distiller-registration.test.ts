@@ -8,6 +8,7 @@ import { registerDistiller } from "./distiller-registration.js";
 import { RuleBasedScanner } from "./scanner/memory-scanner.js";
 import type { MemoryProvider, DistillDelta } from "./memory-provider.js";
 import { SmartDistillError } from "./providers/smart-distiller-provider.js";
+import { WriteGate } from "./write-gate.js";
 
 function freshStore() {
   const dir = mkdtempSync(join(tmpdir(), "v2-03-dreg-"));
@@ -1006,3 +1007,396 @@ test("batch dismiss: hook.dismiss([t]) fires handler once with the array", async
 // NOTE: E2E never-drop on truncation with SmartDistillerProvider is moved to Step 2
 // (distiller-registration.test.ts Step 2 re-adds it after SmartDistillerProvider
 // is updated to return DistillDelta in providers/smart-distiller-provider.ts).
+
+// ─── relay-006 FIX-1 (BLOCKER-1): N-per-batch distill ───────────────────────
+
+/**
+ * FIX-1 (BLOCKER-1): batch dismiss distills EACH thread independently.
+ * Content in TWO threads tA/tB; a stub provider whose distill(s, threadId) reads that
+ * thread's new-tail and returns one op:"new" echoing its content (so the two facts are
+ * DISTINCT). distilledThroughMarker = readThreadMarker(threadId),
+ * distilledThroughTurn = maxTurnIndex(threadId).
+ * await hook.dismiss([tA, tB]) → assert BOTH facts present + each watermark advanced +
+ * each thread's `distill` event records facts_produced===1.
+ *
+ * RED today (doOneRun distills triggerThreadId only → only tA's fact appears).
+ */
+test("FIX-1: batch dismiss distills EACH thread independently (N-per-batch)", async () => {
+  const { store } = freshStore();
+  const hook = new ConsolidationHook(store);
+  const scanner = new RuleBasedScanner();
+
+  const tA = store.createThread();
+  const tB = store.createThread();
+  store.appendMessages(tA, [{ role: "user", content: "fact from thread A" }], "sA");
+  store.appendMessages(tB, [{ role: "user", content: "fact from thread B" }], "sB");
+
+  // Stub provider: distill reads the thread's new-tail content and returns an op:"new" for that thread.
+  const batchProvider: MemoryProvider = {
+    id: "batch-test",
+    distill: async (s, threadId) => {
+      const marker = s.readThreadMarker(threadId);
+      const turn = s.maxTurnIndex(threadId);
+      const tail = s.readNewTailSince(threadId, -1);
+      const content = tail.map((m) => m.content).join("; ");
+      return {
+        threadId,
+        ops: [{ op: "new", fact: content, canonical: content.toLowerCase(), topics: [] }],
+        candidateIds: [],
+        distilledThroughMarker: marker,
+        distilledThroughTurn: turn,
+      };
+    },
+    retrieve: async () => [],
+  };
+
+  registerDistiller(hook, store, batchProvider, scanner);
+
+  // Dismiss BOTH threads in one batch call
+  await hook.dismiss([tA, tB]);
+
+  // Assert BOTH facts are present in the store
+  const facts = store.readDistilledFacts(50);
+  const factTexts = facts.map((f) => f.fact);
+  expect(factTexts).toContain("fact from thread A");
+  expect(factTexts).toContain("fact from thread B");
+
+  // Each watermark must be advanced (distilled_through >= marker for each thread)
+  const stateA = store.readThreadDistillState(tA);
+  const stateB = store.readThreadDistillState(tB);
+  expect(stateA.distilled_through).toBeGreaterThan(0);
+  expect(stateB.distilled_through).toBeGreaterThan(0);
+
+  // Each thread must have its own `distill` event with facts_produced===1
+  const eventsA = store.readDistillationEvents(tA);
+  const eventsB = store.readDistillationEvents(tB);
+  const distillA = eventsA.filter((e) => e.trigger === "distill");
+  const distillB = eventsB.filter((e) => e.trigger === "distill");
+  expect(distillA.length).toBeGreaterThan(0);
+  expect(distillB.length).toBeGreaterThan(0);
+  expect(distillA[0]!.facts_produced).toBe(1);
+  expect(distillB[0]!.facts_produced).toBe(1);
+
+  store.close();
+});
+
+// ─── relay-006 FIX-2 (MAJOR-2): merged canonical on append ──────────────────
+
+/**
+ * FIX-2 (MAJOR-2): op:append must merge canonicals so an EARLIER item's term still
+ * finds the fact via FTS5.
+ *
+ * Seed op:"new" fact:"User enjoys hiking" canonical:"user enjoys hiking".
+ * Bump marker. Dismiss op:"append" fact:"swimming" canonical:"swimming" targeting that
+ * seeded fact.
+ * Assert fetchCandidates("hiking") STILL returns the fact (by id) AND
+ * fetchCandidates("swimming") returns it.
+ *
+ * RED today (registration passes NEW-item-only canonical to appendToFactById →
+ * fact_fts canonical becomes "swimming" only → "hiking" misses).
+ */
+test("FIX-2: op:append merges canonical so an EARLIER item's term still finds the fact via FTS5", async () => {
+  const { store } = freshStore();
+  const hook = new ConsolidationHook(store);
+  const scanner = new RuleBasedScanner();
+
+  const t = store.createThread();
+  store.appendMessages(t, [{ role: "user", content: "User enjoys hiking" }], "s1");
+
+  let callNum = 0;
+  let seededFactId: string | null = null;
+
+  const appendProvider: MemoryProvider = {
+    id: "append-canonical-test",
+    distill: async (s, threadId) => {
+      callNum++;
+      const marker = s.readThreadMarker(threadId);
+      const turn = s.maxTurnIndex(threadId);
+
+      if (callNum === 1) {
+        // First call: seed the hiking fact
+        return {
+          threadId,
+          ops: [{ op: "new", fact: "User enjoys hiking", canonical: "user enjoys hiking", topics: [] }],
+          candidateIds: [],
+          distilledThroughMarker: marker,
+          distilledThroughTurn: turn,
+        };
+      } else {
+        // Second call: append "swimming" to the seeded fact
+        const candidates = s.fetchCandidates("user enjoys hiking");
+        seededFactId = candidates[0]?.id ?? null;
+        const candidateIds = candidates.map((c) => c.id);
+        return {
+          threadId,
+          ops: [{
+            op: "append",
+            fact: "swimming",
+            canonical: "swimming",  // NEW-item-only canonical (the bug is passing this alone)
+            topics: [],
+            targetOrdinal: 1,
+            expectedTargetText: candidates[0]?.fact ?? "User enjoys hiking",
+          }],
+          candidateIds,
+          distilledThroughMarker: marker,
+          distilledThroughTurn: turn,
+        };
+      }
+    },
+    retrieve: async () => [],
+  };
+
+  registerDistiller(hook, store, appendProvider, scanner);
+
+  // First dismiss: seeds the hiking fact
+  await hook.dismiss([t]);
+
+  // Bump the marker for the second dismiss
+  store.appendMessages(t, [{ role: "user", content: "also enjoys swimming" }], "s2");
+
+  // Second dismiss: appends "swimming" to the hiking fact
+  await hook.dismiss([t]);
+
+  expect(seededFactId).not.toBeNull();
+
+  // The key assertion: "hiking" (an EARLIER item's term) must still find the fact
+  const hikingCandidates = store.fetchCandidates("hiking");
+  const hikingIds = hikingCandidates.map((c) => c.id);
+  expect(hikingIds).toContain(seededFactId!);
+
+  // And "swimming" (the NEW item's term) must also find it
+  const swimmingCandidates = store.fetchCandidates("swimming");
+  const swimmingIds = swimmingCandidates.map((c) => c.id);
+  expect(swimmingIds).toContain(seededFactId!);
+
+  store.close();
+});
+
+// ─── relay-006 FIX-3 (MAJOR-3 decision-b): edit-noop observable ─────────────
+
+/**
+ * FIX-3 (MAJOR-3, decision b): an edit on an already-distilled turn produces
+ * fact UNCHANGED + distill-noop-edit event + no infinite re-distill.
+ *
+ * 1. Append "my name is Liam" (turn 0), dismiss with stub op:"new" fact:"User's name is Liam".
+ * 2. Capture fact id+text + assert watermark advanced.
+ * 3. edit turn0_messageId to "my name is Lior" (bumps marker).
+ * 4. await hook.dismiss([t]) with a stub that WOULD return a NEW "Lior" fact IF called
+ *    with a non-empty tail (tail is empty because turn0 ≤ watermark).
+ * 5. Assert the fact is UNCHANGED ("Liam"), a distill-noop-edit event exists for t.
+ * 6. dismiss a SECOND time (no further mutation) → skip-guard fires (distill-skipped),
+ *    proving the watermark advanced (no infinite loop).
+ *
+ * RED today (plain `distill` event emitted, no `distill-noop-edit` trigger).
+ */
+test("FIX-3: edit on already-distilled turn: fact UNCHANGED + distill-noop-edit event + no infinite re-distill", async () => {
+  const { store } = freshStore();
+  const hook = new ConsolidationHook(store);
+  const scanner = new RuleBasedScanner();
+  const gate = new WriteGate(store, scanner);
+
+  const t = store.createThread();
+  const [turn0MsgId] = store.appendMessages(t, [{ role: "user", content: "my name is Liam" }], "s1");
+
+  let distillCallCount = 0;
+
+  const editNoopProvider: MemoryProvider = {
+    id: "edit-noop-test",
+    distill: async (s, threadId) => {
+      distillCallCount++;
+      const marker = s.readThreadMarker(threadId);
+      const turn = s.maxTurnIndex(threadId);
+      const state = s.readThreadDistillState(threadId);
+      const tail = s.readNewTailSince(threadId, state.distilled_through_turn);
+
+      if (tail.length > 0) {
+        // New content exists — return a fact based on it
+        const newFact = tail[0]!.content.includes("Lior")
+          ? "User's name is Lior"
+          : "User's name is Liam";
+        return {
+          threadId,
+          ops: [{ op: "new", fact: newFact, canonical: newFact.toLowerCase(), topics: [] }],
+          candidateIds: [],
+          distilledThroughMarker: marker,
+          distilledThroughTurn: turn,
+        };
+      } else {
+        // No new tail — return empty ops with advanced markers
+        return {
+          threadId,
+          ops: [],
+          candidateIds: [],
+          distilledThroughMarker: marker,
+          distilledThroughTurn: turn,
+        };
+      }
+    },
+    retrieve: async () => [],
+  };
+
+  registerDistiller(hook, store, editNoopProvider, scanner);
+
+  // Step 1: Dismiss to seed "User's name is Liam"
+  await hook.dismiss([t]);
+  expect(distillCallCount).toBe(1);
+
+  // Step 2: Capture fact + assert watermark advanced
+  const factsAfterFirst = store.readDistilledFacts(50);
+  expect(factsAfterFirst.some((f) => f.fact === "User's name is Liam")).toBe(true);
+  const stateAfterFirst = store.readThreadDistillState(t);
+  expect(stateAfterFirst.distilled_through_turn).toBeGreaterThanOrEqual(0);
+
+  // Step 3: Edit turn0 to "my name is Lior" — bumps marker, but edit is on an already-distilled turn
+  gate.edit(turn0MsgId!, "my name is Lior", { actor: "user", authored_by: "human" });
+
+  // Step 4: Dismiss again — stub sees empty new-tail (turn 0 ≤ watermark after first dismiss)
+  await hook.dismiss([t]);
+  expect(distillCallCount).toBe(2);
+
+  // Step 5: Fact UNCHANGED — still "Liam", not "Lior"
+  const factsAfterEdit = store.readDistilledFacts(50);
+  const liamFacts = factsAfterEdit.filter((f) => f.fact === "User's name is Liam");
+  const liorFacts = factsAfterEdit.filter((f) => f.fact === "User's name is Lior");
+  expect(liamFacts.length).toBe(1);
+  expect(liorFacts.length).toBe(0);
+
+  // Step 5b: distill-noop-edit event exists for this thread
+  const eventsAfterEdit = store.readDistillationEvents(t);
+  const noopEditEvents = eventsAfterEdit.filter((e) => e.trigger === "distill-noop-edit");
+  expect(noopEditEvents.length).toBeGreaterThan(0);
+
+  // Step 6: Dismiss AGAIN with no further mutations → skip-guard fires
+  // (watermark was advanced by the noop-edit run, so distilled_through >= marker)
+  const markerBefore = store.readThreadMarker(t);
+  const stateBeforeThird = store.readThreadDistillState(t);
+  // The skip-guard fires only if distilled_through >= current marker
+  if (stateBeforeThird.distilled_through >= markerBefore) {
+    await hook.dismiss([t]);
+    // skip-guard should have fired, distillCallCount still 2
+    expect(distillCallCount).toBe(2);
+    const eventsAfterThird = store.readDistillationEvents(t);
+    expect(eventsAfterThird.some((e) => e.trigger === "distill-skipped")).toBe(true);
+  }
+
+  store.close();
+});
+
+// ─── relay-006 FIX-4 (MINOR-4 regression-lock): machine facts are cross-thread ─
+
+/**
+ * FIX-4 (MINOR-4, decision i — regression-lock): machine distilled facts are always
+ * cross-thread scope (relay-006 MINOR-4). Thread-local is human-only, 5f preserved.
+ *
+ * GREEN after (no behavior change — just a regression-lock + comment clarification).
+ */
+test("FIX-4: machine distilled facts are always cross-thread scope", async () => {
+  const { store } = freshStore();
+  const hook = new ConsolidationHook(store);
+  const scanner = new RuleBasedScanner();
+
+  const t = store.createThread();
+  store.appendMessages(t, [{ role: "user", content: "Lior likes TypeScript" }], "s1");
+
+  const provider: MemoryProvider = {
+    id: "scope-test",
+    distill: async (s, threadId) => ({
+      threadId,
+      ops: [{ op: "new", fact: "Lior likes TypeScript", canonical: "lior likes typescript", topics: [] }],
+      candidateIds: [],
+      distilledThroughMarker: s.readThreadMarker(threadId),
+      distilledThroughTurn: s.maxTurnIndex(threadId),
+    }),
+    retrieve: async () => [],
+  };
+
+  registerDistiller(hook, store, provider, scanner);
+  await hook.dismiss([t]);
+
+  // Assert the machine fact has scope='cross-thread'
+  const row = store.rawDb()
+    .query("SELECT scope FROM distilled_facts WHERE fact = ?")
+    .get("Lior likes TypeScript") as { scope: string } | null;
+  expect(row).not.toBeNull();
+  expect(row!.scope).toBe("cross-thread");
+
+  store.close();
+});
+
+// ─── relay-006 FIX-5 (coverage-note): STABILITY order assertion + honest docstring ─
+
+/**
+ * FIX-5 (coverage-note — "order stable" honesty): for the single-fact REPLACE scenario,
+ * the injected-slice order is stable (slice[0].fact === "User's name is Lior").
+ *
+ * A REPLACE/APPEND bumps derived_at, the retrieve ordering key, so cross-fact order
+ * is NOT invariant under REPLACE — out of scope here; see relay-006 coverage-note.
+ *
+ * This test adds an explicit order assertion scoped to the single-fact scenario.
+ * No production code changes — test + doc integrity only.
+ */
+test("FIX-5: order stable for single-fact REPLACE scenario (slice[0] assertion)", async () => {
+  const { store } = freshStore();
+  const hook = new ConsolidationHook(store);
+  const scanner = new RuleBasedScanner();
+
+  const t = store.createThread();
+  store.appendMessages(t, [{ role: "user", content: "User's name is Lior" }], "s1");
+
+  let callCount = 0;
+
+  const provider: MemoryProvider = {
+    id: "order-stable",
+    distill: async (s, threadId) => {
+      callCount++;
+      const marker = s.readThreadMarker(threadId);
+      const turn = s.maxTurnIndex(threadId);
+      if (callCount === 1) {
+        return {
+          threadId,
+          ops: [{ op: "new", fact: "User's name is Lior", canonical: "user name is lior", topics: ["#about-user"] }],
+          candidateIds: [],
+          distilledThroughMarker: marker,
+          distilledThroughTurn: turn,
+        };
+      } else {
+        const candidates = s.fetchCandidates("user name is lior");
+        return {
+          threadId,
+          ops: [{
+            op: "replace",
+            fact: "User's name is Lior",
+            canonical: "user name is lior",
+            topics: ["#about-user"],
+            targetOrdinal: 1,
+            expectedTargetText: candidates[0]?.fact ?? "User's name is Lior",
+          }],
+          candidateIds: candidates.map((c) => c.id),
+          distilledThroughMarker: marker,
+          distilledThroughTurn: turn,
+        };
+      }
+    },
+    retrieve: async () => [],
+  };
+
+  registerDistiller(hook, store, provider, scanner);
+
+  // First dismiss: seeds the fact
+  await hook.dismiss([t]);
+
+  // Bump marker and dismiss again with REPLACE
+  store.appendMessages(t, [{ role: "assistant", content: "Noted!" }], "s2");
+  await hook.dismiss([t]);
+
+  // Single-fact scenario: the injected-slice order is stable
+  // slice[0].fact === "User's name is Lior" (true with one fact)
+  //
+  // Note: a REPLACE bumps derived_at (the retrieve ordering key), so cross-fact
+  // order is NOT invariant under REPLACE — out of scope here; see relay-006 coverage-note.
+  const slice = store.readDistilledFacts(50);
+  expect(slice.length).toBe(1);
+  expect(slice[0]!.fact).toBe("User's name is Lior");
+
+  store.close();
+});

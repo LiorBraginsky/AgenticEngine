@@ -201,6 +201,35 @@ tags: [roadmap, milestones]
 
 ---
 
+## Memory — next (after memory-distiller-v2, shipped 2026-06-16)
+
+`memory-distiller-v2` shipped the incremental distiller: per-turn cross-thread fact injection,
+durable forget-by-id, suppress-only dedup, stable replace-on-change, and a single-user "all-facts
+candidate pool" (BM25 retained only as the above-cap fallback). The remaining memory work, in
+rough priority:
+
+- **2d — on-demand archive retrieval + SEMANTIC (embeddings) candidate-fetch.** The proper
+  cross-language / reworded retrieval. **Supersedes BOTH BM25 AND the all-facts-below-cap stopgap**
+  once the fact corpus outgrows "pass them all to the distiller." The cross-language BM25 miss it
+  replaces was the root of the demo-3 duplicate-colour defect (Ukrainian tail vs English canonical).
+- **Variant B — distilled facts rendered into the SYSTEM prompt** (instead of `[remembered]`
+  user-messages). Architecturally cleaner per-turn injection; pairs naturally with 2c/2d. Considered
+  and deferred in v2-08 (the `[remembered]`-as-messages format is load-bearing across system-prompt +
+  provenance-stamp + tests — too big a rewrite for the recall fix; variant A shipped instead).
+- **2c — agent memory-action tools.** A conversational forget/recall lever (the agent can act on
+  memory via tool-use) rather than only passive injection.
+- **thread-forget** — a content-erase primitive (reuses the dormant `WriteGate` scrub); the
+  successor to the dropped message-forget (ADR-0015 decision 5 superseded).
+- **Finer (message-level) provenance** — deferred from v2-06; better "dig deeper" + forget
+  granularity than the current thread-level provenance.
+- **Archive-summarization tier** — the O(archive) scaling trigger; also the point at which the
+  candidate-fetch flips from all-facts → semantic (2d).
+- **Recall-usage quality (A′ tail)** — the structural cause (turn-2+ fact loss) was fixed in v2-08;
+  the residual is the LLM-fuzzy tail (the model occasionally not using an injected fact). Asymptotic;
+  2c (tool-based recall) is the likely lever if it ever matters.
+
+---
+
 ## Post-v1 (themes, not committed)
 
 - Native macOS Swift overlay

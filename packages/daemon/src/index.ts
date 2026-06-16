@@ -17,6 +17,7 @@ import { handleMemoryHttp } from "./memory/http-routes.js";
 import { TokenStore } from "./memory/token-store.js";
 import { stampProvenance } from "./memory/provenance-stamp.js";
 import { memDebug, previewStr } from "./memory/debug-log.js";
+import { REMEMBERED_LABEL } from "./providers/system-prompt.js";
 
 export const DAEMON_HOST = "127.0.0.1"; // loopback only (ADR-0003 p.3)
 export const DAEMON_PORT = 7777;
@@ -155,17 +156,12 @@ export function startDaemon(port: number = DAEMON_PORT, provider?: AgentProvider
         let turnThreadId: string | undefined;
         let priorState: ProviderSessionState | undefined;
         let hydratedCount = 0;
-        // T2.3a: true ONLY when the new-thread branch ran retrieve() AND returned ≥1
-        // prior message (cross-thread injected memory). Same-thread hydration
-        // (index.ts:114-117) must NOT set this — that is the user's own prior turns.
+        // v2-08: true iff this turn's priorMessages contains ≥1 cross-thread [remembered]
+        // fact (new-thread OR known-thread branch). A known-thread turn with only its own
+        // tail (no [remembered] messages) stays false. Reset to false on every message
+        // invocation so it cannot leak across turns on a persistent socket.
         let injectedMemory = false;
         if (inbound.type === "session_start") {
-          // CM-01 fix: capture the new-thread fact BEFORE beginTurn runs, because
-          // beginTurn adopts an unknown-but-UUID-shaped client-minted thread_id by
-          // calling store.createThread(undefined, adoptId) — after that, threadExists
-          // returns true for the same id, making a post-beginTurn check always false
-          // for the real overlay (which always sends a client-minted UUID on turn 1).
-          const wasKnownThread = !!inbound.thread_id && store.threadExists(inbound.thread_id);
           const begin = await lifecycle.beginTurn(inbound);
           turnThreadId = begin.threadId;
           ws.data.activeThreadId = turnThreadId;
@@ -173,14 +169,14 @@ export function startDaemon(port: number = DAEMON_PORT, provider?: AgentProvider
           // on the connection (not just the last one).
           if (turnThreadId) (ws.data.touchedThreadIds ??= new Set<string>()).add(turnThreadId);
           hydratedCount = begin.priorMessages.length;
-          // T2.3a: set injectedMemory iff this is the NEW-THREAD branch AND retrieve()
-          // returned ≥1 message. The NEW-THREAD branch is identified by wasKnownThread
-          // being false (captured before beginTurn could create the thread via CM-01
-          // adoption of the client-minted UUID).
-          const isNewThread = !wasKnownThread;
-          if (isNewThread && begin.priorMessages.length > 0) {
-            injectedMemory = true;
-          }
+          // v2-08 seam: injectedMemory fires iff THIS turn injected ≥1 cross-thread
+          // [remembered] fact — for BOTH the new-thread branch (retrieve) AND the
+          // known-thread branch (which, post-v2-08, prepends facts before the tail).
+          // The thread's own hydrated tail is NOT a [remembered] fact, so a known-thread
+          // turn with empty memory stays false. Import REMEMBERED_LABEL from system-prompt.
+          injectedMemory = begin.priorMessages.some(
+            (m) => m.role === "user" && m.content.startsWith(REMEMBERED_LABEL),
+          );
           // Hydrate the thread tail into the messages[] seam (provider.ts:5).
           // phase:"done"/session_id:"" are don't-cares on start — every provider
           // reads only `.messages`; the mock adapter maps a session_start to a

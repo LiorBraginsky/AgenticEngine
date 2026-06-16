@@ -42,6 +42,12 @@ const WHEN_IDLE_TIMEOUT_MS_DEFAULT = 5000;
  *   On the new-thread FIRST turn ONLY, beginTurn awaits whenIdle() before retrieve()
  *   so the retrieve always sees facts committed by the most-recently-started distill run.
  *   Bounded at WHEN_IDLE_TIMEOUT_MS (5s) — on timeout, proceed + log (never hang).
+ *
+ * v2-08: the known-thread branch ALSO retrieves the cross-thread distilled slice
+ *   (prepended before the tail) so a follow-up turn (turn 2+) keeps cross-thread
+ *   memory. whenIdle stays NEW-THREAD-ONLY: the facts are already committed on a
+ *   known-thread turn, and awaiting per turn would re-add latency + a per-turn block
+ *   (the new-thread read-after-write race the whenIdle wait closes does NOT apply here).
  */
 export class ThreadLifecycle {
   private readonly sessionToThread = new Map<string, string>();
@@ -64,8 +70,17 @@ export class ThreadLifecycle {
   async beginTurn(inbound: SessionStart): Promise<{ threadId: string; priorMessages: SessionMessage[] }> {
     const requested = inbound.thread_id;
     if (requested && this.store.threadExists(requested)) {
-      const priorMessages = this.store.readThreadTail(requested, TAIL_LIMIT);
-      return { threadId: requested, priorMessages };
+      // v2-08 fix A: a known-thread turn ALSO re-injects the cross-thread distilled
+      // slice (the [remembered] facts) BEFORE the thread's own tail, so a follow-up
+      // turn (turn 2+) keeps cross-thread memory. New-thread branch is unchanged.
+      // whenIdle is NEW-THREAD-ONLY: the facts are already committed on a known-thread
+      // turn, and awaiting per turn would re-add latency + a per-turn block (the
+      // new-thread read-after-write race the whenIdle wait closes does NOT apply here).
+      const facts = this.memoryProvider
+        ? await this.memoryProvider.retrieve(this.store, requested)
+        : [];
+      const tail = this.store.readThreadTail(requested, TAIL_LIMIT);
+      return { threadId: requested, priorMessages: [...facts, ...tail] };
     }
     // No / unknown thread_id ⇒ mint a NEW thread (MF-01 §3.1).
     // CM-01 adoption (spec §3.3): an unknown-but-UUID-shaped thread_id is adopted

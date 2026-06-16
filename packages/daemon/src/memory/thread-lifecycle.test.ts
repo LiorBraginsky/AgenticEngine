@@ -148,6 +148,32 @@ test("Q1: endTurn stamps role=user messages as human-authored and role=assistant
   store.close();
 });
 
+// ---- v2-08 Step 1.1: known-thread turn injects cross-thread facts + delta-flush guard ----
+
+test("v2-08: a KNOWN-thread turn ALSO injects the cross-thread distilled slice BEFORE the tail", async () => {
+  const { store, lifecycle } = freshTL();
+  const hook = new ConsolidationHook(store);
+  registerDistiller(hook, store, dumbTailProvider, new RuleBasedScanner());
+  // Thread A: state + distill a fact (prior dismiss).
+  const tA = store.createThread();
+  store.appendMessages(tA, [{ role: "user", content: "deploy is yeet.sh" }], "sa");
+  await hook.dismiss([tA]);
+  // Thread B: turn 1 (new) — flush a turn so B becomes a KNOWN thread.
+  const b1 = await lifecycle.beginTurn({ type: "session_start", trigger: "user", text: "hi" });
+  lifecycle.bindSession("sb1", b1.threadId, b1.priorMessages.length);
+  lifecycle.endTurn(b1.threadId, "sb1", [...b1.priorMessages, { role: "user", content: "hi" }]);
+  // Thread B turn 2: KNOWN thread → must inject A's fact BEFORE B's own tail.
+  const b2 = await lifecycle.beginTurn({ type: "session_start", trigger: "user", text: "and now?", thread_id: b1.threadId });
+  expect(b2.threadId).toBe(b1.threadId);
+  expect(b2.priorMessages[0]).toEqual({ role: "user", content: "[remembered] deploy is yeet.sh" });
+  expect(b2.priorMessages).toContainEqual({ role: "user", content: "hi" }); // the tail follows
+  // The injected fact must NOT be re-persisted on this turn (delta-flush guard).
+  lifecycle.bindSession("sb2", b2.threadId, b2.priorMessages.length);
+  lifecycle.endTurn(b2.threadId, "sb2", [...b2.priorMessages, { role: "user", content: "and now?" }]);
+  const persisted = store.readThreadTail(b1.threadId, 50).map((m) => m.content);
+  expect(persisted).toEqual(["hi", "and now?"]); // no [remembered] row persisted
+});
+
 // ---- v2-07 Step 3.5: whenIdle timeout-branch (proceed-not-hang) ----
 
 test("v2-07: whenIdle that never resolves times out and beginTurn still resolves (proceed-not-hang)", async () => {

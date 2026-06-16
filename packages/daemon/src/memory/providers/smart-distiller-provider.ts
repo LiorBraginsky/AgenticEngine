@@ -109,7 +109,7 @@ Rules:
 - "fact": write in the SAME language the user used (e.g. Ukrainian conversation → Ukrainian fact). Do NOT translate.
 - "canonical": always a lowercased English phrase for FTS5 matching (e.g. "user likes tea").
 - "topics": use #about-user, #preferences, #projects, #relationships; add others sparingly.
-- Derive facts ONLY from the USER's statements in the NEW TAIL. ASSISTANT lines are the agent's own replies (often restating remembered facts) — NEVER create or replace a fact based on an ASSISTANT line.
+- Derive facts ONLY from the USER's statements in the NEW TAIL. ASSISTANT lines are the agent's own replies (often restating remembered facts) — NEVER create or replace a fact based on an ASSISTANT line. A user QUESTION (e.g. "what is my name?", "як мене звати?") is a REQUEST, NOT a statement — NEVER create, append, or replace a fact from a user question. Only a user STATEMENT (a declaration of new information) is a fact source. A question is not a fact source.
 - op:"replace" ONLY when the USER has stated something in THIS new tail that genuinely contradicts a candidate — copy its ordinal into "targetOrdinal" AND its exact text into "expectedTargetText". If the USER has stated something in THIS new tail that genuinely contradicts a candidate, use "replace". Otherwise, do NOT touch the candidate.
 - op:"append" to add a same-kind item to an existing candidate — copy its ordinal into "targetOrdinal".
 - op:"new" for all other facts not contradicting any shown candidate.

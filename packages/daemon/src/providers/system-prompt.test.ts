@@ -177,3 +177,37 @@ describe("D-V6d — self-concept cannot self-forget", () => {
     );
   });
 });
+
+// ── D1-7: A′ recall-usage instruction (v2-07) ─────────────────────────────
+
+describe("D1-7 — A′ recall-usage: FIRST check [remembered], USE it, NEVER say you lack info", () => {
+  test('MEMORY_SELF_CONCEPT contains "FIRST check" recall-usage directive', () => {
+    expect(MEMORY_SELF_CONCEPT).toContain("FIRST check");
+  });
+
+  test('MEMORY_SELF_CONCEPT contains a "USE it" directive', () => {
+    expect(MEMORY_SELF_CONCEPT).toContain("USE it");
+  });
+
+  test('MEMORY_SELF_CONCEPT contains a NEVER-say-you-lack-info directive referencing "[remembered]"', () => {
+    expect(MEMORY_SELF_CONCEPT).toContain(
+      'NEVER say you do not have, do not know, or cannot find information that appears in a "[remembered] " message.',
+    );
+  });
+});
+
+// ── D1-8: over-correction nuance instruction (v2-07) ──────────────────────
+
+describe("D1-8 — over-correction nuance: do NOT redirect user to History for just-given info", () => {
+  test('MEMORY_SELF_CONCEPT contains the do-NOT-tell-History instruction for just-given info', () => {
+    expect(MEMORY_SELF_CONCEPT).toContain(
+      "do NOT tell the user to update the History page for information they just gave you.",
+    );
+  });
+
+  test('MEMORY_SELF_CONCEPT restricts History-page mentions to "viewing, editing, or forgetting EXISTING remembered facts"', () => {
+    expect(MEMORY_SELF_CONCEPT).toContain(
+      "viewing, editing, or forgetting EXISTING remembered facts.",
+    );
+  });
+});

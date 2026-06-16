@@ -736,3 +736,24 @@ describe("D-V6e — distiller language preservation", () => {
     store.close();
   });
 });
+
+// ── v2-07 E-a: user QUESTION is not a fact source ─────────────────────────
+
+describe("v2-07 E-a — user QUESTION is not a fact source (distiller prompt)", () => {
+  test('SMART_DELTA_SYSTEM_PROMPT explicitly states a user QUESTION is not a fact source', () => {
+    // Assert the prompt contains an explicit "question" + "not a fact source" instruction
+    const lower = SMART_DELTA_SYSTEM_PROMPT.toLowerCase();
+    expect(lower).toContain("question");
+    expect(SMART_DELTA_SYSTEM_PROMPT).toContain("not a fact source");
+  });
+
+  test('SMART_DELTA_SYSTEM_PROMPT distinguishes a user QUESTION (REQUEST) from a user STATEMENT', () => {
+    // The prompt must name both "QUESTION" and "STATEMENT" to make the distinction explicit
+    expect(SMART_DELTA_SYSTEM_PROMPT).toContain("NEVER create, append, or replace a fact from a user question");
+  });
+
+  test('SMART_DELTA_SYSTEM_PROMPT still retains the USER-only derivation rule (regression lock)', () => {
+    // Ensure the new clause does not silently drop the existing rule
+    expect(SMART_DELTA_SYSTEM_PROMPT).toContain("ONLY from the USER");
+  });
+});

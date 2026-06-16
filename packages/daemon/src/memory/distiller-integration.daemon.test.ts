@@ -677,3 +677,69 @@ test("thread-level provenance fact is durably deleted after forget (FixedMarker 
 
   store.close();
 });
+
+// ─── v2-07 E-b: dedup guard — same canonical → no new row ────────────────────
+//
+// Seed "user name is lior" via a first dismiss. Then drive a second thread whose
+// scripted delta emits a new op with the SAME canonical but different display wording.
+// Assert: name-fact count is still 1 (the duplicate new op was a no-op) AND
+//         COUNT(fact_fts) == COUNT(distilled_facts) (no orphan).
+
+/** Scripted stub: first call emits the seed fact; second call emits a new op
+ * whose canonical matches the already-inserted seed. */
+function makeDedupStub(): Anthropic {
+  let callCount = 0;
+  return {
+    messages: {
+      create: async () => {
+        callCount++;
+        if (callCount === 1) {
+          // First dismiss: seed "user name is lior"
+          const ops = [{ op: "new", fact: "user name is lior", canonical: "user name is lior", topics: [] }];
+          return { content: [{ type: "text", text: JSON.stringify(ops) }], stop_reason: "end_turn" };
+        }
+        // Second dismiss: same canonical as seed, different display wording → should be a no-op
+        const ops = [{ op: "new", fact: "the user is named lior", canonical: "user name is lior", topics: [] }];
+        return { content: [{ type: "text", text: JSON.stringify(ops) }], stop_reason: "end_turn" };
+      },
+    },
+  } as unknown as Anthropic;
+}
+
+test("v2-07 E-b dedup guard: second new op with same canonical is a no-op (no duplicate row)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mq07-dedup-"));
+  const store = new MemoryStore({ dataDir: dir });
+  const hook = new ConsolidationHook(store);
+  const smart = new SmartDistillerProvider({ client: makeDedupStub() });
+  registerDistiller(hook, store, smart, new RuleBasedScanner());
+
+  // Thread 1: seed the name fact
+  const t1 = store.createThread();
+  store.appendMessages(t1, [{ role: "user", content: "user name is lior" }], "s1");
+  await hook.dismiss([t1]);
+
+  // Assert seed is present (1 row with canonical "user name is lior" in fact_fts)
+  const afterSeed = store.rawDb()
+    .query("SELECT d.id, d.fact, f.canonical FROM distilled_facts d JOIN fact_fts f ON f.fact_id = d.id")
+    .all() as { id: string; fact: string; canonical: string }[];
+  expect(afterSeed.filter((f) => f.canonical === "user name is lior")).toHaveLength(1);
+
+  // Thread 2: different thread, scripted stub emits new op with SAME canonical
+  const t2 = store.createThread();
+  store.appendMessages(t2, [{ role: "user", content: "the user is named lior" }], "s2");
+  await hook.dismiss([t2]);
+
+  // 2.1 assertion: name fact count STILL 1 (duplicate was a no-op)
+  const afterSecond = store.rawDb()
+    .query("SELECT d.id, d.fact, f.canonical FROM distilled_facts d JOIN fact_fts f ON f.fact_id = d.id")
+    .all() as { id: string; fact: string; canonical: string }[];
+  const nameFacts = afterSecond.filter((f) => f.canonical === "user name is lior");
+  expect(nameFacts).toHaveLength(1);
+
+  // count-equality invariant: COUNT(fact_fts) == COUNT(distilled_facts) (no orphan)
+  const ftsCount = (store.rawDb().query("SELECT COUNT(*) AS c FROM fact_fts").get() as { c: number }).c;
+  const factsCount = (store.rawDb().query("SELECT COUNT(*) AS c FROM distilled_facts").get() as { c: number }).c;
+  expect(ftsCount).toBe(factsCount);
+
+  store.close();
+});

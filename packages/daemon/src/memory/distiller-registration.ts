@@ -246,20 +246,48 @@ async function distillOneThread(
 
           const appended = store.appendToFactById(targetId, op.fact, mergedCanonical);
           if (!appended) {
-            // Cap hit or id absent — demote to new
+            // Cap hit or id absent — demote to new.
+            // v2-07 E-b dedup guard: never insert a new/demoted fact whose canonical already exists (no-op instead).
+            // Exact-canonical, conservative — the LLM's candidate-fetch handles reworded near-duplicates
+            // (spec §3.2 Failure-mode-B). Operationalizes the STABILITY amendment's redundant-fact mitigation.
+            const dedupRow = store.rawDb()
+              .query("SELECT 1 FROM fact_fts WHERE canonical = ? LIMIT 1")
+              .get(newItemCanonical);
+            if (dedupRow) {
+              memDebug("distill", {
+                threadId,
+                dedupSkipped: previewStr(op.fact),
+                canonical: previewStr(newItemCanonical),
+              });
+            } else {
+              // machine facts are ALWAYS cross-thread (relay-006 MINOR-4); thread-local is human-only, 5f preserved in readDistilledFactsForThread.
+              store.insertFact(
+                { ...base, provenance, scope: "cross-thread", expiry: null, authored_by: "machine" },
+                provider.id,
+              );
+            }
+          }
+        } else {
+          // new (original or demoted).
+          // v2-07 E-b dedup guard: never insert a new/demoted fact whose canonical already exists (no-op instead).
+          // Exact-canonical, conservative — the LLM's candidate-fetch handles reworded near-duplicates
+          // (spec §3.2 Failure-mode-B). Operationalizes the STABILITY amendment's redundant-fact mitigation.
+          const dedupRow = store.rawDb()
+            .query("SELECT 1 FROM fact_fts WHERE canonical = ? LIMIT 1")
+            .get(newItemCanonical);
+          if (dedupRow) {
+            memDebug("distill", {
+              threadId,
+              dedupSkipped: previewStr(op.fact),
+              canonical: previewStr(newItemCanonical),
+            });
+          } else {
             // machine facts are ALWAYS cross-thread (relay-006 MINOR-4); thread-local is human-only, 5f preserved in readDistilledFactsForThread.
             store.insertFact(
               { ...base, provenance, scope: "cross-thread", expiry: null, authored_by: "machine" },
               provider.id,
             );
           }
-        } else {
-          // new (original or demoted)
-          // machine facts are ALWAYS cross-thread (relay-006 MINOR-4); thread-local is human-only, 5f preserved in readDistilledFactsForThread.
-          store.insertFact(
-            { ...base, provenance, scope: "cross-thread", expiry: null, authored_by: "machine" },
-            provider.id,
-          );
         }
       }
 

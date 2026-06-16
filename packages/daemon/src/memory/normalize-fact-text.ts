@@ -38,3 +38,23 @@ export function normalizeFactText(s: string): string {
   n = n.trim();
   return n;
 }
+
+// v2-08 refined-B (bus q#013): a DEDUP-LOCAL secondary key. Runs normalizeFactText
+// first, then drops a CLOSED set of function words at WORD boundaries so connector-only
+// variants ("favorite color is blue" / "favorite color blue") collapse for dedup.
+// HAZARD GUARD — the set NEVER contains negations (not/no/never/n't), quantifiers
+// (all/any/some/none/every), or comparatives: keeping them means a CONTRADICTING fact
+// ("...is NOT blue") never collapses into its opposite. NOT the shared normalizer —
+// used ONLY by the suppress-only dedup guard, so forget/reindex are unaffected.
+const DEDUP_CONNECTOR_WORDS = new Set([
+  "a", "an", "the", "is", "are", "am", "was", "were", "be", "been", "being",
+]);
+
+export function dedupConnectorKey(text: string): string {
+  const norm = normalizeFactText(text); // lowercases + collapses whitespace already
+  if (norm === "") return "";
+  return norm
+    .split(" ")
+    .filter((w) => w !== "" && !DEDUP_CONNECTOR_WORDS.has(w))
+    .join(" ");
+}

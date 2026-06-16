@@ -177,3 +177,61 @@ describe("D-V6d — self-concept cannot self-forget", () => {
     );
   });
 });
+
+// ── D1-7: A′ recall-usage instruction (v2-07) ─────────────────────────────
+
+describe("D1-7 — A′ recall-usage: FIRST check [remembered], USE it, NEVER say you lack info", () => {
+  test('MEMORY_SELF_CONCEPT contains "FIRST check" recall-usage directive', () => {
+    expect(MEMORY_SELF_CONCEPT).toContain("FIRST check");
+  });
+
+  test('MEMORY_SELF_CONCEPT contains a "USE it" directive', () => {
+    expect(MEMORY_SELF_CONCEPT).toContain("USE it");
+  });
+
+  test('MEMORY_SELF_CONCEPT contains a NEVER-say-you-lack-info directive referencing "[remembered]"', () => {
+    expect(MEMORY_SELF_CONCEPT).toContain(
+      'NEVER say you do not have, do not know, or cannot find information that appears in a "[remembered] " message.',
+    );
+  });
+});
+
+// ── D1-8: over-correction nuance instruction (v2-07) ──────────────────────
+
+describe("D1-8 — over-correction nuance: do NOT redirect user to History for just-given info", () => {
+  test('MEMORY_SELF_CONCEPT contains the do-NOT-tell-History instruction for just-given info (v2-09 tightened)', () => {
+    // v2-09: "Do NOT tell the user to update, change, or fix the old information in the History page"
+    expect(MEMORY_SELF_CONCEPT.toLowerCase()).toContain(
+      "do not tell the user to update",
+    );
+  });
+
+  test('MEMORY_SELF_CONCEPT restricts History-page mentions to "viewing, editing, or forgetting EXISTING" memories (v2-09 tightened)', () => {
+    // v2-09: "Only mention the History page for viewing, editing, or forgetting EXISTING remembered facts the user did NOT just change"
+    expect(MEMORY_SELF_CONCEPT).toContain("EXISTING");
+    expect(MEMORY_SELF_CONCEPT).toContain("did NOT just change");
+  });
+});
+
+// ── v2-09: over-correction clause re-tightened ────────────────────────────
+
+test("v2-09: over-correction clause re-tightened — never redirect to History for a change/correction the user just stated", () => {
+  // The v2-09 tightened phrasing: "STATES a change" (not just "new things"):
+  expect(MEMORY_SELF_CONCEPT).toContain("STATES a change");
+  // The v2-09 tightened directive: "a stated change is saved for you":
+  expect(MEMORY_SELF_CONCEPT.toLowerCase()).toContain("a stated change is saved for you");
+  // The v2-09 "did NOT just change" restriction on when to mention History:
+  expect(MEMORY_SELF_CONCEPT).toContain("did NOT just change");
+  // "captured automatically" must survive (the core over-correction clause):
+  expect(MEMORY_SELF_CONCEPT).toContain("captured automatically");
+  // "do not tell the user to update" must survive in lowercase:
+  expect(MEMORY_SELF_CONCEPT.toLowerCase()).toContain("do not tell the user to update");
+  // History only for EXISTING memories:
+  expect(MEMORY_SELF_CONCEPT).toContain("EXISTING");
+  // D1 clauses must all SURVIVE (don't drop one while tightening another):
+  expect(MEMORY_SELF_CONCEPT).toContain("[remembered] ");          // D1-2
+  expect(MEMORY_SELF_CONCEPT).toContain("not a stateless model");  // D1-1
+  expect(MEMORY_SELF_CONCEPT).toContain("FIRST check");            // D1-7 (A′)
+  expect(MEMORY_SELF_CONCEPT).toContain("cannot modify, delete, or forget your own memory"); // D1-6
+  expect(MEMORY_SELF_CONCEPT).toContain("attached for you automatically"); // D1-5
+});

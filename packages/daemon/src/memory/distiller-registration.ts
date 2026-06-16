@@ -4,6 +4,7 @@ import type { MemoryProvider, DistillDelta, FactOp } from "./memory-provider.js"
 import type { MemoryScanner } from "./scanner/memory-scanner.js";
 import { SmartDistillError } from "./providers/smart-distiller-provider.js";
 import { normalizeFactText } from "./normalize-fact-text.js";
+import { memDebug, previewStr } from "./debug-log.js";
 
 /**
  * Wire the distiller as the consolidation-hook's batch handler.
@@ -99,6 +100,21 @@ async function distillOneThread(
     recordDistillFailure(err, "provider.distill", trigger);
     throw err;
   }
+
+  // ── D1 distill OUTPUT delta log (env-gated, zero-cost when OFF) ──────────
+  // Logs after provider.distill returns so we see what the LLM/provider produced.
+  // (`why` = expectedTargetText for replace ops — no free-text why on FactOp)
+  memDebug("distill", {
+    threadId,
+    ops: delta.ops.map((op) => ({
+      op: op.op,
+      ...(op.targetOrdinal !== undefined ? { targetOrdinal: op.targetOrdinal } : {}),
+      ...(op.expectedTargetText !== undefined ? { why: previewStr(op.expectedTargetText) } : {}),
+      factPreview: previewStr(op.fact),
+      canonicalPreview: previewStr(op.canonical ?? ""),
+    })),
+    candidateIds: delta.candidateIds,
+  });
 
   // ── Phase 2: SCAN per-op (outside the tx, pre-insert) ────────────────────
   // Provenance is thread-level ("thread:<threadId>") so no per-op quarantine recording.
@@ -230,20 +246,48 @@ async function distillOneThread(
 
           const appended = store.appendToFactById(targetId, op.fact, mergedCanonical);
           if (!appended) {
-            // Cap hit or id absent — demote to new
+            // Cap hit or id absent — demote to new.
+            // v2-08 refined-B dedup (bus q#013): SUPPRESS-ONLY existence check over ALL facts —
+            // symmetric normalize (stored canonical is verbatim) + closed connector-strip key.
+            // Only no-ops a NEW/demoted insert here; never reaches replace/normal-append, so it
+            // never mutates an existing row (STABILITY untouched by construction). E-a (prompt)
+            // is the first line; this is the deterministic backstop for when E-a leaks.
+            const dedupHit = store.factExistsByDedupKey(newItemCanonical);
+            if (dedupHit) {
+              memDebug("distill", {
+                threadId,
+                dedupSkipped: previewStr(op.fact),
+                canonical: previewStr(newItemCanonical),
+              });
+            } else {
+              // machine facts are ALWAYS cross-thread (relay-006 MINOR-4); thread-local is human-only, 5f preserved in readDistilledFactsForThread.
+              store.insertFact(
+                { ...base, provenance, scope: "cross-thread", expiry: null, authored_by: "machine" },
+                provider.id,
+              );
+            }
+          }
+        } else {
+          // new (original or demoted).
+          // v2-08 refined-B dedup (bus q#013): SUPPRESS-ONLY existence check over ALL facts —
+          // symmetric normalize (stored canonical is verbatim) + closed connector-strip key.
+          // Only no-ops a NEW/demoted insert here; never reaches replace/normal-append, so it
+          // never mutates an existing row (STABILITY untouched by construction). E-a (prompt)
+          // is the first line; this is the deterministic backstop for when E-a leaks.
+          const dedupHit = store.factExistsByDedupKey(newItemCanonical);
+          if (dedupHit) {
+            memDebug("distill", {
+              threadId,
+              dedupSkipped: previewStr(op.fact),
+              canonical: previewStr(newItemCanonical),
+            });
+          } else {
             // machine facts are ALWAYS cross-thread (relay-006 MINOR-4); thread-local is human-only, 5f preserved in readDistilledFactsForThread.
             store.insertFact(
               { ...base, provenance, scope: "cross-thread", expiry: null, authored_by: "machine" },
               provider.id,
             );
           }
-        } else {
-          // new (original or demoted)
-          // machine facts are ALWAYS cross-thread (relay-006 MINOR-4); thread-local is human-only, 5f preserved in readDistilledFactsForThread.
-          store.insertFact(
-            { ...base, provenance, scope: "cross-thread", expiry: null, authored_by: "machine" },
-            provider.id,
-          );
         }
       }
 
@@ -290,12 +334,29 @@ async function doOneRun(
   if (firstErr) throw firstErr;
 }
 
+/**
+ * DistillerHook — returned by registerDistiller.
+ *
+ * whenIdle(): Promise<void> — resolves when the current tail of the
+ * serialized promise-queue has settled (success OR failure).
+ * Callers (ThreadLifecycle.beginTurn new-thread branch) await this before
+ * running retrieve() so they always see facts committed by the most-recently-
+ * started distill run. Do NOT change the queue's existing semantics.
+ *
+ * Implementation: await the stored `lastRun` promise, swallowing any rejection
+ * (the prior run already recorded its distill-failed event and rethrew to its
+ * own caller). `whenIdle` resolves on settle regardless of success/failure.
+ */
+export type DistillerHook = {
+  whenIdle: () => Promise<void>;
+};
+
 export function registerDistiller(
   hook: ConsolidationHook,
   store: MemoryStore,
   provider: MemoryProvider,
   scanner: MemoryScanner,
-): void {
+): DistillerHook {
   // MAJOR-3: promise-queue — serialize concurrent same-target deltas.
   //
   // Non-destructive-on-conflict — the optimistic-concurrency re-read
@@ -316,4 +377,11 @@ export function registerDistiller(
     lastRun = thisRun;
     return thisRun; // caller (hook.dismiss → close(ws)) still awaits THIS run + sees its rejection
   });
+
+  // whenIdle(): resolve when the current tail of the promise-queue settles.
+  // Swallows rejection — the prior run already handled it; we only need the
+  // settle signal (so a new-thread retrieve can proceed safely after distill).
+  const whenIdle = (): Promise<void> => lastRun.catch(() => { /* settle regardless of failure */ });
+
+  return { whenIdle };
 }

@@ -1,8 +1,8 @@
 /**
  * memory-provider-selector.test.ts
  *
- * Tests for selector registration of "smart" (R6) + default-unchanged guard.
- * fixed-marker is RETIRED (v2-03) — no entry in REGISTRY.
+ * Tests for selector registration of "smart" (R6). Default IS now "smart" (v2-05 cutover);
+ * keyless path falls back to "dumb-tail" with a loud log. fixed-marker is RETIRED (v2-03) — no entry in REGISTRY.
  *
  * Test seam (Strike-4 — no shell-out in unit tests): buildMemoryProvider accepts an
  * optional `resolveKey` function. Tests inject a fake resolver returning controlled
@@ -59,11 +59,22 @@ test("MEMORY_PROVIDER=smart + NO key => console.error fired AND provider.id === 
   expect(provider.id).toBe("dumb-tail");
 });
 
-test("MEMORY_PROVIDER unset => provider.id === 'dumb-tail' (default UNCHANGED — chunk-04 guard)", async () => {
+test("MEMORY_PROVIDER unset + resolvable key => provider.id === 'smart' (v2-05 default flip)", async () => {
   delete process.env["MEMORY_PROVIDER"];
   const { buildMemoryProvider } = await import("./memory-provider-selector.js");
-  // No resolveKey injection: production path; key is never consulted for dumb-tail
-  const provider = buildMemoryProvider();
+  const provider = buildMemoryProvider({ resolveKey: () => fakeOk });
+  expect(provider.id).toBe("smart");
+});
+
+test("MEMORY_PROVIDER unset + NO key => loud console.error AND falls back to dumb-tail", async () => {
+  delete process.env["MEMORY_PROVIDER"];
+  const { buildMemoryProvider } = await import("./memory-provider-selector.js");
+  const errSpy = spyOn(console, "error").mockImplementation(() => {});
+  const provider = buildMemoryProvider({ resolveKey: () => fakeMissing });
+  expect(errSpy).toHaveBeenCalled();
+  const allText = errSpy.mock.calls.map((c) => c.join(" ")).join(" ");
+  expect(allText).toContain(fakeMissing.fixHint);
+  errSpy.mockRestore();
   expect(provider.id).toBe("dumb-tail");
 });
 

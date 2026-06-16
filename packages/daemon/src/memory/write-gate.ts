@@ -3,6 +3,7 @@ import type { SessionMessage } from "../providers/provider.js";
 import { REDACTION_MARKER } from "./schema.js";
 import type { MemoryScanner } from "./scanner/memory-scanner.js";
 import { normalizeFactText } from "./normalize-fact-text.js";
+import { memDebug } from "./debug-log.js";
 
 export { REDACTION_MARKER };
 
@@ -122,6 +123,63 @@ export class WriteGate {
     const norm = normalizeFactText(factText);
     // Durable delete via trigger-backed deleteFactById loop (5e guard inside)
     this.store.deleteMachineFactsByForget(provenance, norm);
+    // ── D1 forget log (env-gated, zero-cost when OFF) ─────────────────────────
+    memDebug("forget", {
+      route: "forgetFact",
+      target: { provenance, normalizedText: norm },
+      deletedIds: [],
+      deletedCount: 0, // deleteMachineFactsByForget does not return ids/count — conservative log
+    });
+  }
+
+  /**
+   * forgetFactById — v2-06 C-fix: the precise forget intent (ADR-0015 decision-1 intent dispatch).
+   *
+   * Deletes exactly the stable-id row; NEVER scrubs messages (B1). The HTTP path is
+   * human-ctx, so a human deleting a human pin is allowed; the machine-ctx refusal is
+   * the 2c (5e) seam.
+   *
+   * REFINE (Lior): forget-by-id NOW; finer message-level provenance is DEFERRED to the
+   * future THREAD-forget.
+   *
+   * The text/provenance forgetFact primitive above survives for its unit tests but has NO caller
+   * route post-v2-07 (the over-deleting HTTP fallback was removed; it over-deleted all facts
+   * sharing a thread provenance — store.deleteMachineFactsByForget).
+   */
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- reason kept for API symmetry with forgetFact; argsIgnorePattern not configured
+  forgetFactById(factId: string, ctx: WriteContext, reason?: string): void {
+    // Resolve the row to check authored_by (5e seam)
+    const db = this.store.rawDb();
+    const row = db.query("SELECT authored_by FROM distilled_facts WHERE id = ?").get(factId) as { authored_by: string } | null;
+    if (!row) {
+      // Idempotent: unknown id is a no-op
+      memDebug("forget", {
+        route: "forgetFactById",
+        target: { factId },
+        deletedIds: [],
+        deletedCount: 0,
+      });
+      return;
+    }
+    // 5e seam: machine ctx must not delete a human-authored row
+    if (row.authored_by === "human" && ctx.authored_by === "machine") {
+      memDebug("forget", {
+        route: "forgetFactById",
+        target: { factId },
+        deletedIds: [],
+        deletedCount: 0,
+        refused: "5e-machine-vs-human",
+      });
+      return;
+    }
+    this.store.deleteFactById(factId);
+    // ── D1 forget log (env-gated, zero-cost when OFF) ─────────────────────────
+    memDebug("forget", {
+      route: "forgetFactById",
+      target: { factId },
+      deletedIds: [factId],
+      deletedCount: 1,
+    });
   }
 
   /**

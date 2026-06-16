@@ -677,3 +677,273 @@ test("thread-level provenance fact is durably deleted after forget (FixedMarker 
 
   store.close();
 });
+
+// ─── v2-07 E-b: dedup guard — same canonical → no new row ────────────────────
+//
+// Seed "user name is lior" via a first dismiss. Then drive a second thread whose
+// scripted delta emits a new op with the SAME canonical but different display wording.
+// Assert: name-fact count is still 1 (the duplicate new op was a no-op) AND
+//         COUNT(fact_fts) == COUNT(distilled_facts) (no orphan).
+
+/** Scripted stub: first call emits the seed fact; second call emits a new op
+ * whose canonical matches the already-inserted seed. */
+function makeDedupStub(): Anthropic {
+  let callCount = 0;
+  return {
+    messages: {
+      create: async () => {
+        callCount++;
+        if (callCount === 1) {
+          // First dismiss: seed "user name is lior"
+          const ops = [{ op: "new", fact: "user name is lior", canonical: "user name is lior", topics: [] }];
+          return { content: [{ type: "text", text: JSON.stringify(ops) }], stop_reason: "end_turn" };
+        }
+        // Second dismiss: same canonical as seed, different display wording → should be a no-op
+        const ops = [{ op: "new", fact: "the user is named lior", canonical: "user name is lior", topics: [] }];
+        return { content: [{ type: "text", text: JSON.stringify(ops) }], stop_reason: "end_turn" };
+      },
+    },
+  } as unknown as Anthropic;
+}
+
+test("v2-07 E-b dedup guard: second new op with same canonical is a no-op (no duplicate row)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mq07-dedup-"));
+  const store = new MemoryStore({ dataDir: dir });
+  const hook = new ConsolidationHook(store);
+  const smart = new SmartDistillerProvider({ client: makeDedupStub() });
+  registerDistiller(hook, store, smart, new RuleBasedScanner());
+
+  // Thread 1: seed the name fact
+  const t1 = store.createThread();
+  store.appendMessages(t1, [{ role: "user", content: "user name is lior" }], "s1");
+  await hook.dismiss([t1]);
+
+  // Assert seed is present (1 row with canonical "user name is lior" in fact_fts)
+  const afterSeed = store.rawDb()
+    .query("SELECT d.id, d.fact, f.canonical FROM distilled_facts d JOIN fact_fts f ON f.fact_id = d.id")
+    .all() as { id: string; fact: string; canonical: string }[];
+  expect(afterSeed.filter((f) => f.canonical === "user name is lior")).toHaveLength(1);
+
+  // Thread 2: different thread, scripted stub emits new op with SAME canonical
+  const t2 = store.createThread();
+  store.appendMessages(t2, [{ role: "user", content: "the user is named lior" }], "s2");
+  await hook.dismiss([t2]);
+
+  // 2.1 assertion: name fact count STILL 1 (duplicate was a no-op)
+  const afterSecond = store.rawDb()
+    .query("SELECT d.id, d.fact, f.canonical FROM distilled_facts d JOIN fact_fts f ON f.fact_id = d.id")
+    .all() as { id: string; fact: string; canonical: string }[];
+  const nameFacts = afterSecond.filter((f) => f.canonical === "user name is lior");
+  expect(nameFacts).toHaveLength(1);
+
+  // count-equality invariant: COUNT(fact_fts) == COUNT(distilled_facts) (no orphan)
+  const ftsCount = (store.rawDb().query("SELECT COUNT(*) AS c FROM fact_fts").get() as { c: number }).c;
+  const factsCount = (store.rawDb().query("SELECT COUNT(*) AS c FROM distilled_facts").get() as { c: number }).c;
+  expect(ftsCount).toBe(factsCount);
+
+  store.close();
+});
+
+// ─── v2-08 refined-B: connector-strip dedup guard integration tests ──────────
+//
+// (a) cited case: seed "favorite color blue" (raw canonical), second dismiss emits
+//     new op "favorite color is blue" (connector variant) → count stays 1; FTS=DF.
+// (b) hazard: second op "favorite color is not blue" → count becomes 2 (NOT suppressed).
+// (c) suppress-only routing: after the cited-case dismiss the ORIGINAL fact row id +
+//     fact/canonical text are byte-identical (replace/merge would have rewritten it).
+
+/** Scripted stub for the cited connector-variant case (v2-08 refined-B). */
+function makeConnectorDedupStub(secondCanonical: string): Anthropic {
+  let callCount = 0;
+  return {
+    messages: {
+      create: async () => {
+        callCount++;
+        if (callCount === 1) {
+          // First dismiss: seed with RAW connector-free canonical
+          const ops = [{ op: "new", fact: "favorite color blue", canonical: "favorite color blue", topics: [] }];
+          return { content: [{ type: "text", text: JSON.stringify(ops) }], stop_reason: "end_turn" };
+        }
+        // Second dismiss: connector-variant canonical (or negation for hazard test)
+        const ops = [{ op: "new", fact: `favorite color: ${secondCanonical}`, canonical: secondCanonical, topics: [] }];
+        return { content: [{ type: "text", text: JSON.stringify(ops) }], stop_reason: "end_turn" };
+      },
+    },
+  } as unknown as Anthropic;
+}
+
+test("v2-08 refined-B (a) cited case: connector variant new op is a no-op (count stays 1, FTS=DF)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mq08-connector-"));
+  const store = new MemoryStore({ dataDir: dir });
+  const hook = new ConsolidationHook(store);
+  // Use connector-variant canonical — "favorite color is blue" vs seed "favorite color blue"
+  const smart = new SmartDistillerProvider({ client: makeConnectorDedupStub("favorite color is blue") });
+  registerDistiller(hook, store, smart, new RuleBasedScanner());
+
+  // Thread 1: seed the colour fact (raw connector-free canonical)
+  const t1 = store.createThread();
+  store.appendMessages(t1, [{ role: "user", content: "favorite color blue" }], "s1");
+  await hook.dismiss([t1]);
+
+  // Snapshot the seed row id + fact + canonical (for suppress-only assert below)
+  const seedRows = store.rawDb()
+    .query("SELECT d.id, d.fact, f.canonical FROM distilled_facts d JOIN fact_fts f ON f.fact_id = d.id")
+    .all() as { id: string; fact: string; canonical: string }[];
+  expect(seedRows).toHaveLength(1);
+  const seedId = seedRows[0]!.id;
+  const seedFact = seedRows[0]!.fact;
+  const seedCanonical = seedRows[0]!.canonical;
+
+  // Thread 2: same store, scripted stub emits connector variant "favorite color is blue"
+  const t2 = store.createThread();
+  store.appendMessages(t2, [{ role: "user", content: "favorite color is blue" }], "s2");
+  await hook.dismiss([t2]);
+
+  // (a) cited case: count still 1 (connector variant was suppressed)
+  const afterRows = store.rawDb()
+    .query("SELECT d.id, d.fact, f.canonical FROM distilled_facts d JOIN fact_fts f ON f.fact_id = d.id")
+    .all() as { id: string; fact: string; canonical: string }[];
+  const colourFacts = afterRows.filter((f) => f.canonical.includes("favorite color"));
+  expect(colourFacts).toHaveLength(1);
+
+  // count-equality: COUNT(fact_fts) == COUNT(distilled_facts) (no orphan)
+  const ftsCount = (store.rawDb().query("SELECT COUNT(*) AS c FROM fact_fts").get() as { c: number }).c;
+  const dfCount = (store.rawDb().query("SELECT COUNT(*) AS c FROM distilled_facts").get() as { c: number }).c;
+  expect(ftsCount).toBe(dfCount);
+
+  // (c) suppress-only routing: the original row is byte-identical (replace/merge would rewrite it)
+  const afterSeedRow = store.rawDb()
+    .query("SELECT id, fact, canonical FROM distilled_facts d JOIN fact_fts f ON f.fact_id = d.id WHERE d.id = ?")
+    .get(seedId) as { id: string; fact: string; canonical: string } | null;
+  expect(afterSeedRow).not.toBeNull();
+  expect(afterSeedRow!.id).toBe(seedId);
+  expect(afterSeedRow!.fact).toBe(seedFact);
+  expect(afterSeedRow!.canonical).toBe(seedCanonical);
+
+  store.close();
+});
+
+test("v2-08 refined-B (b) hazard: negation variant is NOT suppressed (count becomes 2)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mq08-hazard-"));
+  const store = new MemoryStore({ dataDir: dir });
+  const hook = new ConsolidationHook(store);
+  // Hazard: second op emits "favorite color is not blue" — must NOT be suppressed
+  const smart = new SmartDistillerProvider({ client: makeConnectorDedupStub("favorite color is not blue") });
+  registerDistiller(hook, store, smart, new RuleBasedScanner());
+
+  // Thread 1: seed
+  const t1 = store.createThread();
+  store.appendMessages(t1, [{ role: "user", content: "favorite color blue" }], "s1");
+  await hook.dismiss([t1]);
+
+  // Thread 2: negation variant — must NOT be suppressed (distinct fact)
+  const t2 = store.createThread();
+  store.appendMessages(t2, [{ role: "user", content: "favorite color is not blue" }], "s2");
+  await hook.dismiss([t2]);
+
+  // (b) hazard: count is 2 — the negation was NOT suppressed
+  const afterRows = store.rawDb()
+    .query("SELECT d.id, f.canonical FROM distilled_facts d JOIN fact_fts f ON f.fact_id = d.id")
+    .all() as { id: string; canonical: string }[];
+  expect(afterRows).toHaveLength(2);
+
+  // count-equality holds
+  const ftsCount = (store.rawDb().query("SELECT COUNT(*) AS c FROM fact_fts").get() as { c: number }).c;
+  const dfCount = (store.rawDb().query("SELECT COUNT(*) AS c FROM distilled_facts").get() as { c: number }).c;
+  expect(ftsCount).toBe(dfCount);
+
+  store.close();
+});
+
+// ─── v2-07 Step 3.6: overlapping-dismiss integration test ────────────────────
+//
+// Dismiss thread A (fires an in-flight delayed distill), immediately beginTurn a new
+// thread B. Assert that B's retrieve INCLUDES A's just-committed fact (the whenIdle
+// wait blocked retrieve until the in-flight distill settled).
+//
+// This is the deterministic integration counterpart to the harness A-race test.
+
+/** Delayed echo stub: introduces a 50ms artificial delay before returning ops.
+ * Mirrors the A_RACE_DELAY_MS pattern in the harness scripted client.
+ * The delay ensures the distill from thread A is still "in-flight" when
+ * thread B's beginTurn fires — the whenIdle wait must block B's retrieve
+ * until A's distill commits. */
+function makeDelayedEchoStub(delayMs: number): Anthropic {
+  return {
+    messages: {
+      create: async (params: { messages: { role: string; content: string }[] }) => {
+        // Parse the tail text and produce ops (same logic as makeEchoStub)
+        const userContent = params.messages[0]?.content ?? "";
+        const lines = userContent.split("\n");
+        const ops: { op: string; fact: string; canonical: string; topics: string[] }[] = [];
+        for (const line of lines) {
+          const m = line.match(/^\[([^\|]+)\|([^\]]+)\]\s+(.+)$/);
+          if (m) {
+            ops.push({
+              op: "new",
+              fact: m[3]!,
+              canonical: m[3]!.toLowerCase(),
+              topics: [],
+            });
+          }
+        }
+        // Inject artificial delay — mirrors the race window in the harness A test
+        await new Promise((r) => setTimeout(r, delayMs));
+        return {
+          content: [{ type: "text", text: JSON.stringify(ops) }],
+          stop_reason: "end_turn",
+        };
+      },
+    },
+  } as unknown as Anthropic;
+}
+
+test("v2-07: overlapping-dismiss — thread B retrieve INCLUDES thread A's in-flight fact (whenIdle blocks until distill commits)", async () => {
+  const DELAY_MS = 50; // artificial distill delay to create the race window
+
+  const dir = mkdtempSync(join(tmpdir(), "mq07-overlap-"));
+  const store = new MemoryStore({ dataDir: dir });
+  const gate = new WriteGate(store, new RuleBasedScanner());
+  const hook = new ConsolidationHook(store);
+  const smart = new SmartDistillerProvider({ client: makeDelayedEchoStub(DELAY_MS) });
+
+  // registerDistiller returns { whenIdle } — the hook that signals distill completion.
+  const { whenIdle } = registerDistiller(hook, store, smart, new RuleBasedScanner());
+
+  // Thread A: append message and dismiss (fires the delayed distill asynchronously)
+  const tA = store.createThread();
+  store.appendMessages(tA, [{ role: "user", content: "city is tel aviv" }], "sA");
+
+  // Start the dismiss but do NOT await it — the delayed stub means distill is in-flight
+  const dismissPromise = hook.dismiss([tA]);
+
+  // Immediately construct thread B lifecycle with the whenIdle hook.
+  // beginTurn for a NEW thread calls whenIdle() and blocks until distill commits.
+  // Thread B opens WHILE thread A's distill is in-flight (within the 50ms window).
+  const lifecycle = new ThreadLifecycle(
+    store,
+    gate,
+    new DumbTailProvider(), // memoryProvider for retrieve
+    whenIdle,               // whenIdle hook: waits for the in-flight distill
+    5000,                   // standard timeout
+  );
+
+  // beginTurn races the in-flight distill — whenIdle blocks it until A's distill commits
+  const beginResult = await lifecycle.beginTurn({ type: "session_start", trigger: "user", text: "what is my city?" });
+
+  // Ensure the dismiss settled (no dangling promise)
+  await dismissPromise;
+
+  // Assert: B's priorMessages INCLUDE A's just-committed fact
+  // (the whenIdle wait blocked retrieve until the delayed distill wrote the row)
+  const priorContents = beginResult.priorMessages.map((m) => m.content);
+  const cityFactInjected = priorContents.some((c) => c.includes("city is tel aviv"));
+  expect(cityFactInjected).toBe(true);
+
+  // Count-equality: no orphan rows after the in-flight distill completed
+  const ftsCount2 = (store.rawDb().query("SELECT COUNT(*) AS c FROM fact_fts").get() as { c: number }).c;
+  const factsCount2 = (store.rawDb().query("SELECT COUNT(*) AS c FROM distilled_facts").get() as { c: number }).c;
+  expect(ftsCount2).toBe(factsCount2);
+
+  store.close();
+});

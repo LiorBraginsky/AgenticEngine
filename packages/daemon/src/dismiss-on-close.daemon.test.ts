@@ -15,6 +15,7 @@ beforeAll(async () => {
   dataDir = mkdtempSync(join(tmpdir(), "cm03-dismiss-"));
   process.env.AGENTIC_DATA_DIR = dataDir;
   process.env.LLM_PROVIDER = "mock";
+  process.env.MEMORY_PROVIDER = "dumb-tail"; // v2-05: default flipped to smart; pin the deterministic distiller (the smart Anthropic SDK can't run under bun:test). The dismiss→distill PLUMBING is what this DoD proves, not the LLM distiller.
   const { startDaemon } = await import("./index.js");
   server = startDaemon(0);
   PORT = server.port!;

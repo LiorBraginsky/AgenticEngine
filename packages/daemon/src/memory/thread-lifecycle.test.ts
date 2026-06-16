@@ -1,4 +1,4 @@
-import { test, expect } from "bun:test";
+import { test, expect, spyOn } from "bun:test";
 import { tmpdir } from "node:os";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
@@ -145,5 +145,72 @@ test("Q1: endTurn stamps role=user messages as human-authored and role=assistant
     { role: "user", content: "user turn" },
     { role: "assistant", content: "assistant turn" },
   ]);
+  store.close();
+});
+
+// ---- v2-08 Step 1.1: known-thread turn injects cross-thread facts + delta-flush guard ----
+
+test("v2-08: a KNOWN-thread turn ALSO injects the cross-thread distilled slice BEFORE the tail", async () => {
+  const { store, lifecycle } = freshTL();
+  const hook = new ConsolidationHook(store);
+  registerDistiller(hook, store, dumbTailProvider, new RuleBasedScanner());
+  // Thread A: state + distill a fact (prior dismiss).
+  const tA = store.createThread();
+  store.appendMessages(tA, [{ role: "user", content: "deploy is yeet.sh" }], "sa");
+  await hook.dismiss([tA]);
+  // Thread B: turn 1 (new) — flush a turn so B becomes a KNOWN thread.
+  const b1 = await lifecycle.beginTurn({ type: "session_start", trigger: "user", text: "hi" });
+  lifecycle.bindSession("sb1", b1.threadId, b1.priorMessages.length);
+  lifecycle.endTurn(b1.threadId, "sb1", [...b1.priorMessages, { role: "user", content: "hi" }]);
+  // Thread B turn 2: KNOWN thread → must inject A's fact BEFORE B's own tail.
+  const b2 = await lifecycle.beginTurn({ type: "session_start", trigger: "user", text: "and now?", thread_id: b1.threadId });
+  expect(b2.threadId).toBe(b1.threadId);
+  expect(b2.priorMessages[0]).toEqual({ role: "user", content: "[remembered] deploy is yeet.sh" });
+  expect(b2.priorMessages).toContainEqual({ role: "user", content: "hi" }); // the tail follows
+  // The injected fact must NOT be re-persisted on this turn (delta-flush guard).
+  lifecycle.bindSession("sb2", b2.threadId, b2.priorMessages.length);
+  lifecycle.endTurn(b2.threadId, "sb2", [...b2.priorMessages, { role: "user", content: "and now?" }]);
+  const persisted = store.readThreadTail(b1.threadId, 50).map((m) => m.content);
+  expect(persisted).toEqual(["hi", "and now?"]); // no [remembered] row persisted
+});
+
+// ---- v2-07 Step 3.5: whenIdle timeout-branch (proceed-not-hang) ----
+
+test("v2-07: whenIdle that never resolves times out and beginTurn still resolves (proceed-not-hang)", async () => {
+  // Construct ThreadLifecycle with a short timeout (20ms) and a whenIdle that NEVER resolves.
+  // Assert: console.error is called with the timeout message, AND beginTurn resolves
+  // (proceed-not-hang) with the retrieved priorMessages (empty, as there are no prior facts).
+  const dir = mkdtempSync(join(tmpdir(), "mf01-tl-timeout-"));
+  const store = new MemoryStore({ dataDir: dir });
+  const gate = new WriteGate(store, new RuleBasedScanner());
+
+  // whenIdle that NEVER resolves (simulates an in-flight distill that hangs)
+  const neverIdle = () => new Promise<void>(() => { /* intentionally never resolves */ });
+
+  // Pass whenIdleTimeoutMs=20 to the constructor (the optional 5th param)
+  const lifecycle = new ThreadLifecycle(store, gate, undefined, neverIdle, 20);
+
+  const errSpy = spyOn(console, "error").mockImplementation(() => {});
+
+  let resolved = false;
+  const beginPromise = lifecycle.beginTurn({ type: "session_start", trigger: "user", text: "hello" })
+    .then((result) => { resolved = true; return result; });
+
+  const result = await beginPromise;
+
+  // Must have resolved (proceed-not-hang)
+  expect(resolved).toBe(true);
+
+  // priorMessages is the retrieved slice (empty — no distilled facts in this fresh store)
+  expect(Array.isArray(result.priorMessages)).toBe(true);
+
+  // console.error must have been called with the timeout message
+  const errorCalls = errSpy.mock.calls;
+  const timeoutLogFound = errorCalls.some((call) =>
+    typeof call[0] === "string" && call[0].includes("whenIdle timed out"),
+  );
+  expect(timeoutLogFound).toBe(true);
+
+  errSpy.mockRestore();
   store.close();
 });

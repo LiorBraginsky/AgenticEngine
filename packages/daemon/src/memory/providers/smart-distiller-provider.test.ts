@@ -37,6 +37,8 @@ import {
   normalizeFactText,
   SMART_SYSTEM_PROMPT,
   SMART_DELTA_SYSTEM_PROMPT,
+  parseOps,
+  parseFacts,
 } from "./smart-distiller-provider.js";
 import { REMEMBERED_LABEL } from "../../providers/system-prompt.js";
 import type { Anthropic } from "@anthropic-ai/sdk";
@@ -499,6 +501,118 @@ test("SmartDistillerProvider.retrieve skips tombstoned fact provenances (defense
 // under durable-delete, forgotten facts are gone from distilled_facts — the
 // purge window that the backstop defended no longer exists.
 
+// ── v2-06 D: robust JSON-array extraction — parseOps + parseFacts wrapper tolerance ──────────
+//
+// Real-Haiku non-deterministically wraps its JSON output in fences, single-backticks,
+// prose preambles, or trailing prose, DESPITE the prompt forbidding it.
+// The current anchored-only strip (`/^```(?:json)?\s*/i` + `/\s*```\s*$/`) only handles
+// an exactly-anchored triple-fence; everything else falls through to JSON.parse → throws.
+// Fix: extractJsonArray(raw) — locate first `[` and last `]`, slice — strips any wrapper.
+
+describe("v2-06 D — robust JSON-array extraction (parseOps)", () => {
+  const goodOp = { op: "new", fact: "Test fact", canonical: "test fact", topics: ["#about-user"] };
+  const goodOpsJson = JSON.stringify([goodOp]);
+
+  // ── Regression-lock: anchored triple-fence still works after fix ──────────
+  test("anchored triple-fence ```json\\n[...]\\n``` — still parsed correctly", () => {
+    const wrapped = "```json\n" + goodOpsJson + "\n```";
+    const ops = parseOps(wrapped);
+    expect(ops).toHaveLength(1);
+    expect(ops[0]!.fact).toBe("Test fact");
+  });
+
+  // ── v2-06 RED cases — fail on current anchored-only strip ────────────────
+
+  test("leading single-backtick before array — tolerantly extracted", () => {
+    // e.g. "`[{\"op\":\"new\",...}]`" — real LLM inline-backtick wrapping
+    const wrapped = "`" + goodOpsJson + "`";
+    const ops = parseOps(wrapped);
+    expect(ops).toHaveLength(1);
+    expect(ops[0]!.fact).toBe("Test fact");
+  });
+
+  test("prose preamble before array — tolerantly extracted", () => {
+    // e.g. "Here are the ops:\n[{...}]"
+    const wrapped = "Here are the ops:\n" + goodOpsJson;
+    const ops = parseOps(wrapped);
+    expect(ops).toHaveLength(1);
+    expect(ops[0]!.fact).toBe("Test fact");
+  });
+
+  test("array then trailing prose — tolerantly extracted", () => {
+    // e.g. "[{...}]\n\nLet me know if you need anything else."
+    const wrapped = goodOpsJson + "\n\nLet me know if you need anything else.";
+    const ops = parseOps(wrapped);
+    expect(ops).toHaveLength(1);
+    expect(ops[0]!.fact).toBe("Test fact");
+  });
+
+  test("clean bare array — unchanged (baseline, must still work)", () => {
+    const ops = parseOps(goodOpsJson);
+    expect(ops).toHaveLength(1);
+    expect(ops[0]!.fact).toBe("Test fact");
+  });
+
+  test("genuinely non-array / non-JSON body — still throws SmartDistillError", () => {
+    // regression-lock: a truly bad response still throws (never silently drops)
+    expect(() => parseOps("This is not JSON at all!")).toThrow(SmartDistillError);
+  });
+
+  test("non-array JSON object body — still throws SmartDistillError (non-array)", () => {
+    // {"op":"new"} is valid JSON but not an array → throw
+    expect(() => parseOps('{"op":"new","fact":"x"}')).toThrow(SmartDistillError);
+  });
+});
+
+describe("v2-06 D — robust JSON-array extraction (parseFacts)", () => {
+  const goodFact = {
+    fact: "User lives in Tel Aviv",
+    provenance: "thread:abc",
+    scope: "cross-thread",
+    expiry: null,
+    confidence: 0.9,
+  };
+  const goodFactsJson = JSON.stringify([goodFact]);
+
+  test("anchored triple-fence ```json\\n[...]\\n``` — still parsed correctly", () => {
+    const wrapped = "```json\n" + goodFactsJson + "\n```";
+    const facts = parseFacts(wrapped);
+    expect(facts).toHaveLength(1);
+    expect(facts[0]!.fact).toBe("User lives in Tel Aviv");
+  });
+
+  test("leading single-backtick before array — tolerantly extracted", () => {
+    const wrapped = "`" + goodFactsJson + "`";
+    const facts = parseFacts(wrapped);
+    expect(facts).toHaveLength(1);
+    expect(facts[0]!.fact).toBe("User lives in Tel Aviv");
+  });
+
+  test("prose preamble before array — tolerantly extracted", () => {
+    const wrapped = "Here are the facts I found:\n" + goodFactsJson;
+    const facts = parseFacts(wrapped);
+    expect(facts).toHaveLength(1);
+    expect(facts[0]!.fact).toBe("User lives in Tel Aviv");
+  });
+
+  test("array then trailing prose — tolerantly extracted", () => {
+    const wrapped = goodFactsJson + "\n\nLet me know if you need anything else.";
+    const facts = parseFacts(wrapped);
+    expect(facts).toHaveLength(1);
+    expect(facts[0]!.fact).toBe("User lives in Tel Aviv");
+  });
+
+  test("clean bare array — unchanged (baseline, must still work)", () => {
+    const facts = parseFacts(goodFactsJson);
+    expect(facts).toHaveLength(1);
+    expect(facts[0]!.fact).toBe("User lives in Tel Aviv");
+  });
+
+  test("genuinely non-array / non-JSON body — still throws SmartDistillError", () => {
+    expect(() => parseFacts("This is not JSON at all!")).toThrow(SmartDistillError);
+  });
+});
+
 // ── normalizeFactText unit tests ───────────────────────────────────────────
 
 test("normalizeFactText: NFKC + lowercase + strip REMEMBERED_LABEL + collapse whitespace + strip trailing punct", () => {
@@ -548,5 +662,98 @@ describe("D-V6e — distiller language preservation", () => {
     // D-V6e: the delta prompt must instruct "fact" in the user's language
     expect(SMART_DELTA_SYSTEM_PROMPT.toLowerCase()).toContain("user");
     expect(SMART_DELTA_SYSTEM_PROMPT.toLowerCase()).toContain("language");
+  });
+
+  // ---- v2-06 Step 4 (RED): tightened input contract — no REPLACE from ASSISTANT-only tails ----
+
+  test('v2-06 B-fix: SMART_DELTA_SYSTEM_PROMPT instructs to derive facts ONLY from USER statements (ASSISTANT lines are context)', () => {
+    // RED: current prompt does not contain the USER-only restriction.
+    // This is a structural assertion on the prompt contract.
+    expect(SMART_DELTA_SYSTEM_PROMPT).toContain("ONLY from the USER");
+  });
+
+  test('v2-06 B-fix: SMART_DELTA_SYSTEM_PROMPT forbids REPLACE unless the USER contradicted a candidate in THIS new tail', () => {
+    // RED: current prompt does not contain the USER-must-contradict restriction for REPLACE.
+    expect(SMART_DELTA_SYSTEM_PROMPT).toContain("USER has stated something in THIS new tail that genuinely contradicts");
+  });
+
+  test('v2-06 B-fix: a tail with only an ASSISTANT recall reply and no new USER colour statement does NOT trigger a reword REPLACE', async () => {
+    // RED: the pre-fix scripted client can still return a REPLACE in this situation (B defect).
+    // This test uses a real store + a scripted client that reflects the TIGHTENED contract:
+    // given a tail with only [user: recall question] + [assistant: recalls colour],
+    // a properly-tightened distiller emits NO ops (no REPLACE of the colour fact).
+    //
+    // We drive this via a capturingClient that records the system prompt actually sent.
+    // Post-fix: SMART_DELTA_SYSTEM_PROMPT must contain the USER-only instruction.
+    // We assert that the prompt the LLM receives instructs ASSISTANT-as-context.
+
+    const store = freshStore();
+    const gate = new WriteGate(store, new RuleBasedScanner());
+    const threadId = store.createThread();
+
+    // Seed a colour fact in the store (as a candidate)
+    store.insertDistilledFacts([
+      { fact: "Люблю синій колір", provenance: `thread:${threadId}`, scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
+    ], "dumb-tail");
+
+    // Append a user recall question and an assistant recall reply (the B scenario)
+    gate.appendTurn(
+      threadId,
+      [
+        { role: "user", content: "Який мій улюблений колір?" },
+        { role: "assistant", content: "Recall: [remembered] Люблю синій колір | Query: Який мій улюблений колір?" },
+      ],
+      "s1",
+      { actor: "user", authored_by: "human" },
+    );
+
+    // Scripted client that simulates the B-fixed behaviour:
+    // receives the system prompt, asserts it contains the USER-only constraint,
+    // then returns [] (no ops) — because no new USER fact was stated.
+    const { client, getCalls } = capturingClient("[]");
+
+    const provider = new SmartDistillerProvider({ client });
+    const result = await provider.distill(store, threadId);
+
+    const delta = result as unknown as DistillDelta;
+    // Post-fix: no REPLACE emitted (client returns [])
+    expect(delta.ops).toEqual([]);
+
+    // Assert the system prompt sent to the LLM contains the USER-only instruction
+    const calls = getCalls();
+    expect(calls.length).toBe(1);
+    const systemPrompt = (calls[0] as { system: { text: string }[] }).system?.[0]?.text ?? "";
+    expect(systemPrompt).toContain("ONLY from the USER");
+    expect(systemPrompt).toContain("ASSISTANT");
+
+    // Verify the colour fact is unchanged (byte-identical)
+    const factsAfter = store.readDistilledFacts(10);
+    const colourFact = factsAfter.find((f) => f.fact.includes("синій"));
+    expect(colourFact).toBeDefined();
+    expect(colourFact!.fact).toBe("Люблю синій колір");
+
+    gate.toString(); // suppress unused warning on gate
+    store.close();
+  });
+});
+
+// ── v2-07 E-a: user QUESTION is not a fact source ─────────────────────────
+
+describe("v2-07 E-a — user QUESTION is not a fact source (distiller prompt)", () => {
+  test('SMART_DELTA_SYSTEM_PROMPT explicitly states a user QUESTION is not a fact source', () => {
+    // Assert the prompt contains an explicit "question" + "not a fact source" instruction
+    const lower = SMART_DELTA_SYSTEM_PROMPT.toLowerCase();
+    expect(lower).toContain("question");
+    expect(SMART_DELTA_SYSTEM_PROMPT).toContain("not a fact source");
+  });
+
+  test('SMART_DELTA_SYSTEM_PROMPT distinguishes a user QUESTION (REQUEST) from a user STATEMENT', () => {
+    // The prompt must name both "QUESTION" and "STATEMENT" to make the distinction explicit
+    expect(SMART_DELTA_SYSTEM_PROMPT).toContain("NEVER create, append, or replace a fact from a user question");
+  });
+
+  test('SMART_DELTA_SYSTEM_PROMPT still retains the USER-only derivation rule (regression lock)', () => {
+    // Ensure the new clause does not silently drop the existing rule
+    expect(SMART_DELTA_SYSTEM_PROMPT).toContain("ONLY from the USER");
   });
 });

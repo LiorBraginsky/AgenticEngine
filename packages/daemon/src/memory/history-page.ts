@@ -374,14 +374,14 @@ export const HISTORY_HTML = `<!DOCTYPE html>
         // v2-04: fact-forget only — sends target_type:"fact" + fact_text + provenance.
         // Option B ("also delete source message(s)") removed (D-V6a-bis).
         // Provenance stays as a READ affordance ("dig deeper") — never a delete target.
-        forgetBtn.addEventListener("click", (function (factText, provenance, btn) {
+        forgetBtn.addEventListener("click", (function (factId, factText, provenance, btn) {
           return function () {
             doForget(
-              { target_type: "fact", fact_text: factText, provenance: provenance, reason: "hatch-forget" },
+              { target_type: "fact", fact_id: factId, fact_text: factText, provenance: provenance, reason: "hatch-forget" },
               _currentThreadId, btn, "Forget fact"
             );
           };
-        })(f.fact, f.provenance, forgetBtn));
+        })(f.id, f.fact, f.provenance, forgetBtn));
 
         row.appendChild(factEl);
         row.appendChild(metaEl);

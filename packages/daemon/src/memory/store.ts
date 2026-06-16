@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { SCHEMA_DDL, REDACTION_MARKER } from "./schema.js";
 import type { SessionMessage } from "../providers/provider.js";
 import type { DistilledFact } from "./memory-provider.js";
-import { normalizeFactText } from "./normalize-fact-text.js";
+import { normalizeFactText, dedupConnectorKey } from "./normalize-fact-text.js";
 
 export interface MemoryStoreOptions {
   /** Directory for the SQLite file + the threads/ JSONL mirror. */
@@ -13,6 +13,14 @@ export interface MemoryStoreOptions {
 
 /** Named build-time constants (spec §9 — dogfood scale). */
 export const CANDIDATE_TOP_K = 10;
+/**
+ * v2-09: at single-user (dogfood) scale the distilled-fact corpus is a handful of
+ * rows, so the contradiction-candidate pool is the WHOLE corpus (spec §3.4 D-V4b —
+ * "full corpus, never reduced"). Below this cap fetchCandidates returns ALL facts;
+ * above it, it falls back to the BM25 MATCH path (the future large-corpus /
+ * archive-summarization-tier trigger — roadmap 2d supersedes both with embeddings).
+ */
+export const ALL_FACTS_CAP = 50;
 export const APPEND_LIST_CAP = 8;
 
 /** Input to insert one fact + its derived FTS/topic rows (v2-02). `canonical` and
@@ -86,6 +94,8 @@ interface TailRow {
 }
 
 export interface DistilledFactRow {
+  /** Stable uuid for this fact row — used by forgetFactById (v2-06 C-fix). */
+  id: string;
   fact: string;
   provenance: string;
   scope: string;
@@ -274,7 +284,7 @@ export class MemoryStore {
    */
   readDistilledFacts(limit: number): DistilledFactRow[] {
     const rows = this.db
-      .query("SELECT fact, provenance, scope, expiry, confidence, authored_by FROM distilled_facts ORDER BY derived_at DESC LIMIT ?")
+      .query("SELECT id, fact, provenance, scope, expiry, confidence, authored_by FROM distilled_facts ORDER BY derived_at DESC LIMIT ?")
       .all(limit) as DistilledFactRow[];
     return rows;
   }
@@ -443,7 +453,7 @@ export class MemoryStore {
     const now = Date.now();
     const candidates = this.db
       .query(
-        `SELECT df.fact AS fact, df.provenance AS provenance, df.scope AS scope,
+        `SELECT df.id AS id, df.fact AS fact, df.provenance AS provenance, df.scope AS scope,
                 df.expiry AS expiry, df.confidence AS confidence, df.authored_by AS authored_by
          FROM distilled_facts df
          WHERE (df.expiry IS NULL OR df.expiry > ?)
@@ -473,6 +483,29 @@ export class MemoryStore {
     }
 
     return filtered;
+  }
+
+  /**
+   * v2-08 refined-B dedup (bus q#013): true iff ANY existing fact matches `text` on
+   * EITHER the normalized key (symmetric base — fact_fts.canonical is stored VERBATIM
+   * by writeFactDerived, so we normalizeFactText the STORED side too) OR the connector
+   * key (closed function-word strip; collapses "is blue"/"blue", never negations). The
+   * connector clause subsumes the base; both kept explicit for legibility. Scans the
+   * bounded fact corpus (dogfood scale). READ-ONLY: callers use it to SUPPRESS a new
+   * insert only — it never mutates a row (STABILITY untouched by construction).
+   */
+  factExistsByDedupKey(text: string): boolean {
+    const norm = normalizeFactText(text);
+    if (norm === "") return false;
+    const conn = dedupConnectorKey(text);
+    const rows = this.db
+      .query(
+        `SELECT COALESCE(f.canonical, d.fact) AS key
+           FROM distilled_facts d
+           LEFT JOIN fact_fts f ON f.fact_id = d.id`,
+      )
+      .all() as { key: string }[];
+    return rows.some((r) => normalizeFactText(r.key) === norm || dedupConnectorKey(r.key) === conn);
   }
 
   /** Returns true if a tombstone mutation exists for the given messageId. */
@@ -596,7 +629,7 @@ export class MemoryStore {
   }
 
   /**
-   * DEAD as of v2-03 — no per-dismiss or migration caller; remove with the v2-05 cleanup.
+   * DEAD as of v2-03 (no live caller in the incremental path); slated for a follow-up dead-code pass, NOT removed in v2-05 (still has unit tests).
    *
    * Atomic replace of the machine projection (chunk 02, spec D5/D6/D7).
    *
@@ -889,6 +922,52 @@ export class MemoryStore {
     ).all(factId) as ReplacedFactRow[];
   }
 
+  /**
+   * v2-05 migration (§3.8): rebuild fact_fts + fact_topics for every SURVIVING
+   * human-authored fact. Human facts predate v2-02's derived tables, so they may
+   * have NO fact_fts/fact_topics rows → invisible to fetchCandidates (BM25). The
+   * AFTER DELETE trigger cannot ADD rows; only insertFact/updateFactById (private
+   * writeFactDerived) do, neither reached by the wipe. This is the public,
+   * migration-only path to (re)index human rows.
+   * Idempotent: clears then re-writes derived rows per human id. canonical =
+   * normalizeFactText(fact) (D-V4c: match on canonical; display stays the row's fact);
+   * topics = [] (human facts carry no LLM tags). Returns the count of human rows reindexed.
+   * distillerVersion param omitted: human rows are not associated with a distiller version
+   * (they have no LLM-assigned version to overwrite), and the migration version string has
+   * no target column to persist it to.
+   */
+  rebuildDerivedForHumanFacts(): number {
+    const tx = this.db.transaction((): number => {
+      const humans = this.db
+        .query("SELECT id, fact FROM distilled_facts WHERE authored_by = 'human'")
+        .all() as { id: string; fact: string }[];
+      for (const h of humans) {
+        this.db.query("DELETE FROM fact_fts WHERE fact_id = ?").run(h.id);
+        this.db.query("DELETE FROM fact_topics WHERE fact_id = ?").run(h.id);
+        this.db.query("INSERT INTO fact_fts (fact_id, canonical, topic) VALUES (?, ?, ?)")
+          .run(h.id, normalizeFactText(h.fact), "");
+      }
+      return humans.length;
+    });
+    return tx();
+  }
+
+  /**
+   * v2-05 migration (§3.8) — the ONLY sanctioned live-store ALTER (spec §9 forbids
+   * ALTER on the per-dismiss path; this is the deliberate one-time migration touch
+   * v2-03's R2 forward-flag named). Adds `distilled_through_turn INTEGER NOT NULL
+   * DEFAULT -1` to a pre-v2-03 live thread_distill_state. Idempotent: PRAGMA-guards
+   * so a v2-03+ fresh store is a no-op. Returns true if the column was added. Resets
+   * the column-presence cache so subsequent reads see it.
+   */
+  ensureDistilledThroughTurnColumn(): boolean {
+    const cols = this.db.query("PRAGMA table_info(thread_distill_state)").all() as { name: string }[];
+    if (cols.some((c) => c.name === "distilled_through_turn")) return false;
+    this.db.exec("ALTER TABLE thread_distill_state ADD COLUMN distilled_through_turn INTEGER NOT NULL DEFAULT -1;");
+    this._distilledThroughTurnColumnPresent = null;
+    return true;
+  }
+
   /** Delete one fact by id. The AFTER DELETE trigger cleans fact_fts + fact_topics.
    * Returns true if a row was deleted. v2-04's fact-forget reuses this. */
   deleteFactById(id: string): boolean {
@@ -897,25 +976,54 @@ export class MemoryStore {
   }
 
   /**
-   * BM25 candidate-fetch over the FULL distilled_facts corpus (spec §3.4 D-V4b — the
-   * FROZEN B1 invariant: tags WIDEN recall, they NEVER reduce the candidate set).
-   * Matches on fact_fts.canonical; returns the top CANDIDATE_TOP_K by BM25 rank, with
-   * the user-language display `fact` (joined from distilled_facts) + topics (from
-   * fact_topics). The caller (v2-03) passes a free-text `query` (the new fact's canonical).
-   * `query` is sanitized into a safe OR-of-quoted-terms (toFtsOrQuery) so punctuation
-   * can never produce a MATCH syntax error.
+   * Contradiction-candidate pool for the distiller (spec §3.4 D-V4b — the FROZEN B1
+   * invariant: "candidate set is never *reduced*… BM25 runs over the FULL corpus").
+   *
+   * v2-09 all-facts-below-cap path (primary at dogfood scale):
+   *   When the total distilled-fact count is ≤ ALL_FACTS_CAP (50), returns ALL facts
+   *   stably ordered (derived_at DESC, rowid DESC — newest first). This is MORE faithful
+   *   to D-V4b's "never reduced" invariant than BM25, which silently drops a same-attribute
+   *   fact when the tail language ≠ the canonical language (the demo-3 cross-language
+   *   duplicate-colour root). LIMIT ALL_FACTS_CAP is a belt-and-suspenders bound.
+   *
+   * BM25 MATCH above-cap fallback (large-corpus path):
+   *   When total > ALL_FACTS_CAP, falls back to the FTS5/BM25 MATCH path, returning
+   *   the top CANDIDATE_TOP_K rows. This is the pre-v2-09 mechanism, preserved for the
+   *   future archive-summarization tier (roadmap 2d supersedes both with embeddings).
+   *   `query` is sanitized into a safe OR-of-quoted-terms (toFtsOrQuery) so punctuation
+   *   can never produce a MATCH syntax error.
+   *
+   * The op:replace ordinal/candidateIds contract is invariant to pool size: the prompt's
+   * numbered pool and candidateIds derive from one ordered list (this method's return).
+   * expectedTargetText in the apply loop re-verifies the resolved row independently.
    */
   fetchCandidates(query: string): FactCandidate[] {
-    const ftsQuery = toFtsOrQuery(query);
-    if (ftsQuery === "") return [];
-    const rows = this.db.query(
-      `SELECT f.fact_id AS id, d.fact AS fact
-         FROM fact_fts f
-         JOIN distilled_facts d ON d.id = f.fact_id
-         WHERE fact_fts MATCH ?
-         ORDER BY bm25(fact_fts)
-         LIMIT ?`,
-    ).all(ftsQuery, CANDIDATE_TOP_K) as { id: string; fact: string }[];
+    const total = (this.db.query("SELECT COUNT(*) AS n FROM distilled_facts").get() as { n: number }).n;
+
+    let rows: { id: string; fact: string }[];
+    if (total <= ALL_FACTS_CAP) {
+      // v2-09 all-facts path: return the FULL corpus, stably ordered (newest first).
+      // This is MORE faithful to D-V4b ("never reduced") than BM25, which silently
+      // drops a same-attribute fact when the tail language ≠ the canonical language
+      // (the demo-3 cross-language duplicate-colour root). LIMIT ALL_FACTS_CAP is a
+      // belt-and-suspenders bound (== total here) so the prompt section stays bounded.
+      rows = this.db.query(
+        `SELECT id, fact FROM distilled_facts ORDER BY derived_at DESC, rowid DESC LIMIT ?`,
+      ).all(ALL_FACTS_CAP) as { id: string; fact: string }[];
+    } else {
+      // Above the cap: the BM25 MATCH path (unchanged — the large-corpus fallback).
+      const ftsQuery = toFtsOrQuery(query);
+      if (ftsQuery === "") return [];
+      rows = this.db.query(
+        `SELECT f.fact_id AS id, d.fact AS fact
+           FROM fact_fts f
+           JOIN distilled_facts d ON d.id = f.fact_id
+           WHERE fact_fts MATCH ?
+           ORDER BY bm25(fact_fts)
+           LIMIT ?`,
+      ).all(ftsQuery, CANDIDATE_TOP_K) as { id: string; fact: string }[];
+    }
+
     return rows.map((r) => ({
       id: r.id,
       fact: r.fact,

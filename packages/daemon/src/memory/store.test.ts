@@ -2,7 +2,8 @@ import { test, expect } from "bun:test";
 import { tmpdir } from "node:os";
 import { mkdtempSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { MemoryStore } from "./store.js";
+import { Database } from "bun:sqlite";
+import { MemoryStore, CANDIDATE_TOP_K, ALL_FACTS_CAP } from "./store.js";
 import { WriteGate } from "./write-gate.js";
 import { RuleBasedScanner } from "./scanner/memory-scanner.js";
 import { REDACTION_MARKER } from "./schema.js";
@@ -680,7 +681,8 @@ test("v2-02 fetchCandidates surfaces a contradicting fact carrying a DIFFERENT t
   store.close();
 });
 
-test("v2-02 fetchCandidates returns at most CANDIDATE_TOP_K rows and tolerates punctuation in the query", () => {
+test("v2-02 fetchCandidates below-cap (≤ALL_FACTS_CAP) returns ALL facts and tolerates punctuation in the query", () => {
+  // v2-09: below ALL_FACTS_CAP the all-facts path returns the full corpus (15 facts < 50 cap).
   const { store } = freshStore();
   for (let i = 0; i < 15; i++) {
     store.insertFact({
@@ -689,8 +691,50 @@ test("v2-02 fetchCandidates returns at most CANDIDATE_TOP_K rows and tolerates p
     }, "smart-v2");
   }
   const candidates = store.fetchCandidates("deployment: the (script)?");
-  expect(candidates.length).toBeLessThanOrEqual(10); // CANDIDATE_TOP_K = 10
-  expect(candidates.length).toBeGreaterThan(0);
+  // Below ALL_FACTS_CAP: all facts are returned (15 facts, not limited to CANDIDATE_TOP_K).
+  expect(candidates.length).toBe(15);
+  expect(candidates.length).toBeLessThanOrEqual(ALL_FACTS_CAP); // belt-and-suspenders bound
+  store.close();
+});
+
+test("v2-09 fetchCandidates above-cap (>ALL_FACTS_CAP) falls back to BM25 LIMIT CANDIDATE_TOP_K and tolerates punctuation", () => {
+  // Above ALL_FACTS_CAP: the BM25 MATCH path kicks in, limiting results to CANDIDATE_TOP_K.
+  const { store } = freshStore();
+  for (let i = 0; i < ALL_FACTS_CAP + 5; i++) {
+    store.insertFact({
+      fact: `fact ${i} about deployment`, canonical: `fact ${i} about deployment`, provenance: "thread:t1",
+      scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: ["projects"],
+    }, "smart-v2");
+  }
+  // Corpus is > ALL_FACTS_CAP (55 facts) → BM25 MATCH path with LIMIT CANDIDATE_TOP_K.
+  const candidates = store.fetchCandidates("deployment: the (script)?");
+  expect(candidates.length).toBeLessThanOrEqual(CANDIDATE_TOP_K); // BM25 limit
+  expect(candidates.length).toBeGreaterThan(0); // punctuation-tolerant: still finds matches
+  store.close();
+});
+
+// ── v2-09: all-facts-below-cap candidate pool ──
+
+test("v2-09 fetchCandidates returns the FULL fact set below the cap — a cross-language fact is ALWAYS a candidate (BM25 would have dropped it)", () => {
+  const { store } = freshStore();
+  // English-canonical colour fact (as the real/stub distiller stores it).
+  // Topics use names with no tokens that appear in the Ukrainian query, so BM25 MATCH
+  // would return 0 rows — this is the cross-language gap that this test validates.
+  // ("#about-user" contains "user" which the [user|m1] prefix would match via FTS, so
+  // we use topic names without such overlap to reproduce the genuine BM25 failure.)
+  store.insertFact(
+    { fact: "Люблю синій колір", canonical: "favourite colour is blue", topics: ["colour-prefs"], provenance: "thread:a", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
+    "test",
+  );
+  store.insertFact(
+    { fact: "Мене звати Ліор", canonical: "name is lior", topics: ["identity"], provenance: "thread:a", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
+    "test",
+  );
+  // A Ukrainian CHANGE tail — BM25 MATCH on the English canonical would return 0 rows.
+  const candidates = store.fetchCandidates("[user|m1] Тепер мій улюблений колір — зелений");
+  // All-facts-below-cap: the colour fact MUST be present so the distiller can op:replace it.
+  expect(candidates.some((c) => c.fact.includes("синій"))).toBe(true);
+  expect(candidates.length).toBe(2); // ALL facts returned (corpus is below the cap)
   store.close();
 });
 
@@ -808,5 +852,97 @@ test("v2-02 write-gate integration: forget bumps the thread marker", () => {
   const markerAfterAppend = store.readThreadMarker(t);
   gate.forget(mid!, { actor: "user", authored_by: "human" });
   expect(store.readThreadMarker(t)).toBe(markerAfterAppend + 1);
+  store.close();
+});
+
+// ── v2-05: rebuildDerivedForHumanFacts + ensureDistilledThroughTurnColumn ────
+
+test("v2-05: rebuildDerivedForHumanFacts indexes a human fact that has no derived rows", () => {
+  const { store } = freshStore();
+  const db = store.rawDb();
+  db.query(
+    "INSERT INTO distilled_facts (id, fact, provenance, scope, expiry, confidence, authored_by, derived_at, distiller_version) VALUES ('h1','User pins: name is Lior','thread:t','cross-thread',NULL,1,'human',1,'pre-v2')",
+  ).run();
+  expect((db.query("SELECT COUNT(*) AS n FROM fact_fts").get() as { n: number }).n).toBe(0);
+  const n = store.rebuildDerivedForHumanFacts();
+  expect(n).toBe(1);
+  const dfCount = (db.query("SELECT COUNT(*) AS n FROM distilled_facts").get() as { n: number }).n;
+  const ftsCount = (db.query("SELECT COUNT(*) AS n FROM fact_fts").get() as { n: number }).n;
+  expect(ftsCount).toBe(dfCount);
+  expect(store.fetchCandidates("lior").some((c) => c.id === "h1")).toBe(true);
+  store.close();
+});
+
+test("v2-05: rebuildDerivedForHumanFacts is idempotent (no duplicate derived rows on re-run)", () => {
+  const { store } = freshStore();
+  const db = store.rawDb();
+  db.query(
+    "INSERT INTO distilled_facts (id, fact, provenance, scope, expiry, confidence, authored_by, derived_at, distiller_version) VALUES ('h1','name is Lior',NULL,'cross-thread',NULL,1,'human',1,'pre-v2')",
+  ).run();
+  store.rebuildDerivedForHumanFacts();
+  store.rebuildDerivedForHumanFacts();
+  expect((db.query("SELECT COUNT(*) AS n FROM fact_fts WHERE fact_id='h1'").get() as { n: number }).n).toBe(1);
+  store.close();
+});
+
+test("v2-05: ensureDistilledThroughTurnColumn adds the column to a pre-v2-03 shaped table, then no-ops", () => {
+  const dir = mkdtempSync(join(tmpdir(), "mf-prev203-"));
+  const raw = new Database(join(dir, "memory.sqlite"));
+  raw.exec("CREATE TABLE thread_distill_state (thread_id TEXT PRIMARY KEY, marker INTEGER NOT NULL DEFAULT 0, distilled_through INTEGER NOT NULL DEFAULT 0);");
+  raw.query("INSERT INTO thread_distill_state (thread_id, marker, distilled_through) VALUES ('t', 3, 2)").run();
+  raw.close();
+  const store = new MemoryStore({ dataDir: dir });
+  expect(store.ensureDistilledThroughTurnColumn()).toBe(true);
+  expect(store.ensureDistilledThroughTurnColumn()).toBe(false);
+  const row = store.rawDb().query("SELECT distilled_through_turn FROM thread_distill_state WHERE thread_id='t'").get() as { distilled_through_turn: number };
+  expect(row.distilled_through_turn).toBe(-1);
+  store.close();
+});
+
+// ---- v2-06 Step 3 (RED): DistilledFactRow carries id ----
+
+test("v2-06: readDistilledFacts returns rows with a non-empty uuid id (DistilledFactRow.id)", () => {
+  // RED: DistilledFactRow currently lacks `id`; this test fails until Step 3.2 adds it.
+  const { store } = freshStore();
+  store.insertDistilledFacts(
+    [{ fact: "has an id", provenance: "p1", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" }],
+    "dumb-tail",
+  );
+  const rows = store.readDistilledFacts(10);
+  expect(rows.length).toBe(1);
+  // Must carry a uuid-shaped id
+  expect(typeof rows[0]!.id).toBe("string");
+  expect(rows[0]!.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+  store.close();
+});
+
+test("v2-06: readDistilledFactsForThread returns rows with a non-empty uuid id", () => {
+  // RED: same absence — readDistilledFactsForThread SELECT also lacks id.
+  const { store } = freshStore();
+  const t = store.createThread();
+  store.insertDistilledFacts(
+    [{ fact: "thread scoped id", provenance: `thread:${t}`, scope: "thread-local", expiry: null, confidence: 1, authored_by: "machine" }],
+    "dumb-tail",
+  );
+  const rows = store.readDistilledFactsForThread(t, 10);
+  expect(rows.length).toBe(1);
+  expect(typeof rows[0]!.id).toBe("string");
+  expect(rows[0]!.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+  store.close();
+});
+
+// ── v2-08 refined-B: factExistsByDedupKey ────────────────────────────────────
+
+test("v2-08 refined-B: factExistsByDedupKey matches case/whitespace/punct (base) AND connector variants, never different facts", () => {
+  const { store } = freshStore();
+  // Seed a fact with verbatim LLM casing/punct canonical (as writeFactDerived stores it)
+  store.insertFact(
+    { fact: "Favorite color blue.", canonical: "Favorite Color Blue.", topics: [], provenance: "thread:x", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
+    "test",
+  );
+  expect(store.factExistsByDedupKey("  favorite color blue  ")).toBe(true);   // base: case/ws/punct
+  expect(store.factExistsByDedupKey("favorite color is blue")).toBe(true);    // connector: the cited case
+  expect(store.factExistsByDedupKey("favorite color is not blue")).toBe(false); // hazard: stays separate
+  expect(store.factExistsByDedupKey("favorite color red")).toBe(false);       // genuinely different
   store.close();
 });

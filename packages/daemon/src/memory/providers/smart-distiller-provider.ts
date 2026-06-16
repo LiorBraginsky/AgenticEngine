@@ -30,6 +30,7 @@ import { resolveAnthropicKey, type ResolveOpts } from "../../secrets/cloud-secre
 // Also re-exported so external callers can still use "from ./smart-distiller-provider.js".
 import { normalizeFactText } from "../normalize-fact-text.js";
 export { normalizeFactText };
+import { memDebug, previewStr } from "../debug-log.js";
 
 // ── Tunable constants (exported for unit tests) ────────────────────────────
 
@@ -108,7 +109,8 @@ Rules:
 - "fact": write in the SAME language the user used (e.g. Ukrainian conversation → Ukrainian fact). Do NOT translate.
 - "canonical": always a lowercased English phrase for FTS5 matching (e.g. "user likes tea").
 - "topics": use #about-user, #preferences, #projects, #relationships; add others sparingly.
-- op:"replace" ONLY for a genuine, clear contradiction of a shown candidate — copy its ordinal into "targetOrdinal" AND its exact text into "expectedTargetText".
+- Derive facts ONLY from the USER's statements in the NEW TAIL. ASSISTANT lines are the agent's own replies (often restating remembered facts) — NEVER create or replace a fact based on an ASSISTANT line. A user QUESTION (e.g. "what is my name?", "як мене звати?") is a REQUEST, NOT a statement — NEVER create, append, or replace a fact from a user question. Only a user STATEMENT (a declaration of new information) is a fact source. A question is not a fact source.
+- op:"replace" ONLY when the USER has stated something in THIS new tail that genuinely contradicts a candidate — copy its ordinal into "targetOrdinal" AND its exact text into "expectedTargetText". If the USER has stated something in THIS new tail that genuinely contradicts a candidate, use "replace". Otherwise, do NOT touch the candidate.
 - op:"append" to add a same-kind item to an existing candidate — copy its ordinal into "targetOrdinal".
 - op:"new" for all other facts not contradicting any shown candidate.
 - When uncertain, prefer "new" or "append". NEVER use "replace" speculatively — it is destructive.
@@ -214,10 +216,38 @@ export function buildDigest(store: MemoryStore): DigestResult {
 // ── Parse contract (D10 — defensive) ──────────────────────────────────────
 
 /**
+ * Extract the JSON array substring from raw LLM output, tolerating any wrapper.
+ *
+ * v2-06 D — real LLM non-deterministically wraps its JSON array in markdown
+ * fences (any backtick count), inline single-backticks, prose preambles, or
+ * trailing prose DESPITE the prompt forbidding it. The anchored-fence strip
+ * only handles an exactly-anchored triple-fence; any other wrapper falls
+ * through to JSON.parse → throws.
+ *
+ * Strategy: locate the FIRST '[' and the LAST ']'; if both exist and first < last,
+ * return raw.slice(first, last+1). This strips fences of any backtick count,
+ * language tags, leading prose, and trailing prose in one move.
+ * If no '[' ... ']' bracket pair is found, return the trimmed input so the
+ * existing "not valid JSON" / "not an array" SmartDistillError still fires for
+ * genuinely-bad output — the never-drop failure path is preserved.
+ */
+export function extractJsonArray(raw: string): string {
+  const trimmed = raw.trim();
+  const first = trimmed.indexOf("[");
+  const last = trimmed.lastIndexOf("]");
+  if (first !== -1 && last !== -1 && first < last) {
+    return trimmed.slice(first, last + 1);
+  }
+  // No bracket pair found — return as-is so the caller's JSON.parse throws
+  return trimmed;
+}
+
+/**
  * Parse the raw LLM response into DistilledFact[].
  *
  * Defensive steps:
- *   1. Strip optional ```json ... ``` fence.
+ *   1. extractJsonArray: locate first '[' / last ']' to strip any wrapper
+ *      (fences, inline backticks, prose preamble/trailer — v2-06 D).
  *   2. JSON.parse in try/catch → throw SmartDistillError on failure.
  *   3. Assert top-level is an array → throw SmartDistillError if not.
  *   4. Per-element: validate shape; drop bad elements (one bad ≠ whole failure).
@@ -229,10 +259,8 @@ export function buildDigest(store: MemoryStore): DigestResult {
  * Returns [] (empty array) if all elements are malformed — acceptable (5b).
  */
 export function parseFacts(raw: string): DistilledFact[] {
-  // Step 1: strip optional ```json ... ``` fence (and bare ``` ... ``` fence)
-  let cleaned = raw.trim();
-  cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "");
-  cleaned = cleaned.trim();
+  // Step 1: extract JSON array (tolerates any wrapper shape — v2-06 D)
+  const cleaned = extractJsonArray(raw);
 
   // Step 2: JSON.parse
   let parsed: unknown;
@@ -296,7 +324,8 @@ export function parseFacts(raw: string): DistilledFact[] {
  * Parse the raw LLM response into FactOp[].
  *
  * Defensive steps:
- *   1. Strip optional ```json ... ``` fence.
+ *   1. extractJsonArray: locate first '[' / last ']' to strip any wrapper
+ *      (fences, inline backticks, prose preamble/trailer — v2-06 D).
  *   2. JSON.parse in try/catch → throw SmartDistillError on failure.
  *   3. Assert top-level is an array → throw SmartDistillError if not.
  *   4. Per-element: validate shape; drop malformed ops (one bad ≠ whole failure).
@@ -309,10 +338,8 @@ export function parseFacts(raw: string): DistilledFact[] {
  * Returns [] if all elements are malformed.
  */
 export function parseOps(raw: string): FactOp[] {
-  // Step 1: strip optional ```json ... ``` fence (and bare ``` ... ``` fence)
-  let cleaned = raw.trim();
-  cleaned = cleaned.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/, "");
-  cleaned = cleaned.trim();
+  // Step 1: extract JSON array (tolerates any wrapper shape — v2-06 D)
+  const cleaned = extractJsonArray(raw);
 
   // Step 2: JSON.parse
   let parsed: unknown;
@@ -408,7 +435,7 @@ export interface SmartDistillerOptions {
  *   1. Read distilled_through_turn (resilient, R2).
  *   2. readNewTailSince(threadId, distilled_through_turn) — filter tombstones/quarantine.
  *   3. Empty tail → short-circuit {ops:[], candidateIds:[]} (no LLM call).
- *   4. Build tail text; fetchCandidates(tailText) (≤K=10, FTS5/BM25 full corpus).
+ *   4. Build tail text; fetchCandidates(tailText) — ALL facts when corpus ≤ ALL_FACTS_CAP (50); FTS5/BM25 (≤ CANDIDATE_TOP_K) above the cap.
  *   5. Build numbered candidate pool (1..K → {fact, topics}).
  *   6. ONE LLM call (SMART_DELTA_SYSTEM_PROMPT; outside any tx — Phase-1 compute seam).
  *   7. stop_reason guard → throw SmartDistillError({truncated:true}).
@@ -526,6 +553,24 @@ export class SmartDistillerProvider implements MemoryProvider {
         ? `\nEXISTING FACTS (candidates 1..${candidates.length}):\n${poolLines.join("\n")}`
         : "\nEXISTING FACTS: (none yet)";
 
+    // ── D1 distill INPUT log (env-gated, zero-cost when OFF) ─────────────────
+    // Logs tail + candidates just before the LLM call — the diagnosis enabler.
+    memDebug("distill", {
+      threadId: triggerThreadId,
+      sinceTurn,
+      tail: tail.map((m) => ({
+        id: m.id,
+        role: m.role,
+        len: m.content.length,
+        preview: previewStr(m.content),
+      })),
+      candidates: candidates.map((c, i) => ({
+        ordinal: i + 1,
+        id: c.id,
+        factPreview: previewStr(c.fact),
+      })),
+    });
+
     // Phase 6: ONE LLM call (outside any tx — grill #6 seam)
     const client = this.getClient();
 
@@ -587,6 +632,15 @@ export class SmartDistillerProvider implements MemoryProvider {
     const live = rows.filter(
       (f) => !store.isFactTombstoned(f.provenance),
     );
+    // ── D1 retrieve log (env-gated, zero-cost when OFF) ──────────────────────
+    // NOTE: rows currently lack `id` (Step 3 adds it); log factPreview + order for now.
+    memDebug("retrieve", {
+      forThreadId,
+      injected: live.map((f, i) => ({
+        factPreview: previewStr(f.fact),
+        order: i,
+      })),
+    });
     return Promise.resolve(
       live.map((f) => ({ role: "user" as const, content: `${REMEMBERED_LABEL}${f.fact}` })),
     );

@@ -171,17 +171,20 @@ test("T2.3a-A: new-thread session with seeded prior fact → show_text contains 
   expect(content).toContain("/history.html");
 });
 
-// ─── B. SAME-thread turn (within-thread hydration, NOT retrieved memory) ───
+// ─── B. SAME-thread turn (within-thread hydration, now ALSO retrieved memory) ───
 //
-// Sending the sourceThreadId (which exists in the store) → same-thread branch
-// (lifecycle.ts:45-47: readThreadTail, NOT retrieve). injectedMemory stays false.
+// Sending the sourceThreadId (which exists in the store) → known-thread branch.
+// v2-08 fix A: the known-thread branch now ALSO re-injects the cross-thread
+// distilled slice (the [remembered] facts) BEFORE the thread's own tail.
+// The seeded fact IS present in the store, so retrieve() returns it → injectedMemory=true
+// → show_text is stamped.
 
-test("T2.3a-B: same-thread turn (thread_id sent) → show_text does NOT contain /history.html", async () => {
-  // Use the sourceThreadId (already in the store) → same-thread hydration path.
+test("T2.3a-B: same-thread turn with seeded fact → known-thread branch now retrieves it → show_text CONTAINS /history.html", async () => {
+  // Use the sourceThreadId (already in the store) → known-thread branch now also retrieves.
   const envelopes = await runTurn("Tell me more.", sourceThreadId);
   const content = findShowTextContent(envelopes);
   expect(content).toBeDefined();
-  expect(content).not.toContain("/history.html");
+  expect(content).toContain("/history.html");
 });
 
 // ─── C. PERSISTENT SOCKET — two sequential turns on ONE socket ─────────────
@@ -189,8 +192,11 @@ test("T2.3a-B: same-thread turn (thread_id sent) → show_text does NOT contain 
 // Verifies the injectedMemory-per-message local invariant: the variable is
 // declared INSIDE the message handler so it resets to false on EVERY invocation.
 // Turn 1 (new-thread) sets injectedMemory=true → show_text stamped.
-// Turn 2 (same-thread continuation on the SAME socket, injectedMemory resets to
-// false → same-thread hydration path → NOT stamped).
+// Turn 2 (same-thread continuation on the SAME socket): v2-08 fix A — the
+// known-thread branch now re-injects the seeded cross-thread fact → injectedMemory=true
+// → show_text IS stamped on turn 2 as well.
+// The per-message reset invariant is proven by NEW Scenario E (a known-thread turn
+// with NO retrievable facts is NOT stamped).
 //
 // "drive one Anthropic turn on an already-open socket"
 // The Anthropic fake provider emits: session_ack → tool_call{show_text} → session_end
@@ -241,7 +247,7 @@ function newestThreadId(): string {
   return row.thread_id;
 }
 
-test("T2.3a-C: persistent socket — turn 1 (new-thread) stamped; turn 2 (same-thread) NOT stamped — injectedMemory does not leak across turns", async () => {
+test("T2.3a-C: persistent socket — turn 1 (new-thread) stamped; turn 2 (same-thread, seeded fact present) also stamped (v2-08); injectedMemory resets per turn", async () => {
   // Open ONE socket and keep it open for both turns.
   const ws = await new Promise<WebSocket>((resolve, reject) => {
     // chunk-02 step-3: present token as Sec-WebSocket-Protocol subprotocol (layer-1 gate).
@@ -261,12 +267,14 @@ test("T2.3a-C: persistent socket — turn 1 (new-thread) stamped; turn 2 (same-t
     // Discover the thread minted during turn 1 so we can pass it on turn 2.
     const mintedThreadId = newestThreadId();
 
-    // Turn 2: same socket, passing the minted thread_id → same-thread hydration (readThreadTail).
-    // injectedMemory is a local variable in the message handler — resets to false on this invocation.
+    // Turn 2: same socket, passing the minted thread_id → known-thread branch (v2-08 fix A).
+    // The seeded fact is present → retrieve() injects it → injectedMemory=true → stamped.
+    // injectedMemory is a local variable in the message handler — it resets to false at the
+    // start of each invocation, then is set true here because retrieve() finds the seeded fact.
     const turn2Envelopes = await turnOnSocket(ws, "Tell me more.", mintedThreadId);
     const turn2Content = findShowTextContent(turn2Envelopes);
     expect(turn2Content).toBeDefined();
-    expect(turn2Content).not.toContain("/history.html");
+    expect(turn2Content).toContain("/history.html");
   } finally {
     ws.close();
   }
@@ -284,9 +292,10 @@ test("T2.3a-C: persistent socket — turn 1 (new-thread) stamped; turn 2 (same-t
 // Turn 1: session_start WITH a client-minted unknown UUID → CM-01 adoption →
 //   retrieve() injects seeded fact → injectedMemory = true → show_text stamped.
 // Turn 2: session_start WITH the SAME thread_id (now a known thread) →
-//   same-thread hydration (readThreadTail) → injectedMemory = false → NOT stamped.
+//   v2-08 fix A: known-thread branch now also retrieves the cross-thread slice →
+//   seeded fact present → injectedMemory = true → stamped.
 
-test("T2.3a-D: CM-01 adopted-id flow — turn 1 (client-minted UUID) stamped; turn 2 (same known thread_id) NOT stamped", async () => {
+test("T2.3a-D: CM-01 adopted-id flow — turn 1 (client-minted UUID) stamped; turn 2 (same known thread_id, seeded fact present) also stamped (v2-08)", async () => {
   // Client-minted UUID — unknown to the daemon at this point.
   const clientMintedThreadId = crypto.randomUUID();
 
@@ -297,9 +306,114 @@ test("T2.3a-D: CM-01 adopted-id flow — turn 1 (client-minted UUID) stamped; tu
   expect(turn1Content).toContain("/history.html");
 
   // Turn 2: send the SAME UUID — the thread now exists in the store.
-  // Same-thread hydration path: readThreadTail, NOT retrieve().
+  // v2-08 fix A: known-thread branch now retrieves the cross-thread slice too.
+  // The seeded fact is present → injectedMemory=true → stamped.
   const turn2Envelopes = await runTurn("Tell me more.", clientMintedThreadId);
   const turn2Content = findShowTextContent(turn2Envelopes);
   expect(turn2Content).toBeDefined();
-  expect(turn2Content).not.toContain("/history.html");
+  expect(turn2Content).toContain("/history.html");
+});
+
+// ─── E. KNOWN-THREAD TURN WITH EMPTY MEMORY → NOT stamped ─────────────────
+//
+// Proves the converse: tail-only hydration (no cross-thread [remembered] facts
+// in the store) is NOT stamped. This is the case that B/C/D used to (incorrectly)
+// cover — now they all have a seeded fact, so they ARE stamped. Scenario E needs
+// its own isolated daemon on a fresh dataDir with NO distilled facts.
+//
+// Steps: boot a fresh daemon → send turn 1 (new thread, no facts → not stamped) →
+// send turn 2 with the same thread_id (known-thread, still no facts → not stamped).
+
+/** Drive one full Anthropic turn on a specific port/token, optionally with a thread_id. */
+function runTurnOn(
+  port: number,
+  tok: string,
+  text: string,
+  threadId?: string,
+): Promise<Array<{ type: string; [key: string]: unknown }>> {
+  return new Promise((resolve, reject) => {
+    const envelopes: Array<{ type: string; [key: string]: unknown }> = [];
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`, { headers: { Origin: ORIGIN }, protocols: [tok] });
+    ws.addEventListener("open", () =>
+      ws.send(
+        JSON.stringify({
+          type: "session_start",
+          trigger: "user",
+          text,
+          client_session_id: "c",
+          ...(threadId ? { thread_id: threadId } : {}),
+        }),
+      ),
+    );
+    ws.addEventListener("message", (e) => {
+      const m = JSON.parse(e.data as string) as { type: string; [key: string]: unknown };
+      envelopes.push(m);
+      if (m.type === "session_end") {
+        ws.close();
+        resolve(envelopes);
+      }
+    });
+    ws.addEventListener("error", () => reject(new Error("ws error")));
+    setTimeout(() => reject(new Error("timeout")), 5000);
+  });
+}
+
+test("T2.3a-E: known-thread turn with EMPTY memory → NOT stamped (tail-only hydration is not [remembered] memory)", async () => {
+  // Boot an isolated daemon on a fresh dataDir — NO distilled facts seeded.
+  // A no-op memoryProvider is injected so:
+  //   (a) retrieve() always returns [] — the invariant under test (no facts → not stamped);
+  //   (b) distill() produces no ops — prevents the DumbTail distillation cycle from
+  //       writing the turn-1 message as a fact between turn 1 and turn 2, which would
+  //       cause a timing-dependent false-positive in the full bun test suite (the
+  //       server-side ws close() handler runs the distillation asynchronously; under
+  //       load the distillation can complete before turn-2's runTurnOn reaches the server,
+  //       making retrieve() return the newly-inserted fact → stamped → assertion failure).
+  // The store itself is still real bun:sqlite (real I/O). Only the memory-provider seam
+  // is replaced — this is the explicit testability seam startDaemon exposes (3rd param).
+  const noopMemoryProvider: import("./memory-provider.js").MemoryProvider = {
+    id: "noop-for-E",
+    retrieve: async () => [],
+    distill: async (_store, threadId) => ({
+      threadId,
+      ops: [],
+      candidateIds: [],
+      distilledThroughMarker: 0,
+      distilledThroughTurn: -1,
+    }),
+  };
+
+  const dir2 = mkdtempSync(join(tmpdir(), "mf05-t23a-e-"));
+  const prevDataDir = process.env.AGENTIC_DATA_DIR;
+  process.env.AGENTIC_DATA_DIR = dir2;
+  const { createAnthropicApiProvider } = await import("../providers/anthropic-api-provider.js");
+  const fake = createAnthropicApiProvider({ apiKey: "sk-ant-fake", client: makeFakeClient("Reply E.") as never });
+  const { startDaemon } = await import("../index.js");
+  const srv = startDaemon(0, fake, noopMemoryProvider);
+  const p = srv.port!;
+  const tok2 = new TokenStore(dir2).token();
+  try {
+    // Turn 1 (new thread, no facts → retrieve returns [] → not stamped; makes tid KNOWN).
+    const turn1Envs = await runTurnOn(p, tok2, "first");
+    const turn1Content = findShowTextContent(turn1Envs);
+    expect(turn1Content).toBeDefined();
+    expect(turn1Content).not.toContain("/history.html");
+
+    // Discover the thread minted on turn 1.
+    const db2 = new Database(join(dir2, "memory.sqlite"));
+    const row2 = db2.query("SELECT thread_id FROM threads ORDER BY created_at DESC LIMIT 1").get() as { thread_id: string } | null;
+    db2.close();
+    if (!row2) throw new Error("no thread in dir2 DB");
+    const knownTid = row2.thread_id;
+
+    // Turn 2 (known thread, still no facts → tail-only → NOT stamped).
+    // retrieve() returns [] because noopMemoryProvider never produces facts,
+    // so injectedMemory stays false regardless of distillation timing.
+    const turn2Envs = await runTurnOn(p, tok2, "second", knownTid);
+    const turn2Content = findShowTextContent(turn2Envs);
+    expect(turn2Content).toBeDefined();
+    expect(turn2Content).not.toContain("/history.html");
+  } finally {
+    srv.stop(true);
+    process.env.AGENTIC_DATA_DIR = prevDataDir;
+  }
 });

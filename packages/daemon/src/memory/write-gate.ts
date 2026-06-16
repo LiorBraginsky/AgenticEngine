@@ -142,7 +142,9 @@ export class WriteGate {
    * REFINE (Lior): forget-by-id NOW; finer message-level provenance is DEFERRED to the
    * future THREAD-forget.
    *
-   * Back-compat: the text/provenance forgetFact path above is RETAINED for all v2-04 callers.
+   * The text/provenance forgetFact primitive above survives for its unit tests but has NO caller
+   * route post-v2-07 (the over-deleting HTTP fallback was removed; it over-deleted all facts
+   * sharing a thread provenance — store.deleteMachineFactsByForget).
    */
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- reason kept for API symmetry with forgetFact; argsIgnorePattern not configured
   forgetFactById(factId: string, ctx: WriteContext, reason?: string): void {

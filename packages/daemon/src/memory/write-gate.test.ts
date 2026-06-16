@@ -408,6 +408,8 @@ test("v2-07: forgetFactById with human ctx CAN delete a human-authored fact (5a 
 
   // Seed a human-authored fact
   store.insertDistilledFacts([
+    // Deliberate test-seed hack: insertDistilledFacts types authored_by as "machine" (no first-class
+    // human-authored insert path), so we cast to seed a human-authored row for the 5a regression.
     { fact: "human pinned favourite", provenance: `thread:${t}`, scope: "cross-thread", expiry: null, confidence: 1, authored_by: "human" as "machine" },
   ], "v2-07-5a-test");
 

@@ -856,6 +856,9 @@ try {
   } else {
     // REAL MODE: the dedup guard is code-level (deterministic) — no scripted client needed.
     // Drive a question thread and assert via the store snapshot (same as stub mode).
+    // NOTE: canonical is an English phrase in real mode, so real-mode dedup detection leans on
+    // the display-text match (d.fact LIKE '%Ліор%' / '%звати%'). The '%zvati%' canonical clause
+    // is a harmless belt-and-suspenders that rarely fires in real mode.
     const storeE1real = new MemoryStore({ dataDir: tmpDir });
     const nameFactsBeforeReal = storeE1real.rawDb()
       .query("SELECT d.id, d.fact FROM distilled_facts d JOIN fact_fts f ON f.fact_id = d.id WHERE f.canonical LIKE '%lior%' OR f.canonical LIKE '%zvati%' OR d.fact LIKE '%Ліор%' OR d.fact LIKE '%звати%'")

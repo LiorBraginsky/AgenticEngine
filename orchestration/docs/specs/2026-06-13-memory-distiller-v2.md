@@ -1,10 +1,11 @@
 ---
 title: Memory Distiller v2 — incremental, stable-id, FTS5-similarity (the stability pivot)
-status: draft
+status: implemented
 date: 2026-06-13
+implemented: 2026-06-16 (chunks v2-01..v2-09; feature merged to main ad21e31, Lior §6.1 demo signed)
 deciders: [lior]
 feeds: memory-quality
-implements: adr/0012-conversation-and-memory-model (+ the 2026-06-13 re-derivability AMENDMENT, proposed)
+implements: adr/0012-conversation-and-memory-model (+ the 2026-06-13 re-derivability AMENDMENT, accepted)
 supersedes: specs/2026-06-12-memory-quality.md §3.2 D4–D5 + §3.3 D8 (GLOBAL re-projection STRATEGY) and §3.4 (the parked default-flip, chunk 06)
 refines: specs/2026-06-13-forget-flow.md §2/§4 (how forget behaves in the INCREMENTAL, stable-id era)
 cites: research/2026-06-13-memory-similarity-approaches.md (the FTS5 verdict)
@@ -29,10 +30,11 @@ tags: [spec, memory, distiller, incremental, stability, fts5, topic-tags, forget
 > (engine-reviewer design-critic, this pass) found **B1/B2/B3 (blockers) + M1–M5 + m1–m4**; all are
 > folded inline and tagged `[grill Bn/Mn/mn]`.
 >
-> **§5.2 gate (NOT signed yet).** This spec is `draft`; the **ADR-0012 re-derivability amendment**
-> (`proposed`) rides the same PR. Both are **Lior's §5.2 acceptance gate** — hard-to-reverse tier
-> (it amends the memory north-star's HARD INVARIANT and reworks a 2c-facing contract). **No
-> auto-merge.** The conductor escalates spec + amendment to Lior together.
+> **§5.2 gate — SIGNED + SHIPPED.** This spec was accepted at Lior's §5.2 gate on PR #61 (2026-06-13),
+> together with the **ADR-0012 re-derivability amendment** (now `accepted`). It was implemented via
+> chunks v2-01..v2-09 and merged to main (`ad21e31`, 2026-06-16) after Lior's live §6.1 demo sign-off
+> (multi-turn recall, change→replace, forget-one, dedup all green). Status `draft`→`implemented` at
+> feature closeout.
 >
 > **What CARRIES OVER from the merged build (01–05), untouched in shape:** the storage shape
 > (`messages`/`mutations`/`distilled_facts`/`distillation_events`/`quarantine_markers`/`forgotten_facts`),

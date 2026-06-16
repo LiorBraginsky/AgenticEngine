@@ -9,11 +9,13 @@ tags: [adr, conversation, memory, interaction, threads, dual-modality, agent-par
 
 ## Status
 
-`accepted` — with a **PROPOSED AMENDMENT 2026-06-13** (incremental distiller: *stability over strict
-re-derivability*; see the "Amendment 2026-06-13" section below). The amendment is `proposed` and rides
-the memory-distiller-v2 design PR to **Lior's §5.2 acceptance gate** (hard-to-reverse tier — it changes
-this ADR's HARD INVARIANT). Until accepted, decision 6's "re-derivable projection" framing stands as
-written; the amendment, once accepted, supersedes that framing as described below.
+`accepted` — with an **ACCEPTED AMENDMENT 2026-06-13** (incremental distiller: *stability over strict
+re-derivability*; see the "Amendment 2026-06-13" section below). The amendment was accepted by Lior at
+the **§5.2 gate** (hard-to-reverse tier — it changes this ADR's HARD INVARIANT) on the memory-distiller-v2
+design PR (#61, 2026-06-13), and shipped via chunks v2-01..v2-09 (feature merged to main `ad21e31`,
+2026-06-16). The amendment **supersedes** decision 6's "re-derivable projection" framing as described
+below. (Header status reconciled 'proposed'→'accepted' at feature closeout 2026-06-16 — the acceptance
+itself dates to PR #61; this only updates the stale label.)
 
 ## Context
 
@@ -131,11 +133,13 @@ Concretely:
 
 **The part that stays OPEN, however:** ADR-0005's closed-set cleanly covers widgets *we* compose, but it only weakly answers **external / third-party rich widgets** — a Spotify widget, a weather mini-app, "calling a little program into the overlay" — which are *not* built from our primitives (its `custom_content` sanitized-HTML escape hatch is the current, limited answer). For *that* surface, **A2UI or a sandboxed mini-app model is a live candidate**, to be **researched when the plugin / external-widget layer is built** ([[../open-questions]] Q11). So this is "not adopted for our own primitives now," **not** "A2UI is closed forever" — per the team's standing rule not to reflex-reject a relevant direction just because it touches an accepted ADR.
 
-## Amendment 2026-06-13 (proposed): Incremental distiller — STABILITY over strict re-derivability
+## Amendment 2026-06-13 (accepted): Incremental distiller — STABILITY over strict re-derivability
 
-> **Status:** `proposed` — Lior accepts at §5.2 (hard-to-reverse tier). Agent-drafted in a frontier
-> (fable) design pass; conductor blessed the wording (bus q#009, `decided_by: jimmy`); the acceptance
-> is Lior's. Rides the same PR as [[../specs/2026-06-13-memory-distiller-v2]] (the mechanics).
+> **Status:** `accepted` — Lior accepted at §5.2 (hard-to-reverse tier) on PR #61 (2026-06-13).
+> Agent-drafted in a frontier (fable) design pass; conductor blessed the wording (bus q#009,
+> `decided_by: jimmy`); the acceptance is Lior's. Rode the same PR as
+> [[../specs/2026-06-13-memory-distiller-v2]] (the mechanics); shipped via chunks v2-01..v2-09
+> (feature merged to main `ad21e31`, 2026-06-16).
 
 ### Why amend
 

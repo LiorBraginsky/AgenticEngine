@@ -20,6 +20,13 @@
  * retrieve/injection:
  *   { stage:"retrieve", forThreadId, injected:[{id?,factPreview,order}] }
  *
+ * inject (per-turn context handed to the agent — the ACTUAL prior messages the
+ * LLM sees, AFTER beginTurn picked the new-thread retrieve() vs known-thread
+ * readThreadTail() branch). Distinguishes "fact retrieved" from "fact present in
+ * THIS turn's context": a known-thread turn shows the conversation tail with NO
+ * [remembered] entries — the structural reason a turn-2+ recall can miss.
+ *   { stage:"inject", threadId, turnType, userText, priorContext:[{role,preview}] }
+ *
  * forget:
  *   { stage:"forget", route:"forgetFactById"|"forgetFact", target:{factId?,provenance?,normalizedText?}, deletedIds, deletedCount }
  *
@@ -47,7 +54,7 @@ export const MEMORY_DEBUG = (): boolean => process.env["MEMORY_DEBUG"] === "1";
  * NEVER pass the API key, auth token, or any credential.
  */
 export function memDebug(
-  stage: "distill" | "retrieve" | "forget",
+  stage: "distill" | "retrieve" | "forget" | "inject",
   payload: Record<string, unknown>,
 ): void {
   if (!MEMORY_DEBUG()) return;

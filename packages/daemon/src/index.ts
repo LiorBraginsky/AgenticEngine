@@ -16,6 +16,7 @@ import { Hatch } from "./memory/hatch.js";
 import { handleMemoryHttp } from "./memory/http-routes.js";
 import { TokenStore } from "./memory/token-store.js";
 import { stampProvenance } from "./memory/provenance-stamp.js";
+import { memDebug, previewStr } from "./memory/debug-log.js";
 
 export const DAEMON_HOST = "127.0.0.1"; // loopback only (ADR-0003 p.3)
 export const DAEMON_PORT = 7777;
@@ -191,6 +192,20 @@ export function startDaemon(port: number = DAEMON_PORT, provider?: AgentProvider
           priorState = sessions.get(inbound.session_id);
           turnThreadId = lifecycle.threadForSession(inbound.session_id);
         }
+
+        // D-v2-08 inject log (env-gated): the ACTUAL prior context this turn hands
+        // the agent — distinguishes "fact retrieved" from "fact present THIS turn".
+        // A known-thread turn (turn 2+) shows the conversation tail with NO
+        // [remembered] entries → the structural reason a follow-up recall misses.
+        memDebug("inject", {
+          threadId: turnThreadId,
+          turnType: inbound.type,
+          userText: previewStr(inbound.type === "session_start" ? (inbound.text ?? "") : ""),
+          priorContext: (priorState?.messages ?? []).map((m) => ({
+            role: m.role,
+            preview: previewStr(m.content),
+          })),
+        });
 
         const result = await activeProvider.advance(priorState, inbound);
 

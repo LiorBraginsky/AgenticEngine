@@ -510,6 +510,34 @@ try {
     console.log(`[demo-harness] A′ recall-usage (real mode): full reply = "${recallReply.reply.slice(0, 200)}"`);
   }
 
+  // ── SEQUENCE STEP 2b: SAME-thread follow-up recall (multi-turn A′) ───────
+  // The DEMO's real shape: a user asks MULTIPLE questions in ONE thread. Turn 1
+  // (new thread) injects the distilled facts; turn 2 (now a KNOWN thread) goes
+  // through beginTurn's readThreadTail() branch → NO retrieve → facts NOT in
+  // context. With the chat-stub, turn-1 reply echoes "[remembered] …"; turn-2
+  // reply says "No recall." iff the bug reproduces. Pre-fix = RED demonstration.
+  console.log("[demo-harness] STEP 2b: multi-turn recall in ONE thread (turn 1 colour, turn 2 name)");
+  const threadMT = crypto.randomUUID();
+  const t1 = await wsTurnAndSettle(PORT, token, { threadId: threadMT, text: "Який мій улюблений колір?" });
+  const t2 = await wsTurnAndSettle(PORT, token, { threadId: threadMT, text: "Як мене звати?" });
+  // Stub-definitive markers ONLY — the chat-stub emits "Recall: [remembered] …"
+  // when facts are in context, else "No recall.". Do NOT fuzzy-match Ukrainian
+  // words: the stub echoes the user's QUERY into the reply, so "звати" in the
+  // turn-2 query "Як мене звати?" would false-positive a word matcher.
+  const memPresent = (r: string): boolean => r.includes("[remembered]") || r.includes("Recall:");
+  const t1HadMemory = memPresent(t1.reply);
+  const t2HadMemory = memPresent(t2.reply);
+  console.log(`[demo-harness] STEP 2b turn 1 (new thread)  reply: "${t1.reply.slice(0, 90)}"  memory-present=${t1HadMemory}`);
+  console.log(`[demo-harness] STEP 2b turn 2 (same thread) reply: "${t2.reply.slice(0, 90)}"  memory-present=${t2HadMemory}`);
+  if (t1HadMemory && !t2HadMemory) {
+    console.log("[demo-harness] STEP 2b: *** RED (pre-fix) — recall LOST on turn 2: facts injected only on a thread's FIRST turn (known-thread branch skips retrieve). This is the structural A′ root cause. ***");
+  } else if (t1HadMemory && t2HadMemory) {
+    console.log("[demo-harness] STEP 2b: GREEN — recall survives a same-thread follow-up turn (fix applied).");
+  } else {
+    console.log("[demo-harness] STEP 2b: INCONCLUSIVE — turn 1 had no memory either (check seeding/stub).");
+  }
+  console.log("");
+
   // Check B defect: colour fact reworded after thread B's dismiss (which distilled
   // the assistant's recall reply and rewrote the colour fact)
   const verifyStoreB2 = new MemoryStore({ dataDir: tmpDir });

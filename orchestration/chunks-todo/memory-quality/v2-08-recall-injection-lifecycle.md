@@ -1,6 +1,6 @@
 # Chunk v2-08: recall injection lifecycle (turn-2+ fact loss) + dedup hardening
 
-**Status:** todo
+**Status:** in-progress
 **Created:** 2026-06-16
 **Phase:** memory-distiller-v2 (spec `docs/specs/2026-06-13-memory-distiller-v2.md`; ADR-0012 + 2026-06-13 STABILITY amendment)
 **Depends on / BRANCH:** the branch **`chunk/v2-08-recall-injection-lifecycle` ALREADY EXISTS and is checked out** (stacked on v2-07), with the confirmed-diagnosis commit `c294795` (the `inject` MEMORY_DEBUG stage + harness STEP 2b). **CONTINUE on this branch — do NOT re-branch.** On demo-green the conductor merges the whole stack (v2-05+06+07+08) to main.

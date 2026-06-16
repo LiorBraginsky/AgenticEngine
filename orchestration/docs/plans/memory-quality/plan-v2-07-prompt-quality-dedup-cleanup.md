@@ -12,7 +12,9 @@
 
 ---
 
-## Status: Done (plan ready for worker execution; behavioral DoD pending Lior §6.1 live re-demo)
+## Status: Review-complete — mechanically DONE-ready; BLOCKED on Lior §6.1 live re-demo
+
+All 3 steps implemented + engine-reviewer CLEAN (0 blockers / 0 majors; 4 comment-level findings folded). Gates (orchestrator-re-verified): `bun test` 509/0 · typecheck exit 0 · lint:strict exit 0 · frozen `@agentic/protocol` + `mock-agent.ts` byte-unchanged. Harness EXECUTED stub (E + C/B/A GREEN) + real (key present: A′ recall=true, E GREEN, 0 SmartDistillError); forget-roundtrip-probe PASSED. Commits: `56cdb24` (prompts) · `aba0eb7` (dedup guard + harness E) · `17ba483` (cleanup + verify) · `2f8c651` (review-folds). PR → main (stack-closing, subsumes #67/#68). Behavioral DoD (the 9-step §6.1 re-demo) is Lior's gate — NOT merged until demo-green.
 
 ---
 

@@ -46,10 +46,10 @@ import type { FactOp } from "../src/memory/memory-provider.js";
 
 console.log("");
 console.log("╔══════════════════════════════════════════════════════════════════════════════╗");
-console.log("║  memory-demo-harness — Strike-5 EXECUTED evidence (chunk v2-07)            ║");
+console.log("║  memory-demo-harness — Strike-5 EXECUTED evidence (chunk v2-08)            ║");
 console.log("║  Drives REAL daemon via WS + HTTP (same interfaces as the overlay)         ║");
-console.log("║  Verifies C/B/A post-fix assertions + v2-07 E dedup guard.                 ║");
-console.log("║  Type-check alone is NOT evidence. This MUST be run + stdout pasted.       ║");
+console.log("║  Verifies C/B/A/E post-fix assertions + STEP 2b hard-assert +              ║");
+console.log("║  DEDUP-AFTER-RECALL. Type-check alone is NOT evidence. Must be run.        ║");
 console.log("╚══════════════════════════════════════════════════════════════════════════════╝");
 console.log("");
 
@@ -63,7 +63,7 @@ console.log("");
 
 // ── Setup ─────────────────────────────────────────────────────────────────
 
-const tmpDir = mkdtempSync(join(tmpdir(), "demo-harness-v07-"));
+const tmpDir = mkdtempSync(join(tmpdir(), "demo-harness-v08-"));
 let server: ReturnType<typeof import("../src/index.js").startDaemon> | null = null;
 
 function assertRed(condition: boolean, label: string, detail?: string): void {
@@ -86,6 +86,23 @@ process.on("exit", () => {
   if (server) { try { server.stop(true); } catch { /* ignore */ } }
   try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 });
+
+// ── countColourFacts ───────────────────────────────────────────────────────
+// Returns the number of distilled colour facts in the store at `dir`.
+// Uses the same colour matcher as the B-check at lines 727-729.
+// Opens + closes a MemoryStore per call (safe for snapshot comparisons).
+
+function countColourFacts(dir: string): number {
+  const s = new MemoryStore({ dataDir: dir });
+  try {
+    const rows = s.rawDb()
+      .query("SELECT id FROM distilled_facts WHERE fact LIKE '%синій%' OR fact LIKE '%зелений%' OR fact LIKE '%колір%' OR fact LIKE '%Люблю%'")
+      .all() as { id: string }[];
+    return rows.length;
+  } finally {
+    s.close();
+  }
+}
 
 // ── Chat stub (AgentProvider) ──────────────────────────────────────────────
 //
@@ -529,12 +546,23 @@ try {
   const t2HadMemory = memPresent(t2.reply);
   console.log(`[demo-harness] STEP 2b turn 1 (new thread)  reply: "${t1.reply.slice(0, 90)}"  memory-present=${t1HadMemory}`);
   console.log(`[demo-harness] STEP 2b turn 2 (same thread) reply: "${t2.reply.slice(0, 90)}"  memory-present=${t2HadMemory}`);
-  if (t1HadMemory && !t2HadMemory) {
-    console.log("[demo-harness] STEP 2b: *** RED (pre-fix) — recall LOST on turn 2: facts injected only on a thread's FIRST turn (known-thread branch skips retrieve). This is the structural A′ root cause. ***");
-  } else if (t1HadMemory && t2HadMemory) {
-    console.log("[demo-harness] STEP 2b: GREEN — recall survives a same-thread follow-up turn (fix applied).");
+  // v2-08: HARD ASSERT in stub mode — memPresent() discriminator is stub-definitive
+  // ([remembered]/Recall: markers emitted by the chat-stub, not by the real LLM).
+  // In real mode: informational only (the LLM answers naturally; no stub markers).
+  if (MODE === "stub") {
+    if (!t1HadMemory) {
+      console.error("[demo-harness] STEP 2b: RED — turn 1 (new thread) had no injected memory (check seeding/stub).");
+      await cleanup(); process.exit(1);
+    }
+    if (!t2HadMemory) {
+      console.error("[demo-harness] STEP 2b: RED — recall LOST on turn 2 (known-thread branch did not re-inject facts). v2-08 fix A not applied.");
+      await cleanup(); process.exit(1);
+    }
+    console.log("[demo-harness] STEP 2b: GREEN — recall survives a same-thread follow-up turn (turn 1 AND turn 2 memory-present).");
   } else {
-    console.log("[demo-harness] STEP 2b: INCONCLUSIVE — turn 1 had no memory either (check seeding/stub).");
+    // Real mode: memPresent() markers won't appear in a natural LLM reply.
+    // The A′ recall-usage report (above) is the real-mode evidence for STEP 2.
+    console.log(`[demo-harness] STEP 2b (real mode informational): t1HadMemory=${t1HadMemory} t2HadMemory=${t2HadMemory} (LLM-fuzzy — hard assert is stub-only).`);
   }
   console.log("");
 
@@ -915,9 +943,28 @@ try {
   }
   console.log("");
 
+  // ── DEDUP-AFTER-RECALL: colour recall → dismiss → no new/duplicate colour fact ──
+  // (stub mode: hard assertion; real mode: informational only — LLM-fuzzy)
+  // Deterministic in stub mode because the scripted client:
+  //   (a) skips questions (E-a, trailing "?") — so the user question itself is a no-op
+  //   (b) derives ops ONLY from [user| lines, never the assistant recall reply (B-fix)
+  // Therefore the recall-reply assistant text never becomes a fact source → count stable.
+  console.log("[demo-harness] DEDUP-AFTER-RECALL: a colour recall (question + agent answer) → dismiss → no new/duplicate colour fact");
+  const colourCountBefore = countColourFacts(tmpDir);
+  const threadDR = crypto.randomUUID();
+  await wsTurnAndSettle(PORT, token, { threadId: threadDR, text: "Який мій улюблений колір?" }, 200);
+  const colourCountAfter = countColourFacts(tmpDir);
+  console.log(`[demo-harness] DEDUP-AFTER-RECALL: colour facts before=${colourCountBefore} after=${colourCountAfter}`);
+  if (MODE === "stub" && colourCountAfter > colourCountBefore) {
+    console.error("[demo-harness] DEDUP-AFTER-RECALL: RED — a recall reply created a new/duplicate colour fact (Part 2 dedup hardening not applied).");
+    await cleanup(); process.exit(1);
+  }
+  console.log(`[demo-harness] DEDUP-AFTER-RECALL: ${MODE === "stub" ? "GREEN" : "informational"} — colour fact count stable across recall.`);
+  console.log("");
+
   // ── Summary ───────────────────────────────────────────────────────────────
   console.log("╔══════════════════════════════════════════════════════════════════════════════╗");
-  console.log("║  HARNESS COMPLETE — v2-07 post-fix verification run                         ║");
+  console.log("║  HARNESS COMPLETE — v2-08 post-fix verification run                         ║");
   console.log("║                                                                              ║");
   console.log("║  C: forgetFactById — exactly 1 fact deleted (GREEN = fix applied)           ║");
   console.log("║  B: no rewording — colour byte-stable across N recall turns (GREEN)         ║");
@@ -925,8 +972,12 @@ try {
   console.log("║     (hard assertion: process.exit(1) on miss — q#012 rider 2)              ║");
   console.log("║  E: question → no duplicate fact (dedup guard GREEN — deterministic)        ║");
   console.log("║     (hard assertion: process.exit(1) on duplicate)                         ║");
+  console.log("║  STEP 2b: turn-1 AND turn-2 both memory-present (stub=hard, real=info)     ║");
+  console.log("║     (stub hard assert: process.exit(1) if recall lost — v2-08 fix A)       ║");
+  console.log("║  DEDUP-AFTER-RECALL: colour recall → colour fact count stable (stub=hard)  ║");
+  console.log("║     (stub hard assertion: process.exit(1) if new/dup colour fact created)  ║");
   console.log("║                                                                              ║");
-  console.log("║  Paste this stdout into the PR body = Strike-5 EXECUTED evidence (v2-07).  ║");
+  console.log("║  Paste this stdout into the PR body = Strike-5 EXECUTED evidence (v2-08).  ║");
   console.log("╚══════════════════════════════════════════════════════════════════════════════╝");
   console.log("");
 

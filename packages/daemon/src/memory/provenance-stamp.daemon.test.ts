@@ -360,13 +360,35 @@ function runTurnOn(
 
 test("T2.3a-E: known-thread turn with EMPTY memory → NOT stamped (tail-only hydration is not [remembered] memory)", async () => {
   // Boot an isolated daemon on a fresh dataDir — NO distilled facts seeded.
+  // A no-op memoryProvider is injected so:
+  //   (a) retrieve() always returns [] — the invariant under test (no facts → not stamped);
+  //   (b) distill() produces no ops — prevents the DumbTail distillation cycle from
+  //       writing the turn-1 message as a fact between turn 1 and turn 2, which would
+  //       cause a timing-dependent false-positive in the full bun test suite (the
+  //       server-side ws close() handler runs the distillation asynchronously; under
+  //       load the distillation can complete before turn-2's runTurnOn reaches the server,
+  //       making retrieve() return the newly-inserted fact → stamped → assertion failure).
+  // The store itself is still real bun:sqlite (real I/O). Only the memory-provider seam
+  // is replaced — this is the explicit testability seam startDaemon exposes (3rd param).
+  const noopMemoryProvider: import("./memory-provider.js").MemoryProvider = {
+    id: "noop-for-E",
+    retrieve: async () => [],
+    distill: async (_store, threadId) => ({
+      threadId,
+      ops: [],
+      candidateIds: [],
+      distilledThroughMarker: 0,
+      distilledThroughTurn: -1,
+    }),
+  };
+
   const dir2 = mkdtempSync(join(tmpdir(), "mf05-t23a-e-"));
   const prevDataDir = process.env.AGENTIC_DATA_DIR;
   process.env.AGENTIC_DATA_DIR = dir2;
   const { createAnthropicApiProvider } = await import("../providers/anthropic-api-provider.js");
   const fake = createAnthropicApiProvider({ apiKey: "sk-ant-fake", client: makeFakeClient("Reply E.") as never });
   const { startDaemon } = await import("../index.js");
-  const srv = startDaemon(0, fake);
+  const srv = startDaemon(0, fake, noopMemoryProvider);
   const p = srv.port!;
   const tok2 = new TokenStore(dir2).token();
   try {
@@ -384,6 +406,8 @@ test("T2.3a-E: known-thread turn with EMPTY memory → NOT stamped (tail-only hy
     const knownTid = row2.thread_id;
 
     // Turn 2 (known thread, still no facts → tail-only → NOT stamped).
+    // retrieve() returns [] because noopMemoryProvider never produces facts,
+    // so injectedMemory stays false regardless of distillation timing.
     const turn2Envs = await runTurnOn(p, tok2, "second", knownTid);
     const turn2Content = findShowTextContent(turn2Envs);
     expect(turn2Content).toBeDefined();

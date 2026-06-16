@@ -67,7 +67,8 @@ export interface MemoryProvider {
   distill(store: MemoryStore, threadId: string): Promise<DistillDelta>;
 
   /**
-   * Compose the bounded distilled slice to inject at a NEW thread's start.
+   * Compose the bounded distilled slice to inject at the start of a turn.
+   * Called on the new-thread first turn AND on every known-thread turn (v2-08).
    * Reads distilled_facts (the projection). MUST honor tombstones (F1).
    * Returns the slice as SessionMessage[] ready to prepend to messages[].
    * MF-04 (5f): now enforces scope isolation — thread-local facts of OTHER threads

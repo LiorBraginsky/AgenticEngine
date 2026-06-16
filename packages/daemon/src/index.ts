@@ -40,7 +40,7 @@ function send(
   injectedMemory: boolean,
 ): void {
   // T2.3a: stamp the provenance line on show_text envelopes when this turn drew
-  // on cross-thread injected memory (new-thread branch, retrieve returned ≥1 message).
+  // on cross-thread injected memory (new OR known thread; iff ≥1 [remembered] fact injected this turn).
   const out = injectedMemory ? stampProvenance(msg, port) : msg;
   // Outbound is validated against the frozen contract too (defence in depth).
   const check = parseEnvelope(out);

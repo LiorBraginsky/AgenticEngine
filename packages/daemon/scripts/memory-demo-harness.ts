@@ -528,11 +528,12 @@ try {
   }
 
   // ── SEQUENCE STEP 2b: SAME-thread follow-up recall (multi-turn A′) ───────
-  // The DEMO's real shape: a user asks MULTIPLE questions in ONE thread. Turn 1
-  // (new thread) injects the distilled facts; turn 2 (now a KNOWN thread) goes
-  // through beginTurn's readThreadTail() branch → NO retrieve → facts NOT in
-  // context. With the chat-stub, turn-1 reply echoes "[remembered] …"; turn-2
-  // reply says "No recall." iff the bug reproduces. Pre-fix = RED demonstration.
+  // Pre-v2-08 bug (now fixed, regression-guarded here): The DEMO's real shape:
+  // a user asks MULTIPLE questions in ONE thread. Turn 1 (new thread) injected
+  // the distilled facts; turn 2 (now a KNOWN thread) went through beginTurn's
+  // readThreadTail() branch → NO retrieve → facts NOT in context. With the
+  // chat-stub, turn-2 reply said "No recall." iff the bug reproduced. This step
+  // now asserts the regression is gone: both turns must see injected memory.
   console.log("[demo-harness] STEP 2b: multi-turn recall in ONE thread (turn 1 colour, turn 2 name)");
   const threadMT = crypto.randomUUID();
   const t1 = await wsTurnAndSettle(PORT, token, { threadId: threadMT, text: "Який мій улюблений колір?" });
@@ -563,6 +564,17 @@ try {
     // Real mode: memPresent() markers won't appear in a natural LLM reply.
     // The A′ recall-usage report (above) is the real-mode evidence for STEP 2.
     console.log(`[demo-harness] STEP 2b (real mode informational): t1HadMemory=${t1HadMemory} t2HadMemory=${t2HadMemory} (LLM-fuzzy — hard assert is stub-only).`);
+    // DoD-2 real-mode provenance evidence: the known-thread fix (v2-08 Part 1)
+    // stamps /history.html in the reply when facts were injected on that turn.
+    // Turn 1 (new thread) and turn 2 (known thread with injected facts) should
+    // both carry the stamp. Informational only — real-mode is non-fatal.
+    const t1HasProvenance = t1.reply.includes("/history.html");
+    const t2HasProvenance = t2.reply.includes("/history.html");
+    console.log(`[demo-harness] STEP 2b (real mode) turn-1 provenance stamp (/history.html): ${t1HasProvenance}`);
+    console.log(`[demo-harness] STEP 2b (real mode) turn-2 provenance stamp (/history.html): ${t2HasProvenance}`);
+    if (!t1HasProvenance && !t2HasProvenance) {
+      console.log(`[demo-harness] STEP 2b (real mode) no provenance stamps — either no facts were seeded or the LLM key is absent/skipped.`);
+    }
   }
   console.log("");
 

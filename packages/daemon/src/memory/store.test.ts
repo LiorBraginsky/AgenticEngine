@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { mkdtempSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
-import { MemoryStore } from "./store.js";
+import { MemoryStore, CANDIDATE_TOP_K, ALL_FACTS_CAP } from "./store.js";
 import { WriteGate } from "./write-gate.js";
 import { RuleBasedScanner } from "./scanner/memory-scanner.js";
 import { REDACTION_MARKER } from "./schema.js";
@@ -681,7 +681,8 @@ test("v2-02 fetchCandidates surfaces a contradicting fact carrying a DIFFERENT t
   store.close();
 });
 
-test("v2-02 fetchCandidates returns at most CANDIDATE_TOP_K rows and tolerates punctuation in the query", () => {
+test("v2-02 fetchCandidates below-cap (≤ALL_FACTS_CAP) returns ALL facts and tolerates punctuation in the query", () => {
+  // v2-09: below ALL_FACTS_CAP the all-facts path returns the full corpus (15 facts < 50 cap).
   const { store } = freshStore();
   for (let i = 0; i < 15; i++) {
     store.insertFact({
@@ -690,8 +691,50 @@ test("v2-02 fetchCandidates returns at most CANDIDATE_TOP_K rows and tolerates p
     }, "smart-v2");
   }
   const candidates = store.fetchCandidates("deployment: the (script)?");
-  expect(candidates.length).toBeLessThanOrEqual(10); // CANDIDATE_TOP_K = 10
-  expect(candidates.length).toBeGreaterThan(0);
+  // Below ALL_FACTS_CAP: all facts are returned (15 facts, not limited to CANDIDATE_TOP_K).
+  expect(candidates.length).toBe(15);
+  expect(candidates.length).toBeLessThanOrEqual(ALL_FACTS_CAP); // belt-and-suspenders bound
+  store.close();
+});
+
+test("v2-09 fetchCandidates above-cap (>ALL_FACTS_CAP) falls back to BM25 LIMIT CANDIDATE_TOP_K and tolerates punctuation", () => {
+  // Above ALL_FACTS_CAP: the BM25 MATCH path kicks in, limiting results to CANDIDATE_TOP_K.
+  const { store } = freshStore();
+  for (let i = 0; i < ALL_FACTS_CAP + 5; i++) {
+    store.insertFact({
+      fact: `fact ${i} about deployment`, canonical: `fact ${i} about deployment`, provenance: "thread:t1",
+      scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: ["projects"],
+    }, "smart-v2");
+  }
+  // Corpus is > ALL_FACTS_CAP (55 facts) → BM25 MATCH path with LIMIT CANDIDATE_TOP_K.
+  const candidates = store.fetchCandidates("deployment: the (script)?");
+  expect(candidates.length).toBeLessThanOrEqual(CANDIDATE_TOP_K); // BM25 limit
+  expect(candidates.length).toBeGreaterThan(0); // punctuation-tolerant: still finds matches
+  store.close();
+});
+
+// ── v2-09: all-facts-below-cap candidate pool ──
+
+test("v2-09 fetchCandidates returns the FULL fact set below the cap — a cross-language fact is ALWAYS a candidate (BM25 would have dropped it)", () => {
+  const { store } = freshStore();
+  // English-canonical colour fact (as the real/stub distiller stores it).
+  // Topics use names with no tokens that appear in the Ukrainian query, so BM25 MATCH
+  // would return 0 rows — this is the cross-language gap that this test validates.
+  // ("#about-user" contains "user" which the [user|m1] prefix would match via FTS, so
+  // we use topic names without such overlap to reproduce the genuine BM25 failure.)
+  store.insertFact(
+    { fact: "Люблю синій колір", canonical: "favourite colour is blue", topics: ["colour-prefs"], provenance: "thread:a", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
+    "test",
+  );
+  store.insertFact(
+    { fact: "Мене звати Ліор", canonical: "name is lior", topics: ["identity"], provenance: "thread:a", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
+    "test",
+  );
+  // A Ukrainian CHANGE tail — BM25 MATCH on the English canonical would return 0 rows.
+  const candidates = store.fetchCandidates("[user|m1] Тепер мій улюблений колір — зелений");
+  // All-facts-below-cap: the colour fact MUST be present so the distiller can op:replace it.
+  expect(candidates.some((c) => c.fact.includes("синій"))).toBe(true);
+  expect(candidates.length).toBe(2); // ALL facts returned (corpus is below the cap)
   store.close();
 });
 

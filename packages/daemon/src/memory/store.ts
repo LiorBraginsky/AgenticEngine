@@ -13,6 +13,14 @@ export interface MemoryStoreOptions {
 
 /** Named build-time constants (spec §9 — dogfood scale). */
 export const CANDIDATE_TOP_K = 10;
+/**
+ * v2-09: at single-user (dogfood) scale the distilled-fact corpus is a handful of
+ * rows, so the contradiction-candidate pool is the WHOLE corpus (spec §3.4 D-V4b —
+ * "full corpus, never reduced"). Below this cap fetchCandidates returns ALL facts;
+ * above it, it falls back to the BM25 MATCH path (the future large-corpus /
+ * archive-summarization-tier trigger — roadmap 2d supersedes both with embeddings).
+ */
+export const ALL_FACTS_CAP = 50;
 export const APPEND_LIST_CAP = 8;
 
 /** Input to insert one fact + its derived FTS/topic rows (v2-02). `canonical` and
@@ -968,25 +976,54 @@ export class MemoryStore {
   }
 
   /**
-   * BM25 candidate-fetch over the FULL distilled_facts corpus (spec §3.4 D-V4b — the
-   * FROZEN B1 invariant: tags WIDEN recall, they NEVER reduce the candidate set).
-   * Matches on fact_fts.canonical; returns the top CANDIDATE_TOP_K by BM25 rank, with
-   * the user-language display `fact` (joined from distilled_facts) + topics (from
-   * fact_topics). The caller (v2-03) passes a free-text `query` (the new fact's canonical).
-   * `query` is sanitized into a safe OR-of-quoted-terms (toFtsOrQuery) so punctuation
-   * can never produce a MATCH syntax error.
+   * Contradiction-candidate pool for the distiller (spec §3.4 D-V4b — the FROZEN B1
+   * invariant: "candidate set is never *reduced*… BM25 runs over the FULL corpus").
+   *
+   * v2-09 all-facts-below-cap path (primary at dogfood scale):
+   *   When the total distilled-fact count is ≤ ALL_FACTS_CAP (50), returns ALL facts
+   *   stably ordered (derived_at DESC, rowid DESC — newest first). This is MORE faithful
+   *   to D-V4b's "never reduced" invariant than BM25, which silently drops a same-attribute
+   *   fact when the tail language ≠ the canonical language (the demo-3 cross-language
+   *   duplicate-colour root). LIMIT ALL_FACTS_CAP is a belt-and-suspenders bound.
+   *
+   * BM25 MATCH above-cap fallback (large-corpus path):
+   *   When total > ALL_FACTS_CAP, falls back to the FTS5/BM25 MATCH path, returning
+   *   the top CANDIDATE_TOP_K rows. This is the pre-v2-09 mechanism, preserved for the
+   *   future archive-summarization tier (roadmap 2d supersedes both with embeddings).
+   *   `query` is sanitized into a safe OR-of-quoted-terms (toFtsOrQuery) so punctuation
+   *   can never produce a MATCH syntax error.
+   *
+   * The op:replace ordinal/candidateIds contract is invariant to pool size: the prompt's
+   * numbered pool and candidateIds derive from one ordered list (this method's return).
+   * expectedTargetText in the apply loop re-verifies the resolved row independently.
    */
   fetchCandidates(query: string): FactCandidate[] {
-    const ftsQuery = toFtsOrQuery(query);
-    if (ftsQuery === "") return [];
-    const rows = this.db.query(
-      `SELECT f.fact_id AS id, d.fact AS fact
-         FROM fact_fts f
-         JOIN distilled_facts d ON d.id = f.fact_id
-         WHERE fact_fts MATCH ?
-         ORDER BY bm25(fact_fts)
-         LIMIT ?`,
-    ).all(ftsQuery, CANDIDATE_TOP_K) as { id: string; fact: string }[];
+    const total = (this.db.query("SELECT COUNT(*) AS n FROM distilled_facts").get() as { n: number }).n;
+
+    let rows: { id: string; fact: string }[];
+    if (total <= ALL_FACTS_CAP) {
+      // v2-09 all-facts path: return the FULL corpus, stably ordered (newest first).
+      // This is MORE faithful to D-V4b ("never reduced") than BM25, which silently
+      // drops a same-attribute fact when the tail language ≠ the canonical language
+      // (the demo-3 cross-language duplicate-colour root). LIMIT ALL_FACTS_CAP is a
+      // belt-and-suspenders bound (== total here) so the prompt section stays bounded.
+      rows = this.db.query(
+        `SELECT id, fact FROM distilled_facts ORDER BY derived_at DESC, rowid DESC LIMIT ?`,
+      ).all(ALL_FACTS_CAP) as { id: string; fact: string }[];
+    } else {
+      // Above the cap: the BM25 MATCH path (unchanged — the large-corpus fallback).
+      const ftsQuery = toFtsOrQuery(query);
+      if (ftsQuery === "") return [];
+      rows = this.db.query(
+        `SELECT f.fact_id AS id, d.fact AS fact
+           FROM fact_fts f
+           JOIN distilled_facts d ON d.id = f.fact_id
+           WHERE fact_fts MATCH ?
+           ORDER BY bm25(fact_fts)
+           LIMIT ?`,
+      ).all(ftsQuery, CANDIDATE_TOP_K) as { id: string; fact: string }[];
+    }
+
     return rows.map((r) => ({
       id: r.id,
       fact: r.fact,

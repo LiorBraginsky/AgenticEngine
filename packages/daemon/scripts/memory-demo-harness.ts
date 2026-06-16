@@ -46,10 +46,11 @@ import type { FactOp } from "../src/memory/memory-provider.js";
 
 console.log("");
 console.log("╔══════════════════════════════════════════════════════════════════════════════╗");
-console.log("║  memory-demo-harness — Strike-5 EXECUTED evidence (chunk v2-08)            ║");
+console.log("║  memory-demo-harness — Strike-5 EXECUTED evidence (chunk v2-09)            ║");
 console.log("║  Drives REAL daemon via WS + HTTP (same interfaces as the overlay)         ║");
-console.log("║  Verifies C/B/A/E post-fix assertions + STEP 2b hard-assert +              ║");
-console.log("║  DEDUP-AFTER-RECALL. Type-check alone is NOT evidence. Must be run.        ║");
+console.log("║  Verifies C/B/A/E + STEP 2b + DEDUP-AFTER-RECALL +                        ║");
+console.log("║  CHANGE→ONE-FACT (preference change replaces, not duplicates).             ║");
+console.log("║  Type-check alone is NOT evidence. Must be run.                            ║");
 console.log("╚══════════════════════════════════════════════════════════════════════════════╝");
 console.log("");
 
@@ -63,7 +64,7 @@ console.log("");
 
 // ── Setup ─────────────────────────────────────────────────────────────────
 
-const tmpDir = mkdtempSync(join(tmpdir(), "demo-harness-v08-"));
+const tmpDir = mkdtempSync(join(tmpdir(), "demo-harness-v09-"));
 let server: ReturnType<typeof import("../src/index.js").startDaemon> | null = null;
 
 function assertRed(condition: boolean, label: string, detail?: string): void {
@@ -675,6 +676,39 @@ try {
   }
   console.log("");
 
+  // ── v2-09: preference CHANGE in a SEPARATE thread → exactly ONE colour fact (replaced, not duplicated) ──
+  console.log("[demo-harness] CHANGE→ONE-FACT: state colour change in a NEW thread → exactly one colour fact (the new value)");
+  const colourCountBeforeChange = countColourFacts(tmpDir);
+  const threadChange = crypto.randomUUID();
+  await wsTurnAndSettle(PORT, token, { threadId: threadChange, text: "Мій улюблений колір тепер зелений" });
+  const colourCountAfterChange = countColourFacts(tmpDir);
+
+  const verifyStoreChange = new MemoryStore({ dataDir: tmpDir });
+  const colourFactsAfter = verifyStoreChange.rawDb()
+    .query("SELECT id, fact FROM distilled_facts WHERE fact LIKE '%синій%' OR fact LIKE '%зелений%' OR fact LIKE '%колір%' OR fact LIKE '%Люблю%'")
+    .all() as { id: string; fact: string }[];
+  verifyStoreChange.close();
+
+  const exactlyOneColour = colourFactsAfter.length === 1;
+  const isNewValue = colourFactsAfter.some((f) => f.fact.includes("зелений"));
+  const noStaleBlue = !colourFactsAfter.some((f) => f.fact.includes("синій"));
+  console.log(`[demo-harness] CHANGE→ONE-FACT: colour facts before=${colourCountBeforeChange} after=${colourCountAfterChange}; rows=[${colourFactsAfter.map((f) => `"${f.fact}"`).join(", ")}]`);
+
+  if (MODE === "stub") {
+    if (!exactlyOneColour) {
+      console.error(`[demo-harness] CHANGE→ONE-FACT: RED — expected exactly 1 colour fact, found ${colourFactsAfter.length} (a genuine change DUPLICATED instead of replacing — Part 1 all-facts-candidate not applied).`);
+      await cleanup(); process.exit(1);
+    }
+    if (!isNewValue || !noStaleBlue) {
+      console.error(`[demo-harness] CHANGE→ONE-FACT: RED — the single colour fact is not the new value (green) / a stale blue survives.`);
+      await cleanup(); process.exit(1);
+    }
+    console.log("[demo-harness] CHANGE→ONE-FACT: GREEN — exactly one colour fact, replaced to the new value (no duplicate).");
+  } else {
+    console.log(`[demo-harness] CHANGE→ONE-FACT: informational (real mode, LLM-fuzzy) — exactlyOne=${exactlyOneColour} isNewValue=${isNewValue} noStaleBlue=${noStaleBlue}. The candidate pool now DETERMINISTICALLY includes the colour fact (verify via the MEMORY_DEBUG distill 'candidates' list).`);
+  }
+  console.log("");
+
   // ── SEQUENCE STEP 5: Forget ONE fact (HTTP) — C FIX VERIFICATION ────────
   console.log("[demo-harness] STEP 5: Forget ONE fact (HTTP) — C fix: forgetFactById");
 
@@ -976,7 +1010,7 @@ try {
 
   // ── Summary ───────────────────────────────────────────────────────────────
   console.log("╔══════════════════════════════════════════════════════════════════════════════╗");
-  console.log("║  HARNESS COMPLETE — v2-08 post-fix verification run                         ║");
+  console.log("║  HARNESS COMPLETE — v2-09 post-fix verification run                         ║");
   console.log("║                                                                              ║");
   console.log("║  C: forgetFactById — exactly 1 fact deleted (GREEN = fix applied)           ║");
   console.log("║  B: no rewording — colour byte-stable across N recall turns (GREEN)         ║");
@@ -988,8 +1022,10 @@ try {
   console.log("║     (stub hard assert: process.exit(1) if recall lost — v2-08 fix A)       ║");
   console.log("║  DEDUP-AFTER-RECALL: colour recall → colour fact count stable (stub=hard)  ║");
   console.log("║     (stub hard assertion: process.exit(1) if new/dup colour fact created)  ║");
+  console.log("║  CHANGE→ONE-FACT: colour CHANGE in separate thread → exactly 1 colour fact ║");
+  console.log("║     (stub hard assert: process.exit(1) if duplicate — v2-09 Part 1+3)      ║");
   console.log("║                                                                              ║");
-  console.log("║  Paste this stdout into the PR body = Strike-5 EXECUTED evidence (v2-08).  ║");
+  console.log("║  Paste this stdout into the PR body = Strike-5 EXECUTED evidence (v2-09).  ║");
   console.log("╚══════════════════════════════════════════════════════════════════════════════╝");
   console.log("");
 

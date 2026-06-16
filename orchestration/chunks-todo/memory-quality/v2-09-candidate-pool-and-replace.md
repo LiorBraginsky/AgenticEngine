@@ -1,6 +1,6 @@
 # Chunk v2-09: candidate-pool = all facts (genuine change → replace, not duplicate) + over-correction prompt
 
-**Status:** todo
+**Status:** in-progress
 **Created:** 2026-06-16
 **Phase:** memory-distiller-v2 (spec `docs/specs/2026-06-13-memory-distiller-v2.md`; ADR-0012 + 2026-06-13 STABILITY amendment; spec §3.2 B1 full-corpus)
 **Depends on / BRANCH:** the branch **`chunk/v2-09-candidate-pool-and-replace` ALREADY EXISTS and is checked out** (stacked on v2-08). **CONTINUE on it — do NOT re-branch.** On demo-green the conductor merges the whole stack (v2-05+06+07+08+09) to main.

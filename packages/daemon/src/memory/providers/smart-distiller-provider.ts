@@ -435,7 +435,7 @@ export interface SmartDistillerOptions {
  *   1. Read distilled_through_turn (resilient, R2).
  *   2. readNewTailSince(threadId, distilled_through_turn) — filter tombstones/quarantine.
  *   3. Empty tail → short-circuit {ops:[], candidateIds:[]} (no LLM call).
- *   4. Build tail text; fetchCandidates(tailText) (≤K=10, FTS5/BM25 full corpus).
+ *   4. Build tail text; fetchCandidates(tailText) — ALL facts when corpus ≤ ALL_FACTS_CAP (50); FTS5/BM25 (≤ CANDIDATE_TOP_K) above the cap.
  *   5. Build numbered candidate pool (1..K → {fact, topics}).
  *   6. ONE LLM call (SMART_DELTA_SYSTEM_PROMPT; outside any tx — Phase-1 compute seam).
  *   7. stop_reason guard → throw SmartDistillError({truncated:true}).

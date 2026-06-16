@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { SCHEMA_DDL, REDACTION_MARKER } from "./schema.js";
 import type { SessionMessage } from "../providers/provider.js";
 import type { DistilledFact } from "./memory-provider.js";
-import { normalizeFactText } from "./normalize-fact-text.js";
+import { normalizeFactText, dedupConnectorKey } from "./normalize-fact-text.js";
 
 export interface MemoryStoreOptions {
   /** Directory for the SQLite file + the threads/ JSONL mirror. */
@@ -475,6 +475,29 @@ export class MemoryStore {
     }
 
     return filtered;
+  }
+
+  /**
+   * v2-08 refined-B dedup (bus q#013): true iff ANY existing fact matches `text` on
+   * EITHER the normalized key (symmetric base — fact_fts.canonical is stored VERBATIM
+   * by writeFactDerived, so we normalizeFactText the STORED side too) OR the connector
+   * key (closed function-word strip; collapses "is blue"/"blue", never negations). The
+   * connector clause subsumes the base; both kept explicit for legibility. Scans the
+   * bounded fact corpus (dogfood scale). READ-ONLY: callers use it to SUPPRESS a new
+   * insert only — it never mutates a row (STABILITY untouched by construction).
+   */
+  factExistsByDedupKey(text: string): boolean {
+    const norm = normalizeFactText(text);
+    if (norm === "") return false;
+    const conn = dedupConnectorKey(text);
+    const rows = this.db
+      .query(
+        `SELECT COALESCE(f.canonical, d.fact) AS key
+           FROM distilled_facts d
+           LEFT JOIN fact_fts f ON f.fact_id = d.id`,
+      )
+      .all() as { key: string }[];
+    return rows.some((r) => normalizeFactText(r.key) === norm || dedupConnectorKey(r.key) === conn);
   }
 
   /** Returns true if a tombstone mutation exists for the given messageId. */

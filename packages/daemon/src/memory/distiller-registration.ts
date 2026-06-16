@@ -247,13 +247,13 @@ async function distillOneThread(
           const appended = store.appendToFactById(targetId, op.fact, mergedCanonical);
           if (!appended) {
             // Cap hit or id absent — demote to new.
-            // v2-07 E-b dedup guard: never insert a new/demoted fact whose canonical already exists (no-op instead).
-            // Exact-canonical, conservative — the LLM's candidate-fetch handles reworded near-duplicates
-            // (spec §3.2 Failure-mode-B). Operationalizes the STABILITY amendment's redundant-fact mitigation.
-            const dedupRow = store.rawDb()
-              .query("SELECT 1 FROM fact_fts WHERE canonical = ? LIMIT 1")
-              .get(newItemCanonical);
-            if (dedupRow) {
+            // v2-08 refined-B dedup (bus q#013): SUPPRESS-ONLY existence check over ALL facts —
+            // symmetric normalize (stored canonical is verbatim) + closed connector-strip key.
+            // Only no-ops a NEW/demoted insert here; never reaches replace/normal-append, so it
+            // never mutates an existing row (STABILITY untouched by construction). E-a (prompt)
+            // is the first line; this is the deterministic backstop for when E-a leaks.
+            const dedupHit = store.factExistsByDedupKey(newItemCanonical);
+            if (dedupHit) {
               memDebug("distill", {
                 threadId,
                 dedupSkipped: previewStr(op.fact),
@@ -269,13 +269,13 @@ async function distillOneThread(
           }
         } else {
           // new (original or demoted).
-          // v2-07 E-b dedup guard: never insert a new/demoted fact whose canonical already exists (no-op instead).
-          // Exact-canonical, conservative — the LLM's candidate-fetch handles reworded near-duplicates
-          // (spec §3.2 Failure-mode-B). Operationalizes the STABILITY amendment's redundant-fact mitigation.
-          const dedupRow = store.rawDb()
-            .query("SELECT 1 FROM fact_fts WHERE canonical = ? LIMIT 1")
-            .get(newItemCanonical);
-          if (dedupRow) {
+          // v2-08 refined-B dedup (bus q#013): SUPPRESS-ONLY existence check over ALL facts —
+          // symmetric normalize (stored canonical is verbatim) + closed connector-strip key.
+          // Only no-ops a NEW/demoted insert here; never reaches replace/normal-append, so it
+          // never mutates an existing row (STABILITY untouched by construction). E-a (prompt)
+          // is the first line; this is the deterministic backstop for when E-a leaks.
+          const dedupHit = store.factExistsByDedupKey(newItemCanonical);
+          if (dedupHit) {
             memDebug("distill", {
               threadId,
               dedupSkipped: previewStr(op.fact),

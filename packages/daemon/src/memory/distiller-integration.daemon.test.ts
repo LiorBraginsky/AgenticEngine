@@ -744,6 +744,117 @@ test("v2-07 E-b dedup guard: second new op with same canonical is a no-op (no du
   store.close();
 });
 
+// ─── v2-08 refined-B: connector-strip dedup guard integration tests ──────────
+//
+// (a) cited case: seed "favorite color blue" (raw canonical), second dismiss emits
+//     new op "favorite color is blue" (connector variant) → count stays 1; FTS=DF.
+// (b) hazard: second op "favorite color is not blue" → count becomes 2 (NOT suppressed).
+// (c) suppress-only routing: after the cited-case dismiss the ORIGINAL fact row id +
+//     fact/canonical text are byte-identical (replace/merge would have rewritten it).
+
+/** Scripted stub for the cited connector-variant case (v2-08 refined-B). */
+function makeConnectorDedupStub(secondCanonical: string): Anthropic {
+  let callCount = 0;
+  return {
+    messages: {
+      create: async () => {
+        callCount++;
+        if (callCount === 1) {
+          // First dismiss: seed with RAW connector-free canonical
+          const ops = [{ op: "new", fact: "favorite color blue", canonical: "favorite color blue", topics: [] }];
+          return { content: [{ type: "text", text: JSON.stringify(ops) }], stop_reason: "end_turn" };
+        }
+        // Second dismiss: connector-variant canonical (or negation for hazard test)
+        const ops = [{ op: "new", fact: `favorite color: ${secondCanonical}`, canonical: secondCanonical, topics: [] }];
+        return { content: [{ type: "text", text: JSON.stringify(ops) }], stop_reason: "end_turn" };
+      },
+    },
+  } as unknown as Anthropic;
+}
+
+test("v2-08 refined-B (a) cited case: connector variant new op is a no-op (count stays 1, FTS=DF)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mq08-connector-"));
+  const store = new MemoryStore({ dataDir: dir });
+  const hook = new ConsolidationHook(store);
+  // Use connector-variant canonical — "favorite color is blue" vs seed "favorite color blue"
+  const smart = new SmartDistillerProvider({ client: makeConnectorDedupStub("favorite color is blue") });
+  registerDistiller(hook, store, smart, new RuleBasedScanner());
+
+  // Thread 1: seed the colour fact (raw connector-free canonical)
+  const t1 = store.createThread();
+  store.appendMessages(t1, [{ role: "user", content: "favorite color blue" }], "s1");
+  await hook.dismiss([t1]);
+
+  // Snapshot the seed row id + fact + canonical (for suppress-only assert below)
+  const seedRows = store.rawDb()
+    .query("SELECT d.id, d.fact, f.canonical FROM distilled_facts d JOIN fact_fts f ON f.fact_id = d.id")
+    .all() as { id: string; fact: string; canonical: string }[];
+  expect(seedRows).toHaveLength(1);
+  const seedId = seedRows[0]!.id;
+  const seedFact = seedRows[0]!.fact;
+  const seedCanonical = seedRows[0]!.canonical;
+
+  // Thread 2: same store, scripted stub emits connector variant "favorite color is blue"
+  const t2 = store.createThread();
+  store.appendMessages(t2, [{ role: "user", content: "favorite color is blue" }], "s2");
+  await hook.dismiss([t2]);
+
+  // (a) cited case: count still 1 (connector variant was suppressed)
+  const afterRows = store.rawDb()
+    .query("SELECT d.id, d.fact, f.canonical FROM distilled_facts d JOIN fact_fts f ON f.fact_id = d.id")
+    .all() as { id: string; fact: string; canonical: string }[];
+  const colourFacts = afterRows.filter((f) => f.canonical.includes("favorite color"));
+  expect(colourFacts).toHaveLength(1);
+
+  // count-equality: COUNT(fact_fts) == COUNT(distilled_facts) (no orphan)
+  const ftsCount = (store.rawDb().query("SELECT COUNT(*) AS c FROM fact_fts").get() as { c: number }).c;
+  const dfCount = (store.rawDb().query("SELECT COUNT(*) AS c FROM distilled_facts").get() as { c: number }).c;
+  expect(ftsCount).toBe(dfCount);
+
+  // (c) suppress-only routing: the original row is byte-identical (replace/merge would rewrite it)
+  const afterSeedRow = store.rawDb()
+    .query("SELECT id, fact, canonical FROM distilled_facts d JOIN fact_fts f ON f.fact_id = d.id WHERE d.id = ?")
+    .get(seedId) as { id: string; fact: string; canonical: string } | null;
+  expect(afterSeedRow).not.toBeNull();
+  expect(afterSeedRow!.id).toBe(seedId);
+  expect(afterSeedRow!.fact).toBe(seedFact);
+  expect(afterSeedRow!.canonical).toBe(seedCanonical);
+
+  store.close();
+});
+
+test("v2-08 refined-B (b) hazard: negation variant is NOT suppressed (count becomes 2)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mq08-hazard-"));
+  const store = new MemoryStore({ dataDir: dir });
+  const hook = new ConsolidationHook(store);
+  // Hazard: second op emits "favorite color is not blue" — must NOT be suppressed
+  const smart = new SmartDistillerProvider({ client: makeConnectorDedupStub("favorite color is not blue") });
+  registerDistiller(hook, store, smart, new RuleBasedScanner());
+
+  // Thread 1: seed
+  const t1 = store.createThread();
+  store.appendMessages(t1, [{ role: "user", content: "favorite color blue" }], "s1");
+  await hook.dismiss([t1]);
+
+  // Thread 2: negation variant — must NOT be suppressed (distinct fact)
+  const t2 = store.createThread();
+  store.appendMessages(t2, [{ role: "user", content: "favorite color is not blue" }], "s2");
+  await hook.dismiss([t2]);
+
+  // (b) hazard: count is 2 — the negation was NOT suppressed
+  const afterRows = store.rawDb()
+    .query("SELECT d.id, f.canonical FROM distilled_facts d JOIN fact_fts f ON f.fact_id = d.id")
+    .all() as { id: string; canonical: string }[];
+  expect(afterRows).toHaveLength(2);
+
+  // count-equality holds
+  const ftsCount = (store.rawDb().query("SELECT COUNT(*) AS c FROM fact_fts").get() as { c: number }).c;
+  const dfCount = (store.rawDb().query("SELECT COUNT(*) AS c FROM distilled_facts").get() as { c: number }).c;
+  expect(ftsCount).toBe(dfCount);
+
+  store.close();
+});
+
 // ─── v2-07 Step 3.6: overlapping-dismiss integration test ────────────────────
 //
 // Dismiss thread A (fires an in-flight delayed distill), immediately beginTurn a new

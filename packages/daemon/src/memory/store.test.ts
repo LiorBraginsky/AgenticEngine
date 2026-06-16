@@ -887,3 +887,19 @@ test("v2-06: readDistilledFactsForThread returns rows with a non-empty uuid id",
   expect(rows[0]!.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
   store.close();
 });
+
+// ── v2-08 refined-B: factExistsByDedupKey ────────────────────────────────────
+
+test("v2-08 refined-B: factExistsByDedupKey matches case/whitespace/punct (base) AND connector variants, never different facts", () => {
+  const { store } = freshStore();
+  // Seed a fact with verbatim LLM casing/punct canonical (as writeFactDerived stores it)
+  store.insertFact(
+    { fact: "Favorite color blue.", canonical: "Favorite Color Blue.", topics: [], provenance: "thread:x", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
+    "test",
+  );
+  expect(store.factExistsByDedupKey("  favorite color blue  ")).toBe(true);   // base: case/ws/punct
+  expect(store.factExistsByDedupKey("favorite color is blue")).toBe(true);    // connector: the cited case
+  expect(store.factExistsByDedupKey("favorite color is not blue")).toBe(false); // hazard: stays separate
+  expect(store.factExistsByDedupKey("favorite color red")).toBe(false);       // genuinely different
+  store.close();
+});

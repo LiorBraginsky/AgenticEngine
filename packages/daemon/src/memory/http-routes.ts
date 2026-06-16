@@ -134,33 +134,33 @@ async function handleForget(req: Request, deps: MemoryHttpDeps): Promise<Respons
   const parsed = await parseBody(req);
   if (!parsed.ok) return Response.json({ error: "bad_body" }, { status: 400 });
 
-  const { target_type, fact_text, provenance, reason, fact_id } = parsed.data;
+  const { target_type, reason, fact_id } = parsed.data;
   // reason is optional
   const reasonStr = typeof reason === "string" ? reason : undefined;
 
   // v2-04: fact-forget is the ONLY user forget path (D-V6a-bis).
   // target_type:"message" user route REMOVED — returns 400 bad_body.
-  // also_forget_sources (option B) REMOVED — plain forgetFact always called.
+  // also_forget_sources (option B) REMOVED — forgetFactById is always called.
   //
-  // v2-06 C-fix: if fact_id is present (uuid-shaped), route to forgetFactById (precise delete).
-  // Falls back to forgetFact (text+provenance) for back-compat when fact_id is absent.
+  // v2-07: target_type:fact REQUIRES a valid uuid-shaped fact_id (the precise
+  // durable-delete intent). The text/provenance forgetFact path is NO LONGER
+  // HTTP-reachable (it over-deletes all facts sharing a thread provenance —
+  // store.ts deleteMachineFactsByForget). history.html always sends fact_id.
+  // The WriteGate.forgetFact primitive survives for its unit tests but has no
+  // caller route.
   try {
     if (target_type === "fact") {
       // FACT path — durable delete of the stable-id row, never scrubs (B1 structural invariant)
-      if (typeof fact_id === "string" && fact_id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(fact_id)) {
-        // v2-06: forgetFactById — the precise intent path (fact_id present + uuid-shaped)
+      // v2-07: fact_id REQUIRED and must be uuid-shaped; any other shape → 400 bad_body.
+      const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      if (typeof fact_id === "string" && fact_id && UUID_RE.test(fact_id)) {
+        // Precise durable-delete: exactly the targeted stable-id row (never over-deletes)
         deps.hatch.forgetFactById(fact_id, HTTP_CTX, reasonStr);
         return new Response(null, { status: 204 });
       }
-      // Back-compat: fall through to text/provenance-based forgetFact
-      if (typeof fact_text !== "string" || !fact_text) {
-        return Response.json({ error: "bad_body" }, { status: 400 });
-      }
-      if (typeof provenance !== "string" || !provenance) {
-        return Response.json({ error: "bad_body" }, { status: 400 });
-      }
-      deps.hatch.forgetFact(fact_text, provenance, HTTP_CTX, reasonStr);
-      return new Response(null, { status: 204 });
+      // fact_id absent or not uuid-shaped → 400 bad_body
+      // (The text/provenance forgetFact fallback is removed — it was the over-delete root.)
+      return Response.json({ error: "bad_body" }, { status: 400 });
     } else {
       // target_type:"message", missing, or any unrecognised value → 400 bad_body
       return Response.json({ error: "bad_body" }, { status: 400 });

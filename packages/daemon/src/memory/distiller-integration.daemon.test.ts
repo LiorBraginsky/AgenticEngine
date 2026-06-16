@@ -743,3 +743,96 @@ test("v2-07 E-b dedup guard: second new op with same canonical is a no-op (no du
 
   store.close();
 });
+
+// ─── v2-07 Step 3.6: overlapping-dismiss integration test ────────────────────
+//
+// Dismiss thread A (fires an in-flight delayed distill), immediately beginTurn a new
+// thread B. Assert that B's retrieve INCLUDES A's just-committed fact (the whenIdle
+// wait blocked retrieve until the in-flight distill settled).
+//
+// This is the deterministic integration counterpart to the harness A-race test.
+
+/** Delayed echo stub: introduces a 50ms artificial delay before returning ops.
+ * Mirrors the A_RACE_DELAY_MS pattern in the harness scripted client.
+ * The delay ensures the distill from thread A is still "in-flight" when
+ * thread B's beginTurn fires — the whenIdle wait must block B's retrieve
+ * until A's distill commits. */
+function makeDelayedEchoStub(delayMs: number): Anthropic {
+  return {
+    messages: {
+      create: async (params: { messages: { role: string; content: string }[] }) => {
+        // Parse the tail text and produce ops (same logic as makeEchoStub)
+        const userContent = params.messages[0]?.content ?? "";
+        const lines = userContent.split("\n");
+        const ops: { op: string; fact: string; canonical: string; topics: string[] }[] = [];
+        for (const line of lines) {
+          const m = line.match(/^\[([^\|]+)\|([^\]]+)\]\s+(.+)$/);
+          if (m) {
+            ops.push({
+              op: "new",
+              fact: m[3]!,
+              canonical: m[3]!.toLowerCase(),
+              topics: [],
+            });
+          }
+        }
+        // Inject artificial delay — mirrors the race window in the harness A test
+        await new Promise((r) => setTimeout(r, delayMs));
+        return {
+          content: [{ type: "text", text: JSON.stringify(ops) }],
+          stop_reason: "end_turn",
+        };
+      },
+    },
+  } as unknown as Anthropic;
+}
+
+test("v2-07: overlapping-dismiss — thread B retrieve INCLUDES thread A's in-flight fact (whenIdle blocks until distill commits)", async () => {
+  const DELAY_MS = 50; // artificial distill delay to create the race window
+
+  const dir = mkdtempSync(join(tmpdir(), "mq07-overlap-"));
+  const store = new MemoryStore({ dataDir: dir });
+  const gate = new WriteGate(store, new RuleBasedScanner());
+  const hook = new ConsolidationHook(store);
+  const smart = new SmartDistillerProvider({ client: makeDelayedEchoStub(DELAY_MS) });
+
+  // registerDistiller returns { whenIdle } — the hook that signals distill completion.
+  const { whenIdle } = registerDistiller(hook, store, smart, new RuleBasedScanner());
+
+  // Thread A: append message and dismiss (fires the delayed distill asynchronously)
+  const tA = store.createThread();
+  store.appendMessages(tA, [{ role: "user", content: "city is tel aviv" }], "sA");
+
+  // Start the dismiss but do NOT await it — the delayed stub means distill is in-flight
+  const dismissPromise = hook.dismiss([tA]);
+
+  // Immediately construct thread B lifecycle with the whenIdle hook.
+  // beginTurn for a NEW thread calls whenIdle() and blocks until distill commits.
+  // Thread B opens WHILE thread A's distill is in-flight (within the 50ms window).
+  const lifecycle = new ThreadLifecycle(
+    store,
+    gate,
+    new DumbTailProvider(), // memoryProvider for retrieve
+    whenIdle,               // whenIdle hook: waits for the in-flight distill
+    5000,                   // standard timeout
+  );
+
+  // beginTurn races the in-flight distill — whenIdle blocks it until A's distill commits
+  const beginResult = await lifecycle.beginTurn({ type: "session_start", trigger: "user", text: "what is my city?" });
+
+  // Ensure the dismiss settled (no dangling promise)
+  await dismissPromise;
+
+  // Assert: B's priorMessages INCLUDE A's just-committed fact
+  // (the whenIdle wait blocked retrieve until the delayed distill wrote the row)
+  const priorContents = beginResult.priorMessages.map((m) => m.content);
+  const cityFactInjected = priorContents.some((c) => c.includes("city is tel aviv"));
+  expect(cityFactInjected).toBe(true);
+
+  // Count-equality: no orphan rows after the in-flight distill completed
+  const ftsCount2 = (store.rawDb().query("SELECT COUNT(*) AS c FROM fact_fts").get() as { c: number }).c;
+  const factsCount2 = (store.rawDb().query("SELECT COUNT(*) AS c FROM distilled_facts").get() as { c: number }).c;
+  expect(ftsCount2).toBe(factsCount2);
+
+  store.close();
+});

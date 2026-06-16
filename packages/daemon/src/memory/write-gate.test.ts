@@ -396,3 +396,32 @@ test("v2-06: forgetFactById is idempotent (calling with a non-existent id is a n
   expect(() => gate.forgetFactById("00000000-0000-0000-0000-000000000000", humanCtx)).not.toThrow();
   store.close();
 });
+
+test("v2-07: forgetFactById with human ctx CAN delete a human-authored fact (5a seam)", () => {
+  // 5a: the user (HTTP_CTX, authored_by:"human") CAN delete their own facts,
+  // including human-authored ones. This is the COMPLEMENT of the 5e test above
+  // (machine ctx CANNOT delete human-authored facts).
+  // The 5e guard: if (authored_by === "human" && ctx.authored_by === "machine") → refuse.
+  // When ctx.authored_by === "human", the guard FALLS THROUGH → deleteFactById is called.
+  const { store, gate } = fresh();
+  const t = store.createThread();
+
+  // Seed a human-authored fact
+  store.insertDistilledFacts([
+    { fact: "human pinned favourite", provenance: `thread:${t}`, scope: "cross-thread", expiry: null, confidence: 1, authored_by: "human" as "machine" },
+  ], "v2-07-5a-test");
+
+  const facts = store.readDistilledFacts(10);
+  expect(facts.length).toBe(1);
+  const humanFactId = facts[0]!.id;
+
+  // Human ctx (same as HTTP_CTX) MUST be able to delete the human-authored row (5a)
+  const humanCtx = { actor: "user", authored_by: "human" as const };
+  gate.forgetFactById(humanFactId, humanCtx);
+
+  // The fact must be GONE (5a: user can delete their own human-authored facts)
+  const afterFacts = store.readDistilledFacts(10);
+  expect(afterFacts.length).toBe(0);
+
+  store.close();
+});

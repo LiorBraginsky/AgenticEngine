@@ -147,12 +147,19 @@ test("T2.1c-1: POST /memory/forget without Authorization header → 401", async 
 
 // Test: POST /memory/forget target_type=fact → 204, message content intact.
 // B1 at the HTTP boundary: fact-forget must not scrub the source message.
-test("T2.1c-6: POST /memory/forget target_type=fact does NOT scrub the source message", async () => {
+// v2-07: updated to send a valid fact_id (the text/provenance fallback is removed).
+test("T2.1c-6: POST /memory/forget target_type=fact with fact_id does NOT scrub the source message", async () => {
   const token = readToken();
-  // Seed a fresh message for the fact-forget test (seeded message may be tombstoned)
+  // Seed a fresh message + one fact for the fact-forget test (seeded message may be tombstoned)
   const setupStore = new MemoryStore({ dataDir: sharedDataDir });
   const factTestThread = setupStore.createThread("fact-forget-test-thread");
   const [factTestMsgId] = setupStore.appendMessages(factTestThread, [{ role: "user", content: "fact source content" }], "fact-test");
+  // Insert a fact to get a valid fact_id (v2-07: fact_id required)
+  setupStore.insertDistilledFacts([
+    { fact: "fav colour blue", provenance: factTestMsgId!, scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
+  ], "t21c6-test");
+  const t21c6Facts = setupStore.readDistilledFacts(10);
+  const t21c6Fact = t21c6Facts.find((f) => f.fact === "fav colour blue")!;
   setupStore.close();
 
   const res = await fetch(`http://127.0.0.1:${PORT}/memory/forget`, {
@@ -161,7 +168,7 @@ test("T2.1c-6: POST /memory/forget target_type=fact does NOT scrub the source me
       "Content-Type": "application/json",
       Authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify({ target_type: "fact", fact_text: "fav colour blue", provenance: factTestMsgId!, reason: "test" }),
+    body: JSON.stringify({ target_type: "fact", fact_id: t21c6Fact.id, fact_text: "fav colour blue", provenance: factTestMsgId!, reason: "test" }),
   });
   expect(res.status).toBe(204);
 
@@ -388,11 +395,12 @@ test("v2-04: GET /memory/cofed → 404 (route removed)", async () => {
   expect(res.status).toBe(404);
 });
 
-// 2.1c: POST /memory/forget target_type=fact with also_forget_sources:true behaves as
-// plain fact-forget (flag is ignored) → 204, source message content stays byte-intact.
-test("v2-04: POST /memory/forget target_type=fact with also_forget_sources:true → 204, source message intact", async () => {
+// 2.1c: POST /memory/forget target_type=fact REQUIRES a valid fact_id (v2-07).
+// also_forget_sources flag is ignored; the source message is byte-intact.
+// Updated by v2-07 to send a valid fact_id (the text/provenance fallback is removed).
+test("v2-07: POST /memory/forget target_type=fact with fact_id → 204, source message intact (also_forget_sources flag ignored)", async () => {
   const token = readToken();
-  // Seed a fresh message whose id is used as provenance for the fact.
+  // Seed a fresh message + one fact whose id will be sent as fact_id.
   const setupStore = new MemoryStore({ dataDir: sharedDataDir });
   const atsThread = setupStore.createThread("also-forget-sources-test");
   const [atsMsgId] = setupStore.appendMessages(
@@ -400,6 +408,12 @@ test("v2-04: POST /memory/forget target_type=fact with also_forget_sources:true 
     [{ role: "user", content: "source content stays intact" }],
     "ats-session",
   );
+  // Insert one fact to get a real fact_id
+  setupStore.insertDistilledFacts([
+    { fact: "some fact to forget", provenance: atsMsgId!, scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
+  ], "ats-test");
+  const atsFacts = setupStore.readDistilledFacts(10);
+  const atsFact = atsFacts.find((f) => f.fact === "some fact to forget")!;
   setupStore.close();
 
   const res = await fetch(`http://127.0.0.1:${PORT}/memory/forget`, {
@@ -410,13 +424,14 @@ test("v2-04: POST /memory/forget target_type=fact with also_forget_sources:true 
     },
     body: JSON.stringify({
       target_type: "fact",
+      fact_id: atsFact.id,       // v2-07: required
       fact_text: "some fact to forget",
       provenance: atsMsgId!,
-      also_forget_sources: true,
-      reason: "v2-04-test",
+      also_forget_sources: true,  // still ignored
+      reason: "v2-07-test",
     }),
   });
-  // The flag is ignored → plain fact-forget → 204
+  // fact_id present + uuid-shaped → forgetFactById → 204
   expect(res.status).toBe(204);
 
   // Source message content must be byte-intact (not scrubbed — fact-forget never scrubs)
@@ -426,6 +441,45 @@ test("v2-04: POST /memory/forget target_type=fact with also_forget_sources:true 
   const msg = archive.find((m) => m.id === atsMsgId);
   expect(msg).toBeDefined();
   expect(msg!.content).toBe("source content stays intact");
+});
+
+// ---- v2-07 Step 3.2: HTTP forget REQUIRES fact_id for target_type=fact (RED→GREEN) ----
+
+test("v2-07: POST /memory/forget target_type=fact with NO fact_id → 400 bad_body (text/provenance fallback removed)", async () => {
+  // RED (on pre-v2-07 code): the fallback returned 204 via forgetFact(text, provenance).
+  // GREEN (post-v2-07): the fallback is removed; missing fact_id → 400 bad_body.
+  const token = readToken();
+  const res = await fetch(`http://127.0.0.1:${PORT}/memory/forget`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      target_type: "fact",
+      fact_text: "some fact text",
+      provenance: "thread:00000000-0000-0000-0000-000000000001",
+      // NO fact_id — the over-deleting fallback path that is now removed
+    }),
+  });
+  expect(res.status).toBe(400);
+  const body = await res.json() as { error: string };
+  expect(body.error).toBe("bad_body");
+});
+
+test("v2-07: POST /memory/forget target_type=fact with malformed fact_id → 400 bad_body", async () => {
+  // A non-uuid-shaped fact_id must be rejected (not routed to forgetFactById).
+  const token = readToken();
+  const res = await fetch(`http://127.0.0.1:${PORT}/memory/forget`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      target_type: "fact",
+      fact_id: "not-a-uuid",
+      fact_text: "some fact text",
+      provenance: "thread:00000000-0000-0000-0000-000000000001",
+    }),
+  });
+  expect(res.status).toBe(400);
+  const body = await res.json() as { error: string };
+  expect(body.error).toBe("bad_body");
 });
 
 // ---- v2-06 Step 3 (RED): fact_id routing in handleForget ----

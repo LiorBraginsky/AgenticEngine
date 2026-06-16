@@ -1,4 +1,4 @@
-import { test, expect } from "bun:test";
+import { test, expect, spyOn } from "bun:test";
 import { tmpdir } from "node:os";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
@@ -145,5 +145,46 @@ test("Q1: endTurn stamps role=user messages as human-authored and role=assistant
     { role: "user", content: "user turn" },
     { role: "assistant", content: "assistant turn" },
   ]);
+  store.close();
+});
+
+// ---- v2-07 Step 3.5: whenIdle timeout-branch (proceed-not-hang) ----
+
+test("v2-07: whenIdle that never resolves times out and beginTurn still resolves (proceed-not-hang)", async () => {
+  // Construct ThreadLifecycle with a short timeout (20ms) and a whenIdle that NEVER resolves.
+  // Assert: console.error is called with the timeout message, AND beginTurn resolves
+  // (proceed-not-hang) with the retrieved priorMessages (empty, as there are no prior facts).
+  const dir = mkdtempSync(join(tmpdir(), "mf01-tl-timeout-"));
+  const store = new MemoryStore({ dataDir: dir });
+  const gate = new WriteGate(store, new RuleBasedScanner());
+
+  // whenIdle that NEVER resolves (simulates an in-flight distill that hangs)
+  const neverIdle = () => new Promise<void>(() => { /* intentionally never resolves */ });
+
+  // Pass whenIdleTimeoutMs=20 to the constructor (the optional 5th param)
+  const lifecycle = new ThreadLifecycle(store, gate, undefined, neverIdle, 20);
+
+  const errSpy = spyOn(console, "error").mockImplementation(() => {});
+
+  let resolved = false;
+  const beginPromise = lifecycle.beginTurn({ type: "session_start", trigger: "user", text: "hello" })
+    .then((result) => { resolved = true; return result; });
+
+  const result = await beginPromise;
+
+  // Must have resolved (proceed-not-hang)
+  expect(resolved).toBe(true);
+
+  // priorMessages is the retrieved slice (empty — no distilled facts in this fresh store)
+  expect(Array.isArray(result.priorMessages)).toBe(true);
+
+  // console.error must have been called with the timeout message
+  const errorCalls = errSpy.mock.calls;
+  const timeoutLogFound = errorCalls.some((call) =>
+    typeof call[0] === "string" && call[0].includes("whenIdle timed out"),
+  );
+  expect(timeoutLogFound).toBe(true);
+
+  errSpy.mockRestore();
   store.close();
 });

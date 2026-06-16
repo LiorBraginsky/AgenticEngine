@@ -135,10 +135,11 @@ try {
   console.log("");
 
   // ── Step 4: POST the EXACT request history.html's doForget sends ──────────
-  // Matches the body shape in history-page.ts renderFacts → doForget call:
-  //   { target_type: "fact", fact_text: factText, provenance: provenance, reason: "hatch-forget" }
+  // v2-07: fact_id is now REQUIRED (the text/provenance fallback was the over-delete root
+  // and is no longer HTTP-reachable). The probe already has factId in scope from Step 2.
   const forgetBody = {
     target_type: "fact",
+    fact_id: factId,    // v2-07: required uuid-shaped fact_id → forgetFactById (precise delete)
     fact_text: FACT_TEXT,
     provenance: msgId,
     reason: "v2-04 probe",

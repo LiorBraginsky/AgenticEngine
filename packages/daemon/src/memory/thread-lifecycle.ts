@@ -14,8 +14,9 @@ const TAIL_LIMIT = 50;
 /**
  * Bounded-wait timeout (ms) for whenIdle before proceeding with retrieve.
  * On timeout: log + proceed anyway (never hang).
+ * The default is 5000ms. Pass a custom value to the constructor for tests.
  */
-const WHEN_IDLE_TIMEOUT_MS = 5000;
+const WHEN_IDLE_TIMEOUT_MS_DEFAULT = 5000;
 
 /**
  * ThreadLifecycle — the SINGLE place the MF-01 behavioral change lives (§7.1).
@@ -46,13 +47,19 @@ export class ThreadLifecycle {
   private readonly sessionToThread = new Map<string, string>();
   /** How many messages were hydrated (from the durable store) at beginTurn for each session. */
   private readonly sessionHydratedCount = new Map<string, number>();
+  private readonly whenIdleTimeoutMs: number;
 
   constructor(
     private readonly store: MemoryStore,
     private readonly gate: WriteGate,
     private readonly memoryProvider?: MemoryProvider,
     private readonly whenIdle?: () => Promise<void>,
-  ) {}
+    /** Optional override for the whenIdle bounded-wait timeout (ms). Defaults to 5000.
+     * Pass a small value in tests to keep the test fast. */
+    whenIdleTimeoutMs?: number,
+  ) {
+    this.whenIdleTimeoutMs = whenIdleTimeoutMs ?? WHEN_IDLE_TIMEOUT_MS_DEFAULT;
+  }
 
   async beginTurn(inbound: SessionStart): Promise<{ threadId: string; priorMessages: SessionMessage[] }> {
     const requested = inbound.thread_id;
@@ -76,7 +83,7 @@ export class ThreadLifecycle {
     if (this.whenIdle) {
       let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
       const timeoutPromise = new Promise<"timeout">((res) => {
-        timeoutHandle = setTimeout(() => res("timeout"), WHEN_IDLE_TIMEOUT_MS);
+        timeoutHandle = setTimeout(() => res("timeout"), this.whenIdleTimeoutMs);
       });
       const settled = await Promise.race([
         this.whenIdle().then(() => "idle" as const),
@@ -86,7 +93,7 @@ export class ThreadLifecycle {
       clearTimeout(timeoutHandle);
       if (settled === "timeout") {
         console.error(
-          `[lifecycle] whenIdle timed out after ${WHEN_IDLE_TIMEOUT_MS}ms for new thread ${newThreadId} — proceeding with retrieve`,
+          `[lifecycle] whenIdle timed out after ${this.whenIdleTimeoutMs}ms for new thread ${newThreadId} — proceeding with retrieve`,
         );
         memDebug("retrieve", { forThreadId: newThreadId, whenIdleTimedOut: true });
       }

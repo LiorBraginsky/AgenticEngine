@@ -491,6 +491,25 @@ try {
   console.log(`[demo-harness] STEP 2: recall reply: "${recallReply.reply.slice(0, 100)}"`);
   console.log(`[demo-harness] STEP 2: work recalled: ${workRecalled}`);
 
+  // A′ recall-usage report (v2-07): in real mode, report whether the agent USED
+  // the injected [remembered] fact in its reply (LLM-fuzzy — printed, never hard-asserted).
+  // In stub mode the chat-stub always echoes [remembered] lines, so A' is mechanically true.
+  if (MODE === "real") {
+    // The seeded name fact in thread A contains "Ліор" or "звати"
+    const nameFromFacts = facts1.find((f) => f.fact.includes("Ліор") || f.fact.includes("звати") || f.fact.includes("Мене"));
+    const seededName = nameFromFacts?.fact ?? "Ліор";
+    // Check if the recall reply (from a question about work) references any seeded data
+    // A′ bar: the agent should use injected facts rather than claiming ignorance
+    const replyUsedFact = recallReply.reply.length > 0 &&
+      !recallReply.reply.toLowerCase().includes("don't know") &&
+      !recallReply.reply.toLowerCase().includes("no information") &&
+      !recallReply.reply.toLowerCase().includes("не маю") &&
+      !recallReply.reply.toLowerCase().includes("не знаю");
+    console.log(`[demo-harness] A′ recall-usage (real mode): name fact seeded="${seededName.slice(0, 40)}"`);
+    console.log(`[demo-harness] A′ recall-usage (real mode): reply used injected fact = ${replyUsedFact} (LLM-fuzzy — informational, not hard-asserted)`);
+    console.log(`[demo-harness] A′ recall-usage (real mode): full reply = "${recallReply.reply.slice(0, 200)}"`);
+  }
+
   // Check B defect: colour fact reworded after thread B's dismiss (which distilled
   // the assistant's recall reply and rewrote the colour fact)
   const verifyStoreB2 = new MemoryStore({ dataDir: tmpDir });

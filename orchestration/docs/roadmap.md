@@ -203,6 +203,10 @@ tags: [roadmap, milestones]
 
 ## Memory — next (after memory-distiller-v2, shipped 2026-06-16)
 
+> **Full structured backlog (single source of truth): [[memory-backlog]]** (`docs/memory-backlog.md`) —
+> grouped themes, deferral reasons, ruled-out items, open cases, and the vision anchor. The summary
+> below is the high-level view.
+
 `memory-distiller-v2` shipped the incremental distiller: per-turn cross-thread fact injection,
 durable forget-by-id, suppress-only dedup, stable replace-on-change, and a single-user "all-facts
 candidate pool" (BM25 retained only as the above-cap fallback). The remaining memory work, in

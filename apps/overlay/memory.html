@@ -4,11 +4,53 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>AgenticEngine — Memory</title>
+    <style>
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+      body { font-family: system-ui, -apple-system, sans-serif; font-size: 14px; line-height: 1.5; color: #1a1a1a; background: #f5f5f5; padding: 16px; }
+      h1 { font-size: 20px; font-weight: 600; margin-bottom: 8px; }
+      h2 { font-size: 15px; font-weight: 600; margin: 16px 0 8px; }
+      #conn-state { font-size: 12px; color: #888; margin-bottom: 12px; }
+      .panel { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 14px; margin-bottom: 12px; }
+      .thread-list { list-style: none; }
+      .thread-list-item { padding: 8px 10px; cursor: pointer; border-radius: 4px; border: 1px solid #e8e8e8; margin-bottom: 6px; background: #fafafa; }
+      .thread-list-item:hover { background: #eef4ff; border-color: #c0d4f5; }
+      .thread-title { font-weight: 500; }
+      .thread-meta { color: #888; font-size: 12px; margin-top: 2px; }
+      .message-row { padding: 6px 8px; margin-bottom: 6px; border-left: 3px solid #ddd; background: #fafafa; border-radius: 0 4px 4px 0; }
+      .message-row.role-user { border-color: #6b9ef4; }
+      .message-row.role-assistant { border-color: #84c47a; }
+      .message-role { font-size: 11px; font-weight: 600; text-transform: uppercase; color: #888; }
+      .message-content { white-space: pre-wrap; word-break: break-word; }
+      .fact-row, .event-row { padding: 6px 8px; margin-bottom: 4px; background: #fafafa; border: 1px solid #eee; border-radius: 4px; }
+      .fact-meta { font-size: 11px; color: #999; margin-top: 2px; }
+      .prov-link { color: #2060b0; cursor: pointer; }
+      .facts-count { font-weight: 600; }
+      .zero-count { color: #e07b00; }
+      .event-date { font-size: 11px; color: #aaa; }
+      .empty { color: #aaa; font-style: italic; font-size: 13px; }
+      #thread-view { display: none; }
+      .back-btn { margin-bottom: 12px; font-size: 13px; cursor: pointer; color: #2060b0; background: none; border: none; padding: 0; }
+      .back-btn:hover { text-decoration: underline; }
+    </style>
   </head>
   <body>
     <main id="memory-shell">
       <h1>Memory</h1>
       <p id="conn-state" data-state="checking">Checking connection…</p>
+
+      <div id="thread-list-view">
+        <div class="panel">
+          <h2>Threads</h2>
+          <ul class="thread-list" id="thread-list"></ul>
+        </div>
+      </div>
+
+      <div id="thread-view">
+        <button class="back-btn" id="back-btn">&#8592; Back to threads</button>
+        <div class="panel"><h2>Messages</h2><div id="messages-container"></div></div>
+        <div class="panel"><h2>Distilled facts</h2><div id="facts-container"></div></div>
+        <div class="panel"><h2>Distillation events</h2><div id="events-container"></div></div>
+      </div>
     </main>
     <script type="module" src="/src/memory.ts"></script>
   </body>

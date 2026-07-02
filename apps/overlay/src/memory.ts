@@ -12,13 +12,18 @@
  * half). `createMemoryLiveness` (memory-liveness.ts) adds a periodic re-check plus a forced
  * re-check on window focus/visibility. This is a read-only STATUS POLL — it never changes
  * window visibility, so it is unrelated to gotchas #33/#34.
+ *
+ * chunk-02: adds the real read UI (threads list + thread detail) via createMemoryController,
+ * sharing the single token read here (no second read_auth_token invoke).
  */
 import { invoke } from "@tauri-apps/api/core";
 import { createMemoryLiveness, type ShellState } from "./memory-liveness.js";
+import { createMemoryController } from "./memory/controller.js";
 
-const MEMORY_URL = "http://127.0.0.1:7777/memory/threads";
+const BASE_URL = "http://127.0.0.1:7777";
+const THREADS_URL = `${BASE_URL}/memory/threads`;
 
-function render(state: ShellState, detail?: string): void {
+function renderBanner(state: ShellState, detail?: string): void {
   const el = document.getElementById("conn-state");
   if (el === null) return;
   el.dataset.state = state;
@@ -29,32 +34,37 @@ function render(state: ShellState, detail?: string): void {
     /* connected */            `Connected${detail ? ` (${detail})` : ""}`;
 }
 
+function el(id: string): HTMLElement {
+  const node = document.getElementById(id);
+  if (node === null) throw new Error(`missing #${id}`);
+  return node;
+}
+
 async function main(): Promise<void> {
   let token: string;
-  try {
-    token = (await invoke<string>("read_auth_token")).trim();
-  } catch {
-    render("no-token");
-    return;
-  }
-  if (!token) { render("no-token"); return; }
+  try { token = (await invoke<string>("read_auth_token")).trim(); }
+  catch { renderBanner("no-token"); return; }
+  if (!token) { renderBanner("no-token"); return; }
 
+  // Top-of-window connection banner (chunk-01 liveness poll — unchanged behavior).
   const liveness = createMemoryLiveness({
-    fetchFn: (u, i) => fetch(u, i),
-    url: MEMORY_URL,
-    token,
-    onState: render,
-    intervalMs: 3000,
-    isHidden: () => document.hidden,
+    fetchFn: (u, i) => fetch(u, i), url: THREADS_URL, token,
+    onState: renderBanner, intervalMs: 3000, isHidden: () => document.hidden,
   });
   liveness.start();
-
-  // Forced re-checks: the window survives close (hidden, not destroyed — lib.rs Step 4),
-  // so re-focusing/re-showing it must not show stale state until the next periodic tick.
   window.addEventListener("focus", () => liveness.checkNow());
-  document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) liveness.checkNow();
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) liveness.checkNow(); });
+
+  // Read UI (chunk-02): threads list + thread detail.
+  const controller = createMemoryController({
+    api: { fetchFn: (u, i) => fetch(u, i), baseUrl: BASE_URL, token },
+    els: {
+      listView: el("thread-list-view"), detailView: el("thread-view"),
+      threadListEl: el("thread-list"), messagesEl: el("messages-container"),
+      factsEl: el("facts-container"), eventsEl: el("events-container"), backBtn: el("back-btn"),
+    },
   });
+  controller.start();
 }
 
 void main();

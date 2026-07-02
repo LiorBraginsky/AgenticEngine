@@ -1,8 +1,10 @@
 /**
- * Memory window shell (chunk-01, feature memory-transparency-ui).
- * Proves the auth wiring for chunk-02's real UI: reads the per-install token Rust-side
- * (read_auth_token — no manual paste) and renders an HONEST tri-state from a real
- * token-gated GET /memory/threads. NO threads/facts UI here (that is chunk-02).
+ * Memory window entry point (feature memory-transparency-ui).
+ * Reads the per-install token Rust-side once (read_auth_token — no manual paste),
+ * keeps the chunk-01 liveness connection banner driven by a real token-gated
+ * GET /memory/threads, and starts the chunk-02 read UI (threads list + thread
+ * detail) via createMemoryController — sharing the single token read here (no
+ * second read_auth_token invoke).
  * Token discipline (ADR-0013): Bearer header ONLY — never logged, never in a URL/query.
  * No auto-hide/linger timers (gotchas #33/#34) — this is a normal, user-closed window.
  *
@@ -12,9 +14,6 @@
  * half). `createMemoryLiveness` (memory-liveness.ts) adds a periodic re-check plus a forced
  * re-check on window focus/visibility. This is a read-only STATUS POLL — it never changes
  * window visibility, so it is unrelated to gotchas #33/#34.
- *
- * chunk-02: adds the real read UI (threads list + thread detail) via createMemoryController,
- * sharing the single token read here (no second read_auth_token invoke).
  */
 import { invoke } from "@tauri-apps/api/core";
 import { createMemoryLiveness, type ShellState } from "./memory-liveness.js";

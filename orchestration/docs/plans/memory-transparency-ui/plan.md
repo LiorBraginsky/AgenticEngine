@@ -810,3 +810,906 @@ clause:** if the reviewer judges (a) the Rust process probing the daemon TCP por
   regardless of the true 2B root; Demo-2 confirms.
 - **Tray signal is coarser** (TCP-accept vs full WS/token handshake) and demo-only (no JS unit test) —
   acceptable for a coarse ADR-0006 p.4 glyph; JS-fetch variant is a one-paragraph swap if Lior prefers.
+
+
+---
+---
+
+# ══════════════ CHUNK 2 (appended by orchestrator, 2026-07-02) ══════════════
+
+> Chunk-01 plan is above (shipped, PR #75). Below is chunk-02 (read-side VIEW).
+> Same per-feature plan file; chunk-04 archives the whole file at feature closeout.
+
+# Memory Window — VIEW (threads, facts, provenance) Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. This is **chunk-02** of feature `memory-transparency-ui` (backlog Theme A). Scope is FROZEN by `orchestration/chunks-todo/memory-transparency-ui/02-memory-window-view.md` — you may FLAG problems, do not exceed or edit it.
+
+**Goal:** Grow the shipped chunk-01 `memory` window into the real read UI — a threads list, a thread-detail view (messages + all current distilled facts + distillation events including the "0 facts / deliberately-retained-nothing" event), per-fact thread-level provenance rendered as a jump-link to the source thread's detail, and the expiry/confidence "show only when non-default" display rule — at feature-parity with `history.html`'s read side, native-window, zero token paste.
+
+**Architecture:** Pure, unit-testable data + display modules under `apps/overlay/src/memory/` (fetch mapping, provenance parse, expiry/confidence rule, event labelling) split out of `memory.ts`; thin DOM render + controller glue on top; the daemon is consumed unchanged except one small **additive, flagged** field (`status`) on the existing `GET /memory/threads` payload (the chunk's sanctioned "small additive read gap"). The CORS seam and token-gated read routes already shipped in chunk-01 — no re-touch of the security-adjacent `http-routes.ts`.
+
+**Tech Stack:** Vite multi-page frontend (system WebView, already multi-page — `memory.html` is a registered entry); standard browser `fetch` with `Authorization: Bearer` header; Bun test runner + happy-dom (`test-setup/dom-preload.ts`, root `bunfig.toml`) for DOM render tests; Bun + TypeScript daemon (`bun:sqlite`).
+
+## Global Constraints
+
+Copied verbatim from the chunk + spec + ADRs; every step's requirements implicitly include these:
+
+- **`@agentic/protocol` is FROZEN — `git diff packages/protocol/` MUST be empty.** Any protocol change → **freeze gate** (human review, no auto-merge) → STOP and escalate. This is an engine-owned native surface (ADR-0005), NOT closed-set protocol primitives; adding a `@agentic/protocol` primitive here is a freeze-gate stop.
+- **Token discipline (ADR-0013):** the per-install bearer token travels ONLY in the `Authorization: Bearer <token>` HTTP header on reads. NEVER logged, NEVER in a URL / query string. Read Rust-side via the existing `read_auth_token` command — no manual paste by construction.
+- **Expiry/confidence display rule (spec ruling 2026-07-02):** render these fields **only when non-default** (`expiry !== null`, `confidence !== 1`). Today that means effectively hidden. Build NO scoring / decay / editing — display-only, gated on non-default.
+- **0-fact distillation event** must render as an observable event ("deliberately retained nothing"), matching `history.html` (ADR-0012 decision 5b guarantee).
+- **`HATCH_VIEW_FACT_CAP = 1000`** — the view returns all facts below the cap; **no pagination** (single-user scale). Do not build paging.
+- **OUT of scope (do not build):** edit/forget actions (chunk-03), any change to `history.html` (chunk-04), in-answer provenance affordance (carved out), message-level provenance (closed), new daemon read *routes*.
+- **Two-zone UX intact (ADR-0006):** the memory surface is opened from the tray (chunk-01), not from the launcher summon-flow. Do not touch the launcher/agent-connection path.
+- **No new runtime dependencies** (no ADR budget in this chunk). Dev-only helpers are fine.
+- **CI gate:** `bun test`, `bun run lint:strict` (`--max-warnings=0`), `bun run typecheck` all green.
+
+---
+
+## Status
+
+`Phase 3 — Implementation Plan: Done.` Execution-ready. No blocking open questions — the two design forks (the `status` field, and the disposition of the dead `onConnectionState` tap / retained `set_tray_status`) are resolved below with the lowest-churn call and flagged for the reviewer.
+
+---
+
+## Reality check
+
+All statements below are **code-path existence facts** verified by reading source (paths + lines cited). Per PIPELINE §6.1, no behavioral/runtime claim is asserted as verified; behavioral DoD items are marked **"requires live macOS demo to confirm"** in `## Verification`.
+
+- **The two read routes exist and are token-gated (Bearer).** `packages/daemon/src/memory/http-routes.ts`: `GET /memory/threads` → `handleThreads` (`:107`, `:146-150`) returns `Response.json({ threads: store.listThreads() })` after `tokenStore.verify(authorization)` → `401` on missing/bad (`:147`). `GET /memory/thread/:id` → `handleThread` (`:113`, `:152-170`) decodes the id (malformed `%`-seq → `400 bad_target_shape`, `:161-166`), then token-verifies, then returns `Response.json(await hatch.view(id))` (`:168-169`).
+- **The CORS seam already covers BOTH GET reads.** `handleMemoryHttp` (`:70-97`) wraps `route()` and stamps `Access-Control-Allow-Origin: <reflected>` + `Vary: Origin` on every `/memory/*` response when the origin is allowlisted (`origin.ts` allowlist, never `*`), and answers `OPTIONS` preflight `204`. So chunk-02's GET reads need **ZERO re-touch of `http-routes.ts`**. (Cross-chunk inheritance #1, confirmed in source.)
+- **`hatch.view(id)` returns the full-slice shape.** `packages/daemon/src/memory/hatch.ts:31-64`: `{ messages, distilledFacts, distillationEvents }`. `messages` = `store.readThreadArchive(threadId)` (turn order ASC; tombstoned rows surface as `REDACTION_MARKER` = `"[forgotten]"` — `schema.ts:26`, `store.ts:745-749`). `distilledFacts` = `store.readDistilledFacts(HATCH_VIEW_FACT_CAP=1000)` — **ALL facts in the store (the live projection), newest-first (`derived_at DESC`), NOT scoped to the viewed thread** (`hatch.ts:57-58`, `store.ts:285-290`). `distillationEvents` = `store.readDistillationEvents(threadId)` — for THIS thread, `created_at ASC`, **verbatim incl. `facts_produced===0`** (`hatch.ts:59-62`, `store.ts:710-714`).
+- **Distilled facts carry `thread:<id>` provenance today.** The v2 SmartDistiller stamps `provenance = \`thread:${threadId}\`` for all machine facts (`distiller-registration.ts:178,265,287`). So the per-fact provenance jump-link (parse `thread:<id>` → open that thread's detail) resolves for **real** facts. Legacy/other provenance shapes (bare `messages.id`, comma-joined ids) exist in older/test data and are not client-resolvable to a thread → render as plain text (graceful, `history.html` parity).
+- **`listThreads()` returns `{ thread_id, title, last_active_at }` — NO `status`.** `store.ts:795-799` selects only those three columns. The `threads` table HAS a meaningful `status` column (`schema.ts:33`, `'active' | 'dismissed'`) that **does** transition to `'dismissed'` at dismiss (`consolidation-hook.ts:43` `UPDATE threads SET status = 'dismissed'`). The chunk Scope-IN names "Threads list … with status" → this is the "small + additive read gap the spec anticipates" (Anchors "Backend is ready"). Resolved in Step 1 (additive `status` on the SELECT + return type; NOT a new route, NOT the auth file).
+- **`history.html` (the parity target) is the information reference.** `packages/daemon/src/memory/history-page.ts` renders: thread list (`title || thread_id` + `thread_id · formatDate(last_active_at)`, `:262-275`); messages (`role · turn N` + content via `textContent`, `:303-344`); facts (`f.fact`, then `provenance / scope / authored_by` meta, `:346-391`); events (`"0 facts (deliberately retained nothing)"` when `facts_produced===0` else `"N facts produced"` + trigger + date, `:393-428`). All API strings inserted via `textContent`/`createElement`, NEVER `innerHTML` (XSS discipline, `:12`). `history.html` does NOT render `status` or the expiry/confidence fields — chunk-02 adds status (via Step 1) and the non-default-only expiry/confidence rule.
+- **The chunk-01 shell is on main and reusable.** `apps/overlay/src/memory.ts` reads the token via `invoke("read_auth_token")` and runs `createMemoryLiveness` (`apps/overlay/src/memory-liveness.ts`) → an honest banner (`no-token` / `unreachable` / `unauthorized` / `connected`) on `#conn-state` in `apps/overlay/memory.html`. Reuse this banner as the top-of-window connection state; add per-fetch honest states in the new data views.
+- **`memory.html` is already a registered Vite entry** (chunk-01 plan Step 3.6 added `memory` to `rollupOptions.input`) — confirm `vite.config.ts` still lists it; **no vite change expected**.
+- **DOM tests run under happy-dom.** Root `bunfig.toml` `preload = ["./test-setup/dom-preload.ts"]` sets up `document`/`HTMLElement` globals; `apps/overlay/src/widgets/text-reply.test.ts` is the render-test template (`document.createElement` host + `querySelector`/`textContent` assertions).
+- **Dead-tap disposition (cross-chunk inheritance #3) — DECIDED: LEAVE AS-IS.** Chunk-01 left `ConnectionManager.onConnectionState` (additive, tested, unused by the tray since the Rust TCP poll became the single source) and a retained `set_tray_status` command. The memory window does NOT hold the agent `ConnectionManager` (that's the main window); it uses its own `memory-liveness` poll — so there is nothing here to *consume*. *Removing* the tap would re-touch `connection-manager.ts` (the byte-unchanged agent-connection surface chunk-01 deliberately froze to prove agent semantics unchanged) and `main.ts` for zero functional gain in a read-only view chunk. Lowest-churn + agent-connection-safe call: leave both untouched; noted as out-of-scope hygiene. Do NOT expand the chunk for this.
+- **No scope problem requiring a chunk-file edit.** One flag: the Scope-IN phrase "with status" is delivered via a small additive daemon change (Step 1) rather than pure `history.html` parity (which omits status). See `## Risks & flags`.
+
+---
+
+## Fetched JSON shapes (the contract the overlay depends on)
+
+Frontend declares these locally in `apps/overlay/src/memory/types.ts` — it does **not** import daemon types (the overlay is a separate bundle; `history.html` likewise re-declares). Shapes mirror `hatch.ts` / `store.ts` exactly.
+
+**`GET /memory/threads`** → `200`:
+```jsonc
+{
+  "threads": [
+    {
+      "thread_id": "…uuid…",
+      "title": "…string or null…",
+      "last_active_at": 1730000000000,   // epoch ms
+      "status": "active"                  // "active" | "dismissed" — present ONLY after Step 1 lands (additive; optional in the UI)
+    }
+  ]
+}
+```
+Ordered `last_active_at DESC`. `401` (bad/missing token) → `{ "error": "Unauthorized" }`.
+
+**`GET /memory/thread/:id`** → `200` (the `HatchViewResult`):
+```jsonc
+{
+  "messages": [
+    { "id": "…uuid…", "role": "user", "content": "…text… (or \"[forgotten]\" if tombstoned)" }
+  ],                                       // turn order ASC
+  "distilledFacts": [                      // ALL facts in the store (full slice), newest-first, cap 1000 — NOT thread-scoped
+    {
+      "id": "…uuid…",                      // stable id (chunk-03's forget target; not used for actions here)
+      "fact": "…display text…",
+      "provenance": "thread:…uuid…",       // "thread:<id>" (v2 machine facts) | "<msgId>,<msgId>" | legacy
+      "scope": "cross-thread",             // "thread-local" | "cross-thread" | "global"
+      "expiry": null,                       // epoch ms or null (default null → hidden)
+      "confidence": 1,                      // 0..1, default 1 (→ hidden)
+      "authored_by": "machine"              // "human" | "machine"
+    }
+  ],
+  "distillationEvents": [                   // for THIS thread, created_at ASC, verbatim incl. facts_produced===0
+    { "facts_produced": 0, "trigger": "dismiss", "distiller_version": "…", "created_at": 1730000000000 }
+  ]
+}
+```
+`401` → `{ "error": "Unauthorized" }`. Malformed id → `400 { "error": "bad_target_shape" }`.
+
+---
+
+## File structure
+
+**Daemon (Step 1) — additive, flagged, droppable; touches the store, NOT the auth file:**
+- Modify: `packages/daemon/src/memory/store.ts` — `listThreads()` SELECT + return type gain `status`.
+- Create: `packages/daemon/src/memory/list-threads-status.daemon.test.ts` — real-store test (no mocks).
+
+**Overlay — pure data + display (Step 2):**
+- Create: `apps/overlay/src/memory/types.ts` — wire shapes (above).
+- Create: `apps/overlay/src/memory/memory-api.ts` + `memory-api.test.ts` — token-gated fetch mapping.
+- Create: `apps/overlay/src/memory/fact-view.ts` + `fact-view.test.ts` — provenance parse + expiry/confidence rule + event label + date format.
+
+**Overlay — render + controller + wiring (Step 3):**
+- Create: `apps/overlay/src/memory/render.ts` + `render.test.ts` — DOM builders (happy-dom tests for the load-bearing bits).
+- Create: `apps/overlay/src/memory/controller.ts` — list↔detail nav + honest states glue.
+- Modify: `apps/overlay/src/memory.ts` — bootstrap the controller; keep the liveness banner.
+- Modify: `apps/overlay/memory.html` — add the list/detail DOM + inline `<style>`.
+
+**NOT touched:** `packages/protocol/**` (frozen); `apps/overlay/src/ws/connection-manager.ts`, `apps/overlay/src/main.ts`, `apps/overlay/src-tauri/**` (dead-tap left as-is; no Rust change); `packages/daemon/src/memory/http-routes.ts` (CORS + routes already cover reads); `apps/overlay/vite.config.ts` (entry already registered — verify only); `history.html` (chunk-04).
+
+---
+
+## Steps
+
+### Step 1: Daemon — additive `status` on `GET /memory/threads` (small, flagged, droppable)
+
+**Files:**
+- Modify: `packages/daemon/src/memory/store.ts` (`listThreads`, `:795-799`)
+- Create/Test: `packages/daemon/src/memory/list-threads-status.daemon.test.ts`
+
+**Interfaces:**
+- Produces (consumed by Step 2/3): `listThreads(): { thread_id: string; title: string | null; last_active_at: number; status: string }[]`. Additive field only — `handleThreads` passes it straight through, so the `GET /memory/threads` JSON gains a `status` key. **No route change, no auth change, no `http-routes.ts` touch.**
+
+> **FLAG:** This is the chunk's sanctioned "small + additive read gap" (spec Anchor "Backend is ready"; chunk OUT-scope: "if a real gap appears, it must be small + additive and flagged"). It delivers the Scope-IN phrase "Threads list … with status." `status` is meaningful (`active`/`dismissed`, set at `consolidation-hook.ts:43`). If the reviewer/orchestrator prefers strict `history.html` parity (no status), **drop this entire step** — the Step-3 render helper reads `status` optionally, so the UI simply shows dates only. Nothing else depends on it.
+
+- [ ] **Step 1.1 — Write the failing real-store test.** Create `packages/daemon/src/memory/list-threads-status.daemon.test.ts` (real `MemoryStore`, no mocks; tmpdir):
+```ts
+/**
+ * listThreads status field — chunk-02 (memory-transparency-ui), additive read gap.
+ * Real store, no mocks. Asserts each row carries `status`, and a dismissed thread
+ * reports 'dismissed'. Additive-only: existing keys (thread_id/title/last_active_at)
+ * unchanged. history.html (parity target) ignores the extra key.
+ */
+import { test, expect } from "bun:test";
+import { tmpdir } from "node:os";
+import { mkdtempSync } from "node:fs";
+import { join } from "node:path";
+import { MemoryStore } from "./store.js";
+
+test("listThreads returns status for each thread; dismissed reflected", () => {
+  const store = new MemoryStore({ dataDir: mkdtempSync(join(tmpdir(), "lt-")) });
+  const active = store.createThread("Active one");
+  const dismissed = store.createThread("Dismissed one");
+  store.rawDb().query("UPDATE threads SET status = 'dismissed' WHERE thread_id = ?").run(dismissed);
+
+  const rows = store.listThreads();
+  const byId = new Map(rows.map((r) => [r.thread_id, r]));
+  expect(byId.get(active)?.status).toBe("active");
+  expect(byId.get(dismissed)?.status).toBe("dismissed");
+  // additive: original fields intact
+  expect(typeof byId.get(active)?.last_active_at).toBe("number");
+  store.close();
+});
+```
+
+- [ ] **Step 1.2 — Run; verify it fails.** Run: `bun test packages/daemon/src/memory/list-threads-status.daemon.test.ts`. Expected: FAIL (`status` is `undefined` — not selected).
+
+- [ ] **Step 1.3 — Implement the additive SELECT.** In `store.ts`, change `listThreads` (`:795-799`) to select and type `status`:
+```ts
+  /**
+   * List all threads ordered by last_active_at DESC (T2.1a — additive SELECT only).
+   * chunk-02: `status` added (additive; 'active' | 'dismissed', schema.ts:33). No new route.
+   */
+  listThreads(): { thread_id: string; title: string | null; last_active_at: number; status: string }[] {
+    return this.db
+      .query("SELECT thread_id, title, last_active_at, status FROM threads ORDER BY last_active_at DESC")
+      .all() as { thread_id: string; title: string | null; last_active_at: number; status: string }[];
+  }
+```
+
+- [ ] **Step 1.4 — Run; verify green + no regression.** Run: `bun test packages/daemon/src/memory/list-threads-status.daemon.test.ts` (Expected: PASS), then `bun test packages/daemon/src/memory/` (Expected: all PASS). If any existing test does a strict deep-equal on a `listThreads` row shape (e.g. `toEqual([{ thread_id, title, last_active_at }])`), update it **additively** to include `status`. Then `bun run lint:strict` + `bun run typecheck`.
+
+- [ ] **Step 1.5 — Commit.**
+```bash
+git add packages/daemon/src/memory/store.ts packages/daemon/src/memory/list-threads-status.daemon.test.ts
+git commit -m "feat(memory-http): additive status field on listThreads (/memory/threads) — chunk-02
+
+Small additive read gap (spec Anchor 'Backend is ready'); no new route, auth unchanged.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
+### Step 2: Overlay — pure data + display modules (TDD; the mechanical DoD lives here)
+
+**Files:**
+- Create: `apps/overlay/src/memory/types.ts`
+- Create: `apps/overlay/src/memory/memory-api.ts` + `apps/overlay/src/memory/memory-api.test.ts`
+- Create: `apps/overlay/src/memory/fact-view.ts` + `apps/overlay/src/memory/fact-view.test.ts`
+
+**Interfaces:**
+- Consumes: Step 1's `status` field (optional in the type); the chunk-01 CORS'd read routes.
+- Produces (consumed by Step 3): `ThreadSummary`, `HatchView`, `DistilledFactView`, `DistillationEventView`, `ThreadMessage` (types); `type FetchResult<T>`, `MemoryApiDeps`, `fetchThreads(deps)`, `fetchThread(deps, id)`; `type ProvenanceRef`, `parseProvenance(raw)`, `shouldShowExpiry(f)`, `shouldShowConfidence(f)`, `eventLabel(e)`, `formatTs(ts)`.
+
+- [ ] **Step 2.1 — Create the types module.** `apps/overlay/src/memory/types.ts`:
+```ts
+/** Wire shapes the memory window fetches (frontend-local; mirrors daemon hatch.ts/store.ts).
+ *  Do NOT import daemon types — the overlay is a separate bundle. */
+export interface ThreadSummary {
+  thread_id: string;
+  title: string | null;
+  last_active_at: number;
+  status?: string; // "active" | "dismissed" — present iff Step 1 landed; optional by design
+}
+export interface ThreadMessage { id: string; role: string; content: string } // content may be "[forgotten]"
+export interface DistilledFactView {
+  id: string;
+  fact: string;
+  provenance: string; // "thread:<uuid>" | "<msgId>,<msgId>" | legacy
+  scope: string;      // "thread-local" | "cross-thread" | "global"
+  expiry: number | null;
+  confidence: number;
+  authored_by: string;
+}
+export interface DistillationEventView {
+  facts_produced: number;
+  trigger: string;
+  distiller_version: string;
+  created_at: number;
+}
+export interface HatchView {
+  messages: ThreadMessage[];
+  distilledFacts: DistilledFactView[];
+  distillationEvents: DistillationEventView[];
+}
+```
+
+- [ ] **Step 2.2 — Write failing tests for the fetch layer.** `apps/overlay/src/memory/memory-api.test.ts`:
+```ts
+/**
+ * memory-api — token-gated fetch mapping. ADR-0013: Bearer header ONLY, never in URL.
+ * Fake fetchFn records the (url, init) it was called with; no real network.
+ */
+import { test, expect } from "bun:test";
+import { fetchThreads, fetchThread, type MemoryApiDeps } from "./memory-api.js";
+
+function fakeFetch(status: number, body: unknown, calls: { url: string; init?: RequestInit }[]) {
+  return (url: string, init?: RequestInit): Promise<Response> => {
+    calls.push({ url, init });
+    if (status === 0) return Promise.reject(new Error("network"));
+    return Promise.resolve(new Response(JSON.stringify(body), { status }));
+  };
+}
+function deps(fetchFn: MemoryApiDeps["fetchFn"]): MemoryApiDeps {
+  return { fetchFn, baseUrl: "http://127.0.0.1:7777", token: "TOK", timeoutMs: 1000 };
+}
+
+test("fetchThreads 200 → ok with parsed data", async () => {
+  const r = await fetchThreads(deps(fakeFetch(200, { threads: [{ thread_id: "a", title: null, last_active_at: 1 }] }, [])));
+  expect(r.kind).toBe("ok");
+  if (r.kind === "ok") expect(r.data.threads[0]!.thread_id).toBe("a");
+});
+test("fetchThreads 401 → unauthorized", async () => {
+  expect((await fetchThreads(deps(fakeFetch(401, { error: "Unauthorized" }, [])))).kind).toBe("unauthorized");
+});
+test("fetchThreads 500 → unreachable", async () => {
+  expect((await fetchThreads(deps(fakeFetch(500, {}, [])))).kind).toBe("unreachable");
+});
+test("fetchThreads network error → unreachable", async () => {
+  expect((await fetchThreads(deps(fakeFetch(0, {}, [])))).kind).toBe("unreachable");
+});
+test("token rides Authorization header and is NEVER in the URL (ADR-0013)", async () => {
+  const calls: { url: string; init?: RequestInit }[] = [];
+  await fetchThreads(deps(fakeFetch(200, { threads: [] }, calls)));
+  expect(calls[0]!.url).not.toContain("TOK");
+  expect((calls[0]!.init!.headers as Record<string, string>).Authorization).toBe("Bearer TOK");
+});
+test("fetchThread encodes the id into the path, not a query", async () => {
+  const calls: { url: string; init?: RequestInit }[] = [];
+  await fetchThread(deps(fakeFetch(200, { messages: [], distilledFacts: [], distillationEvents: [] }, calls)), "a b/c");
+  expect(calls[0]!.url).toBe("http://127.0.0.1:7777/memory/thread/a%20b%2Fc");
+  expect(calls[0]!.url).not.toContain("TOK");
+});
+```
+
+- [ ] **Step 2.3 — Run; verify they fail.** Run: `bun test apps/overlay/src/memory/memory-api.test.ts`. Expected: FAIL (module missing).
+
+- [ ] **Step 2.4 — Implement the fetch layer.** `apps/overlay/src/memory/memory-api.ts`:
+```ts
+/**
+ * memory-api (chunk-02, memory-transparency-ui) — pure token-gated fetch mapping.
+ * ADR-0013: token in the Authorization: Bearer header ONLY — never logged, never in a
+ * URL/query. Every path maps to a discriminated FetchResult so the UI renders an honest
+ * state (never a stuck "Loading…"). fetchFn is injected → unit-testable without network.
+ */
+import type { HatchView, ThreadSummary } from "./types.js";
+
+export type FetchResult<T> =
+  | { kind: "ok"; data: T }
+  | { kind: "unauthorized" }
+  | { kind: "unreachable" };
+
+export interface MemoryApiDeps {
+  fetchFn: (url: string, init?: RequestInit) => Promise<Response>;
+  baseUrl: string;
+  token: string;
+  timeoutMs?: number;
+}
+
+async function getJson<T>(deps: MemoryApiDeps, path: string): Promise<FetchResult<T>> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), deps.timeoutMs ?? 4000);
+  try {
+    const res = await deps.fetchFn(`${deps.baseUrl}${path}`, {
+      headers: { Authorization: `Bearer ${deps.token}` }, // ADR-0013 — header only
+      signal: ctrl.signal,
+    });
+    if (res.status === 401) return { kind: "unauthorized" };
+    if (!res.ok) return { kind: "unreachable" };
+    return { kind: "ok", data: (await res.json()) as T };
+  } catch {
+    return { kind: "unreachable" };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export function fetchThreads(deps: MemoryApiDeps): Promise<FetchResult<{ threads: ThreadSummary[] }>> {
+  return getJson(deps, "/memory/threads");
+}
+export function fetchThread(deps: MemoryApiDeps, threadId: string): Promise<FetchResult<HatchView>> {
+  return getJson(deps, `/memory/thread/${encodeURIComponent(threadId)}`);
+}
+```
+
+- [ ] **Step 2.5 — Run; verify green.** Run: `bun test apps/overlay/src/memory/memory-api.test.ts`. Expected: PASS.
+
+- [ ] **Step 2.6 — Write failing tests for the display helpers.** `apps/overlay/src/memory/fact-view.test.ts`:
+```ts
+import { test, expect } from "bun:test";
+import {
+  parseProvenance, shouldShowExpiry, shouldShowConfidence, eventLabel, formatTs,
+} from "./fact-view.js";
+
+test("parseProvenance: thread:<id> → thread ref", () => {
+  expect(parseProvenance("thread:abc")).toEqual({ kind: "thread", threadId: "abc" });
+});
+test("parseProvenance: bare msg-id / comma-list / empty-after-prefix → text", () => {
+  expect(parseProvenance("11111111-1111-1111-1111-111111111111").kind).toBe("text");
+  expect(parseProvenance("id1,id2").kind).toBe("text");
+  expect(parseProvenance("thread:").kind).toBe("text");
+});
+test("expiry rule: shown only when non-default (non-null)", () => {
+  expect(shouldShowExpiry({ expiry: null })).toBe(false);
+  expect(shouldShowExpiry({ expiry: 1730000000000 })).toBe(true);
+});
+test("confidence rule: shown only when non-default (!== 1)", () => {
+  expect(shouldShowConfidence({ confidence: 1 })).toBe(false);
+  expect(shouldShowConfidence({ confidence: 0.5 })).toBe(true);
+});
+test("eventLabel: 0 facts is an observable event, not a gap (ADR-0012 5b)", () => {
+  expect(eventLabel({ facts_produced: 0 })).toBe("0 facts (deliberately retained nothing)");
+  expect(eventLabel({ facts_produced: 1 })).toBe("1 fact produced");
+  expect(eventLabel({ facts_produced: 3 })).toBe("3 facts produced");
+});
+test("formatTs: null → em-dash; number → non-empty", () => {
+  expect(formatTs(null)).toBe("—");
+  expect(formatTs(1730000000000).length).toBeGreaterThan(0);
+});
+```
+
+- [ ] **Step 2.7 — Run; verify they fail.** Run: `bun test apps/overlay/src/memory/fact-view.test.ts`. Expected: FAIL (module missing).
+
+- [ ] **Step 2.8 — Implement the display helpers.** `apps/overlay/src/memory/fact-view.ts`:
+```ts
+/**
+ * fact-view (chunk-02, memory-transparency-ui) — pure display helpers.
+ * ADR-0012 5c: thread-level provenance display. Spec ruling 2026-07-02: expiry/confidence
+ * shown ONLY when non-default (display-only; no scoring/decay/editing). ADR-0012 5b: a
+ * 0-fact distillation event is an OBSERVABLE "deliberately retained nothing", never a gap.
+ */
+import type { DistilledFactView, DistillationEventView } from "./types.js";
+
+export type ProvenanceRef =
+  | { kind: "thread"; threadId: string }
+  | { kind: "text"; raw: string };
+
+/** Parse a provenance string. Only the "thread:<id>" shape is a client-resolvable jump
+ *  target; message-id lists / legacy shapes render as plain text (history.html parity). */
+export function parseProvenance(raw: string): ProvenanceRef {
+  if (raw.startsWith("thread:")) {
+    const threadId = raw.slice("thread:".length);
+    if (threadId) return { kind: "thread", threadId };
+  }
+  return { kind: "text", raw };
+}
+
+export function shouldShowExpiry(f: Pick<DistilledFactView, "expiry">): boolean {
+  return f.expiry !== null && f.expiry !== undefined;
+}
+export function shouldShowConfidence(f: Pick<DistilledFactView, "confidence">): boolean {
+  return f.confidence !== 1;
+}
+
+export function eventLabel(e: Pick<DistillationEventView, "facts_produced">): string {
+  return e.facts_produced === 0
+    ? "0 facts (deliberately retained nothing)"
+    : `${e.facts_produced} fact${e.facts_produced === 1 ? "" : "s"} produced`;
+}
+
+export function formatTs(ts: number | null | undefined): string {
+  if (ts === null || ts === undefined) return "—";
+  const n = typeof ts === "number" ? ts : Number(ts);
+  return Number.isNaN(n) ? String(ts) : new Date(n).toLocaleString();
+}
+```
+
+- [ ] **Step 2.9 — Run; verify green + gates.** Run: `bun test apps/overlay/src/memory/` (Expected: PASS), then `bun run lint:strict` + `bun run typecheck`.
+
+- [ ] **Step 2.10 — Commit.**
+```bash
+git add apps/overlay/src/memory/types.ts apps/overlay/src/memory/memory-api.ts apps/overlay/src/memory/memory-api.test.ts apps/overlay/src/memory/fact-view.ts apps/overlay/src/memory/fact-view.test.ts
+git commit -m "feat(overlay): memory read-UI data+display helpers (fetch mapping, provenance, expiry/confidence rule, 0-fact label)
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
+### Step 3: Overlay — render + controller + HTML/CSS wiring
+
+**Files:**
+- Create: `apps/overlay/src/memory/render.ts` + `apps/overlay/src/memory/render.test.ts`
+- Create: `apps/overlay/src/memory/controller.ts`
+- Modify: `apps/overlay/src/memory.ts`, `apps/overlay/memory.html`
+
+**Interfaces:**
+- Consumes: Step 2's api + fact-view; the existing `read_auth_token` + `createMemoryLiveness`.
+- Produces: `renderThreadList(listEl, threads, onOpen)`, `renderMessages(el, msgs)`, `renderFacts(el, facts, onOpenThread)`, `renderEvents(el, events)`, `renderState(el, kind, elementTag?)`; `createMemoryController(deps): { start(): void }`.
+- **XSS discipline (mirror `history.html` / `text-reply.ts`): all API-derived strings via `textContent`/`createElement` — NEVER `innerHTML`.**
+
+- [ ] **Step 3.1 — Write failing render tests (happy-dom).** `apps/overlay/src/memory/render.test.ts`:
+```ts
+/**
+ * DOM-harness tests for the memory read-UI renderers (happy-dom via test-setup/dom-preload).
+ * Covers the load-bearing DoD bits: 0-fact event label, per-fact provenance jump-link +
+ * callback, and the expiry/confidence "shown only when non-default" rule.
+ */
+import { test, expect } from "bun:test";
+import { renderFacts, renderEvents, renderThreadList } from "./render.js";
+import type { DistilledFactView, DistillationEventView, ThreadSummary } from "./types.js";
+
+function host(): HTMLElement { const d = document.createElement("div"); document.body.appendChild(d); return d; }
+const baseFact: DistilledFactView = {
+  id: "f1", fact: "likes blue", provenance: "thread:T1", scope: "cross-thread",
+  expiry: null, confidence: 1, authored_by: "machine",
+};
+
+test("renderEvents: a 0-fact event renders the 'deliberately retained nothing' label", () => {
+  const el = host();
+  const ev: DistillationEventView = { facts_produced: 0, trigger: "dismiss", distiller_version: "v", created_at: 1 };
+  renderEvents(el, [ev]);
+  expect(el.textContent).toContain("deliberately retained nothing");
+});
+
+test("renderFacts: thread:<id> provenance is a jump-link firing onOpenThread(id)", () => {
+  const el = host();
+  let opened: string | null = null;
+  renderFacts(el, [baseFact], (id) => { opened = id; });
+  const link = el.querySelector<HTMLElement>(".prov-link");
+  expect(link).not.toBeNull();
+  link!.click();
+  expect(opened).toBe("T1");
+});
+
+test("renderFacts: non-thread provenance renders as text, no jump-link", () => {
+  const el = host();
+  renderFacts(el, [{ ...baseFact, provenance: "id1,id2" }], () => {});
+  expect(el.querySelector(".prov-link")).toBeNull();
+  expect(el.textContent).toContain("id1,id2");
+});
+
+test("renderFacts: default expiry/confidence → NO expiry/confidence chrome", () => {
+  const el = host();
+  renderFacts(el, [baseFact], () => {});
+  expect(el.querySelector(".fact-expiry")).toBeNull();
+  expect(el.querySelector(".fact-confidence")).toBeNull();
+});
+
+test("renderFacts: non-default expiry/confidence ARE shown", () => {
+  const el = host();
+  renderFacts(el, [{ ...baseFact, expiry: 1730000000000, confidence: 0.5 }], () => {});
+  expect(el.querySelector(".fact-expiry")).not.toBeNull();
+  expect(el.querySelector(".fact-confidence")).not.toBeNull();
+});
+
+test("renderThreadList: click fires onOpen(thread_id); status shown when present", () => {
+  const el = host();
+  let opened: string | null = null;
+  const t: ThreadSummary = { thread_id: "T9", title: "Hi", last_active_at: 1, status: "dismissed" };
+  renderThreadList(el, [t], (id) => { opened = id; });
+  expect(el.textContent).toContain("dismissed");
+  el.querySelector<HTMLElement>(".thread-list-item")!.click();
+  expect(opened).toBe("T9");
+});
+```
+
+- [ ] **Step 3.2 — Run; verify they fail.** Run: `bun test apps/overlay/src/memory/render.test.ts`. Expected: FAIL (module missing).
+
+- [ ] **Step 3.3 — Implement the renderers.** `apps/overlay/src/memory/render.ts`:
+```ts
+/**
+ * render (chunk-02, memory-transparency-ui) — DOM builders for the memory read UI.
+ * XSS discipline (history.html / text-reply.ts): all API-derived strings via textContent/
+ * createElement — NEVER innerHTML. Uses the pure fact-view helpers for the display rules.
+ */
+import type { ThreadSummary, ThreadMessage, DistilledFactView, DistillationEventView } from "./types.js";
+import {
+  parseProvenance, shouldShowExpiry, shouldShowConfidence, eventLabel, formatTs,
+} from "./fact-view.js";
+
+function clear(el: HTMLElement): void { el.replaceChildren(); }
+
+/** Honest per-view state (empty / locked / daemon-down), reusing the chunk-01 tone. */
+export function renderState(el: HTMLElement, message: string, tag: keyof HTMLElementTagNameMap = "p"): void {
+  clear(el);
+  const p = document.createElement(tag);
+  p.className = "empty";
+  p.textContent = message;
+  el.appendChild(p);
+}
+
+export function renderThreadList(listEl: HTMLElement, threads: ThreadSummary[], onOpen: (id: string) => void): void {
+  clear(listEl);
+  if (threads.length === 0) { renderState(listEl, "No threads yet.", "li"); return; }
+  for (const t of threads) {
+    const li = document.createElement("li");
+    li.className = "thread-list-item";
+    const title = document.createElement("div");
+    title.className = "thread-title";
+    title.textContent = t.title || t.thread_id;
+    const meta = document.createElement("div");
+    meta.className = "thread-meta";
+    const status = t.status ? ` · ${t.status}` : "";
+    meta.textContent = `${t.thread_id} · ${formatTs(t.last_active_at)}${status}`;
+    li.appendChild(title);
+    li.appendChild(meta);
+    li.addEventListener("click", () => onOpen(t.thread_id));
+    listEl.appendChild(li);
+  }
+}
+
+export function renderMessages(el: HTMLElement, messages: ThreadMessage[]): void {
+  clear(el);
+  if (messages.length === 0) { renderState(el, "No messages."); return; }
+  messages.forEach((m, i) => {
+    const row = document.createElement("div");
+    row.className = `message-row role-${m.role || "unknown"}`;
+    const role = document.createElement("div");
+    role.className = "message-role";
+    role.textContent = `${m.role || "?"} · turn ${i + 1}`;
+    const content = document.createElement("div");
+    content.className = "message-content";
+    content.textContent = m.content || ""; // may be "[forgotten]" for a tombstoned message
+    row.appendChild(role);
+    row.appendChild(content);
+    el.appendChild(row);
+  });
+}
+
+export function renderFacts(el: HTMLElement, facts: DistilledFactView[], onOpenThread: (id: string) => void): void {
+  clear(el);
+  if (facts.length === 0) { renderState(el, "No distilled facts."); return; }
+  for (const f of facts) {
+    const row = document.createElement("div");
+    row.className = "fact-row";
+
+    const factEl = document.createElement("div");
+    factEl.textContent = f.fact || "";
+    row.appendChild(factEl);
+
+    // Provenance (ADR-0012 5c) — thread:<id> is a jump-link; else plain text.
+    const prov = document.createElement("div");
+    prov.className = "fact-meta";
+    const label = document.createElement("span");
+    label.textContent = "from: ";
+    prov.appendChild(label);
+    const ref = parseProvenance(f.provenance || "");
+    if (ref.kind === "thread") {
+      const link = document.createElement("a");
+      link.className = "prov-link";
+      link.href = "#";
+      link.textContent = f.provenance;
+      link.addEventListener("click", (e) => { e.preventDefault(); onOpenThread(ref.threadId); });
+      prov.appendChild(link);
+    } else {
+      const txt = document.createElement("span");
+      txt.textContent = ref.raw || "(unknown)";
+      prov.appendChild(txt);
+    }
+    const extra = document.createElement("span");
+    extra.textContent = ` · scope: ${f.scope} · ${f.authored_by}`;
+    prov.appendChild(extra);
+    row.appendChild(prov);
+
+    // Expiry / confidence — SHOWN ONLY WHEN NON-DEFAULT (spec ruling 2026-07-02).
+    if (shouldShowExpiry(f)) {
+      const exp = document.createElement("div");
+      exp.className = "fact-meta fact-expiry";
+      exp.textContent = `expires: ${formatTs(f.expiry)}`;
+      row.appendChild(exp);
+    }
+    if (shouldShowConfidence(f)) {
+      const conf = document.createElement("div");
+      conf.className = "fact-meta fact-confidence";
+      conf.textContent = `confidence: ${f.confidence}`;
+      row.appendChild(conf);
+    }
+    el.appendChild(row);
+  }
+}
+
+export function renderEvents(el: HTMLElement, events: DistillationEventView[]): void {
+  clear(el);
+  if (events.length === 0) { renderState(el, "No distillation events."); return; }
+  for (const e of events) {
+    const row = document.createElement("div");
+    row.className = "event-row";
+    const line = document.createElement("div");
+    const trig = document.createElement("span");
+    trig.textContent = `trigger: ${e.trigger || "?"} · `;
+    const count = document.createElement("span");
+    count.className = "facts-count" + (e.facts_produced === 0 ? " zero-count" : "");
+    count.textContent = eventLabel(e);
+    line.appendChild(trig);
+    line.appendChild(count);
+    const date = document.createElement("div");
+    date.className = "event-date";
+    date.textContent = formatTs(e.created_at);
+    row.appendChild(line);
+    row.appendChild(date);
+    el.appendChild(row);
+  }
+}
+```
+
+- [ ] **Step 3.4 — Run; verify green.** Run: `bun test apps/overlay/src/memory/render.test.ts`. Expected: PASS.
+
+- [ ] **Step 3.5 — Implement the controller.** `apps/overlay/src/memory/controller.ts`:
+```ts
+/**
+ * controller (chunk-02, memory-transparency-ui) — list↔detail navigation glue.
+ * Thin: no DOM building of its own (render.ts) and no fetch mechanics (memory-api.ts).
+ * Honest states throughout (locked / daemon-down / empty) — never a stuck "Loading…".
+ * Provenance jump reuses openThread → the same detail-load path (DoD box 2).
+ */
+import type { MemoryApiDeps } from "./memory-api.js";
+import { fetchThreads, fetchThread } from "./memory-api.js";
+import { renderThreadList, renderMessages, renderFacts, renderEvents, renderState } from "./render.js";
+
+export interface MemoryControllerEls {
+  listView: HTMLElement;
+  detailView: HTMLElement;
+  threadListEl: HTMLElement;
+  messagesEl: HTMLElement;
+  factsEl: HTMLElement;
+  eventsEl: HTMLElement;
+  backBtn: HTMLElement;
+}
+export interface MemoryControllerDeps {
+  api: MemoryApiDeps;
+  els: MemoryControllerEls;
+}
+
+const LOCKED = "🔒 Token rejected — the engine did not accept this token.";
+const DOWN = "Daemon unreachable — is the engine running?";
+
+export function createMemoryController(deps: MemoryControllerDeps): { start(): void } {
+  const { els } = deps;
+
+  function showList(): void { els.detailView.style.display = "none"; els.listView.style.display = "block"; }
+  function showDetail(): void { els.listView.style.display = "none"; els.detailView.style.display = "block"; }
+
+  async function loadList(): Promise<void> {
+    renderState(els.threadListEl, "Loading…", "li");
+    const r = await fetchThreads(deps.api);
+    if (r.kind === "unauthorized") { renderState(els.threadListEl, LOCKED, "li"); return; }
+    if (r.kind === "unreachable") { renderState(els.threadListEl, DOWN, "li"); return; }
+    renderThreadList(els.threadListEl, r.data.threads ?? [], openThread);
+  }
+
+  async function loadThread(threadId: string): Promise<void> {
+    renderState(els.messagesEl, "Loading…");
+    renderState(els.factsEl, "Loading…");
+    renderState(els.eventsEl, "Loading…");
+    const r = await fetchThread(deps.api, threadId);
+    if (r.kind === "unauthorized") { renderState(els.messagesEl, LOCKED); renderState(els.factsEl, LOCKED); renderState(els.eventsEl, LOCKED); return; }
+    if (r.kind === "unreachable") { renderState(els.messagesEl, DOWN); renderState(els.factsEl, DOWN); renderState(els.eventsEl, DOWN); return; }
+    renderMessages(els.messagesEl, r.data.messages ?? []);
+    renderFacts(els.factsEl, r.data.distilledFacts ?? [], openThread);
+    renderEvents(els.eventsEl, r.data.distillationEvents ?? []);
+  }
+
+  function openThread(threadId: string): void { showDetail(); void loadThread(threadId); }
+
+  function start(): void {
+    els.backBtn.addEventListener("click", () => { showList(); void loadList(); });
+    showList();
+    void loadList();
+  }
+  return { start };
+}
+```
+
+- [ ] **Step 3.6 — Grow `memory.html`** (add the list/detail DOM + a compact inline `<style>`; keep the existing `#conn-state` banner). Replace the `<main>` body and add a `<style>` in `<head>`:
+```html
+    <style>
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+      body { font-family: system-ui, -apple-system, sans-serif; font-size: 14px; line-height: 1.5; color: #1a1a1a; background: #f5f5f5; padding: 16px; }
+      h1 { font-size: 20px; font-weight: 600; margin-bottom: 8px; }
+      h2 { font-size: 15px; font-weight: 600; margin: 16px 0 8px; }
+      #conn-state { font-size: 12px; color: #888; margin-bottom: 12px; }
+      .panel { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 14px; margin-bottom: 12px; }
+      .thread-list { list-style: none; }
+      .thread-list-item { padding: 8px 10px; cursor: pointer; border-radius: 4px; border: 1px solid #e8e8e8; margin-bottom: 6px; background: #fafafa; }
+      .thread-list-item:hover { background: #eef4ff; border-color: #c0d4f5; }
+      .thread-title { font-weight: 500; }
+      .thread-meta { color: #888; font-size: 12px; margin-top: 2px; }
+      .message-row { padding: 6px 8px; margin-bottom: 6px; border-left: 3px solid #ddd; background: #fafafa; border-radius: 0 4px 4px 0; }
+      .message-row.role-user { border-color: #6b9ef4; }
+      .message-row.role-assistant { border-color: #84c47a; }
+      .message-role { font-size: 11px; font-weight: 600; text-transform: uppercase; color: #888; }
+      .message-content { white-space: pre-wrap; word-break: break-word; }
+      .fact-row, .event-row { padding: 6px 8px; margin-bottom: 4px; background: #fafafa; border: 1px solid #eee; border-radius: 4px; }
+      .fact-meta { font-size: 11px; color: #999; margin-top: 2px; }
+      .prov-link { color: #2060b0; cursor: pointer; }
+      .facts-count { font-weight: 600; }
+      .zero-count { color: #e07b00; }
+      .event-date { font-size: 11px; color: #aaa; }
+      .empty { color: #aaa; font-style: italic; font-size: 13px; }
+      #thread-view { display: none; }
+      .back-btn { margin-bottom: 12px; font-size: 13px; cursor: pointer; color: #2060b0; background: none; border: none; padding: 0; }
+      .back-btn:hover { text-decoration: underline; }
+    </style>
+```
+```html
+  <body>
+    <main id="memory-shell">
+      <h1>Memory</h1>
+      <p id="conn-state" data-state="checking">Checking connection…</p>
+
+      <div id="thread-list-view">
+        <div class="panel">
+          <h2>Threads</h2>
+          <ul class="thread-list" id="thread-list"></ul>
+        </div>
+      </div>
+
+      <div id="thread-view">
+        <button class="back-btn" id="back-btn">&#8592; Back to threads</button>
+        <div class="panel"><h2>Messages</h2><div id="messages-container"></div></div>
+        <div class="panel"><h2>Distilled facts</h2><div id="facts-container"></div></div>
+        <div class="panel"><h2>Distillation events</h2><div id="events-container"></div></div>
+      </div>
+    </main>
+    <script type="module" src="/src/memory.ts"></script>
+  </body>
+```
+
+- [ ] **Step 3.7 — Wire `memory.ts`** to keep the liveness banner AND start the controller (read the token once, share it). Replace `main()` in `apps/overlay/src/memory.ts`:
+```ts
+import { invoke } from "@tauri-apps/api/core";
+import { createMemoryLiveness, type ShellState } from "./memory-liveness.js";
+import { createMemoryController } from "./memory/controller.js";
+
+const BASE_URL = "http://127.0.0.1:7777";
+const THREADS_URL = `${BASE_URL}/memory/threads`;
+
+function renderBanner(state: ShellState, detail?: string): void {
+  const el = document.getElementById("conn-state");
+  if (el === null) return;
+  el.dataset.state = state;
+  el.textContent =
+    state === "no-token"     ? "🔒 No auth token found — is the engine installed?" :
+    state === "unreachable"  ? "Daemon unreachable — is the engine running?" :
+    state === "unauthorized" ? "🔒 Token rejected — the engine did not accept this token." :
+    /* connected */            `Connected${detail ? ` (${detail})` : ""}`;
+}
+
+function el(id: string): HTMLElement {
+  const node = document.getElementById(id);
+  if (node === null) throw new Error(`missing #${id}`);
+  return node;
+}
+
+async function main(): Promise<void> {
+  let token: string;
+  try { token = (await invoke<string>("read_auth_token")).trim(); }
+  catch { renderBanner("no-token"); return; }
+  if (!token) { renderBanner("no-token"); return; }
+
+  // Top-of-window connection banner (chunk-01 liveness poll — unchanged behavior).
+  const liveness = createMemoryLiveness({
+    fetchFn: (u, i) => fetch(u, i), url: THREADS_URL, token,
+    onState: renderBanner, intervalMs: 3000, isHidden: () => document.hidden,
+  });
+  liveness.start();
+  window.addEventListener("focus", () => liveness.checkNow());
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) liveness.checkNow(); });
+
+  // Read UI (chunk-02): threads list + thread detail.
+  const controller = createMemoryController({
+    api: { fetchFn: (u, i) => fetch(u, i), baseUrl: BASE_URL, token },
+    els: {
+      listView: el("thread-list-view"), detailView: el("thread-view"),
+      threadListEl: el("thread-list"), messagesEl: el("messages-container"),
+      factsEl: el("facts-container"), eventsEl: el("events-container"), backBtn: el("back-btn"),
+    },
+  });
+  controller.start();
+}
+
+void main();
+```
+
+- [ ] **Step 3.8 — Verify all mechanical gates.** Run: `bun test` (whole suite — Expected: all green), `bun run lint:strict`, `bun run typecheck`. Confirm the frozen surface: `git diff --stat packages/protocol/` → **no output**. Verify `apps/overlay/vite.config.ts` still lists `memory` in `rollupOptions.input` (no change expected).
+
+- [ ] **Step 3.9 — Commit.**
+```bash
+git add apps/overlay/src/memory/render.ts apps/overlay/src/memory/render.test.ts apps/overlay/src/memory/controller.ts apps/overlay/src/memory.ts apps/overlay/memory.html
+git commit -m "feat(overlay): memory window read UI — threads list, thread detail (messages/facts/events), provenance jump-links, expiry/confidence-when-non-default
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
+## Verification (DoD mapping)
+
+The chunk's five DoD boxes (`02-memory-window-view.md` §Done criteria):
+
+**Mechanical (provable by the worker now):**
+- **DoD box 4 — `bun test` / `lint:strict` / typecheck green (incl. new UI/data-shaping tests):** Steps 1.4, 2.5, 2.9, 3.4, 3.8. New coverage: fetch mapping + token discipline (`memory-api.test.ts`), provenance/expiry/confidence/0-fact rules (`fact-view.test.ts`), render behavior incl. 0-fact label, provenance jump-link + callback, expiry/confidence shown-only-when-non-default (`render.test.ts`), and the additive `status` field (`list-threads-status.daemon.test.ts`).
+- **DoD box 5 — `git diff packages/protocol/` empty:** asserted in Step 3.8 (`git diff --stat packages/protocol/` → no output). No protocol touch anywhere in the plan.
+- **DoD box 3 (mechanical half) — non-default expiry/confidence ARE shown, defaults are NOT:** the two `render.test.ts` cases (`baseFact` → no `.fact-expiry`/`.fact-confidence`; `{ expiry, confidence: 0.5 }` → both present) are the mechanical proof of the rule. This is the "data-shaping unit test is the natural home" the constraint calls for.
+
+**Behavioral — ALL marked "requires live macOS demo to confirm" (PIPELINE §6.1; a probe is evidence only when executed; NOT assertable from code-reading). This chunk owns spec demo-checklist item 2; final joint sign-off rides chunk-04:**
+- **[requires live macOS demo to confirm] DoD box 1:** From the tray → "Open Memory…", the window lists real threads from `~/.agentic-engine/memory.sqlite` (via the token-gated `GET /memory/threads`, no token entry); clicking a thread shows its messages, the distilled facts, and distillation events — including a 0-fact "deliberately retained nothing" event if present.
+- **[requires live macOS demo to confirm] DoD box 2:** Each distilled fact shows its provenance; a `thread:<id>` provenance link navigates to that source thread's detail view.
+- **[requires live macOS demo to confirm] DoD box 3 (behavioral half):** a fact with default expiry/confidence shows no expiry/confidence chrome; a **test-seeded** non-default fact shows both. **Seed recipe (dev-only, run once before the demo; NOT committed, NOT bundled — uses the existing `MemoryStore.insertDistilledFacts`; shared SQLite means no daemon restart needed):**
+  ```bash
+  bun -e '
+  import { MemoryStore } from "./packages/daemon/src/memory/store.ts";
+  const store = new MemoryStore({ dataDir: `${process.env.HOME}/.agentic-engine` });
+  const [t] = store.listThreads();
+  store.insertDistilledFacts([{
+    fact: "DEMO non-default fact (expiry+confidence)",
+    provenance: t ? `thread:${t.thread_id}` : "thread:demo",
+    scope: "cross-thread",
+    expiry: Date.now() + 7*24*60*60*1000,
+    confidence: 0.5,
+    authored_by: "machine",
+  }], "seed-demo");
+  store.close();
+  console.log("seeded");
+  '
+  ```
+  (The seeded fact also carries a `thread:<id>` provenance, so it doubles as a jump-link target for DoD box 2.)
+- **[requires live macOS demo to confirm] honest empty/error states:** locked (token rejected), daemon-down (unreachable), and empty-store all render honest text — never a stuck "Loading…" — in both the top banner (chunk-01 liveness) and the in-view containers (controller states).
+
+Intermediate gates use real I/O where a boundary exists (Step 1 uses a real `MemoryStore`, no mocks), per the standing Strike-4/5 rule.
+
+---
+
+## ADR worthy: no
+
+Rationale:
+- **Surface class settled:** this is an **engine-owned native surface** (spec Anchors + ADR-0005), NOT closed-set `@agentic/protocol` primitives. No new boundary. Code comments cite ADR-0005 / ADR-0012 5a-c where relevant.
+- **Consumes decided contracts:** token-gated reads (ADR-0013 rider), observable distillation events + provenance display (ADR-0012 5b/5c), the CORS seam (already shipped chunk-01). No new route, no new dependency, no auth change.
+- **The `status` field** is an additive JSON key on an *existing* route (a SELECT column widening in `store.ts`, not `http-routes.ts`) — the chunk pre-authorizes small additive read gaps. Not a new decision.
+
+**Reviewer escalation clause (mirrors chunk-01):** if the reviewer judges the additive `status` read field to constitute a new posture beyond the "small additive gap" the spec Anchor sanctions, escalate to `adr-curator` for a note/rider — not a new ADR — before merge. (Not expected.)
+
+---
+
+## Risks & flags
+
+- **FLAG — "with status" delivered via a small additive daemon change, not `history.html` parity.** The chunk Scope-IN says "Threads list … with status," but the parity target `history.html` omits status and `listThreads()` didn't carry it. Step 1 adds `status` (meaningful: `active`/`dismissed`) as the sanctioned "small + additive read gap." It touches `store.ts` (NOT the security-adjacent `http-routes.ts`) and is backward-compatible (extra key; `history.html` ignores it). **Droppable:** the Step-3 render helper treats `status` as optional, so if strict parity is preferred, drop Step 1 and the UI shows dates only. Reviewer's call.
+- **FLAG — dead `onConnectionState` tap + retained `set_tray_status` LEFT AS-IS (deliberate, lowest-churn).** The memory window doesn't hold the agent `ConnectionManager`, so there is nothing to *consume*; *removing* the tap would re-touch the byte-frozen agent-connection surface (`connection-manager.ts` + `main.ts`) for zero gain in a read-only chunk. Noted as out-of-scope hygiene per the brief's guidance. If the orchestrator wants it removed, that is a separate hygiene chunk touching agent-connection files (runtime-coupling review), not this one.
+- **Provenance jump only resolves `thread:<id>` shapes.** v2 machine facts use `thread:<id>` (`distiller-registration.ts:178`) → jump works for real facts. Legacy/message-id-list provenance is not client-resolvable to a thread (no message→thread map in the payload; resolving it would need a route change = out of scope) → rendered as plain text, `history.html` parity. In-answer + message-level provenance are explicitly OUT (spec).
+- **Facts panel shows the FULL slice, not thread-scoped facts.** `hatch.view` returns all distilled facts regardless of the opened thread (`hatch.ts:57-58`) — this is intended ("ALL current distilled facts (the live projection)"), matches `history.html`, and is why each fact needs its own provenance link. Do not "fix" this to thread-scope it.
+- **Existing daemon test shape:** Step 1 widens `listThreads`'s row shape; if any daemon test asserts the exact row via deep-equal, update it additively (Step 1.4). Low risk (the grep found no strict threads-shape assertion, but run the daemon suite).
+- **XSS discipline is load-bearing:** all API strings via `textContent`/`createElement`, never `innerHTML` (mirrors `history.html` + `text-reply.ts`). A regression here is a security defect, not a style nit — reviewer should confirm no `innerHTML` with API data in `render.ts`.
+- **NOT a freeze gate:** nothing touches `packages/protocol/**`; `git diff --stat packages/protocol/` stays empty (Step 3.8). Confirmed engine-owned native surface, not a protocol change.
+
+---
+
+## Status: Done

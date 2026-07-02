@@ -6,7 +6,7 @@
 
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::Manager;
+use tauri::{Manager, WebviewWindowBuilder, WindowEvent};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 #[tauri::command]
@@ -56,6 +56,19 @@ fn set_tray_status(app: tauri::AppHandle, status: String) {
 
 pub fn run() {
     tauri::Builder::default()
+        // Demo-1 fix (cluster 1): the memory window's native x must HIDE, not DESTROY, so
+        // "Open Memory…" can re-show the SAME webview every time (a destroyed window makes
+        // get_webview_window("memory") return None -> dead until restart). Keeping the webview
+        // alive also lets memory.ts's liveness poll (Step 5) survive close/reopen. Filtered by
+        // label so main/widget are unaffected.
+        .on_window_event(|window, event| {
+            if window.label() == "memory" {
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .setup(|app| {
             #[cfg(desktop)]
             {
@@ -97,6 +110,20 @@ pub fn run() {
                             let _ = win.show();
                             let _ = win.unminimize();
                             let _ = win.set_focus();
+                        } else if let Some(cfg) = app
+                            .config()
+                            .app
+                            .windows
+                            .iter()
+                            .find(|w| w.label == "memory")
+                            .cloned()
+                        {
+                            if let Ok(win) =
+                                WebviewWindowBuilder::from_config(app, &cfg).and_then(|b| b.build())
+                            {
+                                let _ = win.show();
+                                let _ = win.set_focus();
+                            }
                         }
                     }
                     "quit" => app.exit(0),

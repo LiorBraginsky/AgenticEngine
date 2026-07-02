@@ -7,6 +7,21 @@ import type { ThreadSummary, ThreadMessage, DistilledFactView, DistillationEvent
 import {
   parseProvenance, shouldShowExpiry, shouldShowConfidence, eventLabel, formatTs,
 } from "./fact-view.js";
+import { buildForgetControl, buildEditControl } from "./actions.js";
+
+/** chunk-03 (ACT): optional per-row actions. Absent → chunk-02 read-only behavior (existing callers). */
+export interface MessageActions {
+  /** Attach an inline Edit control per message → POST /memory/edit (WriteGate.edit human correction). */
+  onEdit?: (messageId: string, newText: string) => void;
+  /** Message ids edited THIS session → shown with an "edited by you" tag. The wire carries no
+   *  persistent per-message correction flag (see plan "## Reality check" §2), so this is an honest
+   *  optimistic marker; the corrected TEXT itself is persistent via readThreadArchive COALESCE. */
+  editedIds?: ReadonlySet<string>;
+}
+export interface FactActions {
+  /** Attach a "release the reference" Forget control per fact → POST /memory/forget (durable delete). */
+  onForget?: (factId: string) => void;
+}
 
 function clear(el: HTMLElement): void { el.replaceChildren(); }
 
@@ -39,7 +54,7 @@ export function renderThreadList(listEl: HTMLElement, threads: ThreadSummary[], 
   }
 }
 
-export function renderMessages(el: HTMLElement, messages: ThreadMessage[]): void {
+export function renderMessages(el: HTMLElement, messages: ThreadMessage[], actions?: MessageActions): void {
   clear(el);
   if (messages.length === 0) { renderState(el, "No messages."); return; }
   messages.forEach((m, i) => {
@@ -48,16 +63,31 @@ export function renderMessages(el: HTMLElement, messages: ThreadMessage[]): void
     const role = document.createElement("div");
     role.className = "message-role";
     role.textContent = `${m.role || "?"} · turn ${i + 1}`;
+    if (actions?.editedIds?.has(m.id)) {
+      const tag = document.createElement("span");
+      tag.className = "edited-tag";
+      tag.textContent = " · edited by you";
+      role.appendChild(tag);
+    }
     const content = document.createElement("div");
     content.className = "message-content";
     content.textContent = m.content || ""; // may be "[forgotten]" for a tombstoned message
     row.appendChild(role);
     row.appendChild(content);
+    if (actions?.onEdit) {
+      const onEdit = actions.onEdit;
+      row.appendChild(buildEditControl(m.content || "", (newText) => onEdit(m.id, newText)));
+    }
     el.appendChild(row);
   });
 }
 
-export function renderFacts(el: HTMLElement, facts: DistilledFactView[], onOpenThread: (id: string) => void): void {
+export function renderFacts(
+  el: HTMLElement,
+  facts: DistilledFactView[],
+  onOpenThread: (id: string) => void,
+  actions?: FactActions,
+): void {
   clear(el);
   if (facts.length === 0) { renderState(el, "No distilled facts."); return; }
   for (const f of facts) {
@@ -104,6 +134,12 @@ export function renderFacts(el: HTMLElement, facts: DistilledFactView[], onOpenT
       conf.className = "fact-meta fact-confidence";
       conf.textContent = `confidence: ${f.confidence}`;
       row.appendChild(conf);
+    }
+
+    // chunk-03 (ACT): "release the reference" forget control (ADR-0015 durable fact-delete).
+    if (actions?.onForget) {
+      const onForget = actions.onForget;
+      row.appendChild(buildForgetControl(() => onForget(f.id)));
     }
     el.appendChild(row);
   }

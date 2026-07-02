@@ -4,7 +4,7 @@
  * callback, and the expiry/confidence "shown only when non-default" rule.
  */
 import { test, expect } from "bun:test";
-import { renderFacts, renderEvents, renderThreadList } from "./render.js";
+import { renderFacts, renderEvents, renderThreadList, renderMessages } from "./render.js";
 import type { DistilledFactView, DistillationEventView, ThreadSummary } from "./types.js";
 
 function host(): HTMLElement { const d = document.createElement("div"); document.body.appendChild(d); return d; }
@@ -59,4 +59,33 @@ test("renderThreadList: click fires onOpen(thread_id); status shown when present
   expect(el.textContent).toContain("dismissed");
   el.querySelector<HTMLElement>(".thread-list-item")!.click();
   expect(opened).toBe("T9");
+});
+
+test("chunk-03: renderFacts with onForget appends a forget control; arm→confirm passes the fact id", () => {
+  const el = document.createElement("div");
+  let forgot = ""; // sentinel: no valid fact id is ever "" (avoids TS narrowing a `null` sentinel across the closure boundary)
+  renderFacts(
+    el,
+    [{ id: "F1", fact: "x", provenance: "thread:t", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" }],
+    () => { /* onOpenThread */ },
+    { onForget: (id) => { forgot = id; } },
+  );
+  const btn = el.querySelector<HTMLButtonElement>(".act-forget")!;
+  btn.click(); // arm
+  expect(forgot).toBe(""); // not yet fired
+  btn.click(); // confirm
+  expect(forgot).toBe("F1");
+});
+
+test("chunk-03: renderMessages with onEdit appends an edit control; editedIds shows the tag", () => {
+  const el = document.createElement("div");
+  renderMessages(el, [{ id: "M1", role: "user", content: "hi" }], { onEdit: () => { /* noop */ }, editedIds: new Set(["M1"]) });
+  expect(el.querySelector(".act-edit")).not.toBeNull();
+  expect(el.textContent).toContain("edited by you");
+});
+
+test("chunk-03: no actions param → read-only rows (chunk-02 behavior preserved)", () => {
+  const el = document.createElement("div");
+  renderMessages(el, [{ id: "M1", role: "user", content: "hi" }]);
+  expect(el.querySelector(".act-edit")).toBeNull();
 });

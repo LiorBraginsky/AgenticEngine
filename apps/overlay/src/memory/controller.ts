@@ -54,22 +54,33 @@ export function createMemoryController(deps: MemoryControllerDeps): MemoryContro
   let currentView: ViewState = { kind: "list" };
   let lastLiveness: ShellState | undefined;
 
+  // Generation guard (reviewer minor, Demo-1 fix follow-up): loads are async but
+  // applyDownState writes synchronously. Without this, a stale loadThread/loadList that
+  // resolves AFTER a down transition can overwrite the honest "Daemon unreachable" render
+  // with stale content. Bumped at the start of every load (captured locally) and on every
+  // down transition -> a load whose captured gen no longer matches skips its render writes.
+  let loadGen = 0;
+
   function showList(): void { els.detailView.style.display = "none"; els.listView.style.display = "block"; }
   function showDetail(): void { els.listView.style.display = "none"; els.detailView.style.display = "block"; }
 
   async function loadList(): Promise<void> {
+    const gen = ++loadGen;
     renderState(els.threadListEl, "Loading…", "li");
     const r = await fetchThreads(deps.api);
+    if (gen !== loadGen) return; // stale load, invalidated by a down transition -> skip
     if (r.kind === "unauthorized") { renderState(els.threadListEl, LOCKED, "li"); return; }
     if (r.kind === "unreachable") { renderState(els.threadListEl, DOWN, "li"); return; }
     renderThreadList(els.threadListEl, r.data.threads ?? [], openThread);
   }
 
   async function loadThread(threadId: string): Promise<void> {
+    const gen = ++loadGen;
     renderState(els.messagesEl, "Loading…");
     renderState(els.factsEl, "Loading…");
     renderState(els.eventsEl, "Loading…");
     const r = await fetchThread(deps.api, threadId);
+    if (gen !== loadGen) return; // stale load, invalidated by a down transition -> skip
     if (r.kind === "unauthorized") { renderState(els.messagesEl, LOCKED); renderState(els.factsEl, LOCKED); renderState(els.eventsEl, LOCKED); return; }
     if (r.kind === "unreachable") { renderState(els.messagesEl, DOWN); renderState(els.factsEl, DOWN); renderState(els.eventsEl, DOWN); return; }
     renderMessages(els.messagesEl, r.data.messages ?? []);
@@ -89,6 +100,7 @@ export function createMemoryController(deps: MemoryControllerDeps): MemoryContro
   /** Clear the current view to the banner's honest state (clear-to-unreachable). Same
    *  DOWN/LOCKED constants + tags the nav path uses, applied to whichever view is up. */
   function applyDownState(state: ShellState): void {
+    loadGen++; // invalidate any in-flight load so a stale response can't clobber this render
     const msg = state === "unauthorized" ? LOCKED : DOWN;
     if (currentView.kind === "detail") {
       renderState(els.messagesEl, msg);

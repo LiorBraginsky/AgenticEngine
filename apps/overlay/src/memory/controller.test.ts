@@ -115,3 +115,72 @@ test("item 4: down->up while viewing a thread clears AND recovers the detail vie
   await flush();
   expect(els.messagesEl.textContent).toContain("hi"); // detail recovered, still on the same thread
 });
+
+// Reviewer minor (Demo-1 state-sync fix): a stale in-flight loadThread that resolves AFTER a
+// down transition must NOT overwrite the honest "Daemon unreachable" render with its stale
+// content. Fake fetchFn defers the /memory/thread/ response until resolveThread() is called
+// manually, so we control exactly when the "daemon served the response then died" race lands.
+interface DeferredThreadFetch {
+  fn: (url: string, init?: RequestInit) => Promise<Response>;
+  resolveThread: (body: unknown) => void;
+}
+function makeDeferredThreadFetch(): DeferredThreadFetch {
+  let resolve!: (res: Response) => void;
+  const fn = (url: string): Promise<Response> => {
+    if (url.includes("/memory/thread/")) {
+      return new Promise<Response>((r) => { resolve = r; });
+    }
+    const body = { threads: [{ thread_id: "T1", title: "One", last_active_at: 1, status: "active" }] };
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+  };
+  return {
+    fn,
+    resolveThread: (body: unknown) => resolve(new Response(JSON.stringify(body), { status: 200 })),
+  };
+}
+
+test("race guard: a stale in-flight loadThread resolving AFTER a down transition does NOT overwrite the honest 'Daemon unreachable' with stale content", async () => {
+  const f = makeDeferredThreadFetch();
+  const els = makeEls();
+  const c = createMemoryController({
+    api: { fetchFn: f.fn, baseUrl: "http://127.0.0.1:7777", token: "TOK" },
+    els,
+  });
+  c.start();
+  await flush();
+  c.onLivenessState("connected"); // baseline
+
+  els.threadListEl.querySelector<HTMLElement>(".thread-list-item")!.click(); // open thread -> loadThread in flight, deferred
+  await flush();
+  expect(els.messagesEl.textContent).toContain("Loading"); // thread fetch not resolved yet
+
+  c.onLivenessState("unreachable"); // down transition WHILE the stale loadThread is in flight
+  expect(els.messagesEl.textContent).toContain("Daemon unreachable");
+
+  // The stale in-flight response now lands (daemon served it, then died).
+  f.resolveThread({ messages: [{ id: "m1", role: "user", content: "hi" }], distilledFacts: [], distillationEvents: [] });
+  await flush();
+
+  // Must STAY "Daemon unreachable" — the stale response must not clobber the honest down-state.
+  expect(els.messagesEl.textContent).toContain("Daemon unreachable");
+  expect(els.messagesEl.textContent).not.toContain("hi");
+  expect(els.factsEl.textContent).toContain("Daemon unreachable");
+  expect(els.eventsEl.textContent).toContain("Daemon unreachable");
+});
+
+test("unauthorized branch: applyDownState renders the LOCKED message and unauthorized -> connected recovers (re-fetches)", async () => {
+  const f = makeFetch();
+  const { c, els } = make(f);
+  c.start();
+  await flush();
+  expect(els.threadListEl.querySelector(".thread-list-item")).not.toBeNull(); // rendered while up
+
+  c.onLivenessState("connected");     // baseline
+  c.onLivenessState("unauthorized");  // token rejected while content rendered
+  expect(els.threadListEl.textContent).toContain("🔒 Token rejected");
+  expect(els.threadListEl.querySelector(".thread-list-item")).toBeNull(); // stale list cleared
+
+  c.onLivenessState("connected");     // unauthorized -> connected recovers (re-fetches)
+  await flush();
+  expect(els.threadListEl.querySelector(".thread-list-item")).not.toBeNull();
+});

@@ -109,9 +109,19 @@ export function createMemoryController(deps: MemoryControllerDeps): MemoryContro
   }
 
   /** Clear the current view to the banner's honest state (clear-to-unreachable). Same
-   *  DOWN/LOCKED constants + tags the nav path uses, applied to whichever view is up. */
+   *  DOWN/LOCKED constants + tags the nav path uses, applied to whichever view is up.
+   *
+   *  Reviewer minor fix: also re-couples lastLiveness. The write path (handleWriteResult) calls
+   *  this directly on a POST unreachable/unauthorized WITHOUT going through onLivenessState, so
+   *  without this, lastLiveness would stay whatever the liveness poll last reported (e.g.
+   *  "connected") while the content is actually DOWN — the next "connected" poll would then see
+   *  prev === state, de-dupe as a repeat, and never call refreshCurrentView(), stranding the view
+   *  on DOWN until a manual nav. Setting it here re-arms the next same-value poll as a real
+   *  transition. Idempotent/redundant on the liveness-driven call (onLivenessState already set
+   *  lastLiveness = state right before calling this). */
   function applyDownState(state: ShellState): void {
     loadGen++; // invalidate any in-flight load so a stale response can't clobber this render
+    lastLiveness = state;
     const msg = state === "unauthorized" ? LOCKED : DOWN;
     if (currentView.kind === "detail") {
       renderState(els.messagesEl, msg);

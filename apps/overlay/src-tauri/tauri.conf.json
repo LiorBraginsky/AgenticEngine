@@ -37,6 +37,22 @@
         "resizable": true,
         "focus": false,
         "visible": false
+      },
+      {
+        "label": "memory",
+        "url": "memory.html",
+        "title": "AgenticEngine — Memory",
+        "width": 760,
+        "height": 560,
+        "minWidth": 480,
+        "minHeight": 360,
+        "resizable": true,
+        "center": true,
+        "visible": false,
+        "decorations": true,
+        "transparent": false,
+        "alwaysOnTop": false,
+        "skipTaskbar": false
       }
     ]
   },

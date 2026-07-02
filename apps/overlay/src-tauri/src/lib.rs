@@ -4,6 +4,8 @@
 // with "the trait `FromStr` is not implemented for `Shortcut`", fall back to the
 // Modifiers variant (see plan Step 3c FLAG-IF-UNSURE note) and report to Lior.
 
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::TrayIconBuilder;
 use tauri::Manager;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
@@ -30,6 +32,28 @@ fn read_auth_token() -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Read-only status sink for the tray. Called by main.ts from a connection-state tap
+/// (ADR-0006 p.4 — the deferred menu-bar status indicator). No app logic here: purely
+/// reflects daemon connectivity. Unknown/"disconnected" -> error state.
+///
+/// Icon-asset decision (chunk-01, plan Step 2): asset-free path — no new PNGs, no
+/// `include_image!`. The tray reuses the app's existing default window icon (set once at
+/// build time); the VISIBLE state change is a glyph in `set_title` (macOS renders the tray
+/// title text next to the icon in the menu bar) plus the tooltip — NOT tooltip-only.
+#[tauri::command]
+fn set_tray_status(app: tauri::AppHandle, status: String) {
+    let Some(tray) = app.tray_by_id("main-tray") else {
+        return;
+    };
+    let (glyph, tip) = match status.as_str() {
+        "connected" => ("●", "AgenticEngine — connected"),
+        "busy" => ("◐", "AgenticEngine — working…"),
+        _ => ("○", "AgenticEngine — daemon unreachable"),
+    };
+    let _ = tray.set_title(Some(glyph));
+    let _ = tray.set_tooltip(Some(tip));
+}
+
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
@@ -53,9 +77,43 @@ pub fn run() {
                 )?;
                 app.global_shortcut().register(shortcut)?;
             }
+
+            // Menu-bar tray: status indicator + "Open Memory…" / "Quit" (ADR-0006 p.4,
+            // un-defers the decision). Icon-asset decision (chunk-01): asset-free — reuses
+            // the app's default window icon rather than shipping new template PNGs; the
+            // visible connected/error state change is driven by `set_tray_status`'s
+            // `set_title` glyph, not the icon itself.
+            let open_i = MenuItem::with_id(app, "open_memory", "Open Memory…", true, None::<&str>)?;
+            let quit_i = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&open_i, &quit_i])?;
+
+            let mut tray_builder = TrayIconBuilder::with_id("main-tray")
+                .tooltip("AgenticEngine — connecting…")
+                .menu(&menu)
+                .show_menu_on_left_click(true)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "open_memory" => {
+                        if let Some(win) = app.get_webview_window("memory") {
+                            let _ = win.show();
+                            let _ = win.unminimize();
+                            let _ = win.set_focus();
+                        }
+                    }
+                    "quit" => app.exit(0),
+                    _ => {}
+                });
+            if let Some(icon) = app.default_window_icon().cloned() {
+                tray_builder = tray_builder.icon(icon);
+            }
+            let _tray = tray_builder.build(app)?;
+
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![hide_panel, read_auth_token])
+        .invoke_handler(tauri::generate_handler![
+            hide_panel,
+            read_auth_token,
+            set_tray_status
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

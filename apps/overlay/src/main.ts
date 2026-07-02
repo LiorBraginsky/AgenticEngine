@@ -55,8 +55,16 @@ const factory: WebSocketFactory = (url, protocols) => {
 // CM-02: one persistent connection for the overlay's lifetime. Opened on activation.
 // CM-03: a voluntary dismiss (EV_TEXT_DISMISS) closes this socket and re-creates a fresh
 // manager for the next conversation — hence `let`, reassigned in the dismiss handler.
+//
+// Review-fix (chunk-01 Minor): `connGeneration` gates the tray-status tap so an
+// orphaned old manager's trailing onConnectionState (fired by its ws.close() after
+// dismiss) can never clobber the tray with a stale "disconnected" once a fresh
+// manager has already reported "connected". Each construction captures its own
+// generation; the callback only pushes if it is still the current one.
+let connGeneration = 0;
+const gen0 = ++connGeneration;
 let connection = new ConnectionManager(factory, authToken, {
-  onConnectionState: (s) => { void pushTrayStatus(s); },
+  onConnectionState: (s) => { if (gen0 === connGeneration) void pushTrayStatus(s); },
 });
 connection.connect();
 
@@ -206,8 +214,14 @@ void listen(EV_TEXT_DISMISS, () => {
   // so construct a fresh one and open its socket on activation-equivalent. The prior
   // manager is intentionally orphaned — active=false guarantees its trailing close
   // event neither reconnects nor reopens; GC reclaims it once the socket closes.
+  //
+  // Review-fix (chunk-01 Minor): bump connGeneration so the orphaned old manager's
+  // trailing onConnectionState("disconnected") (from its ws.close() firing after this
+  // fresh manager already reported "connected") is dropped instead of clobbering the
+  // tray. Only the manager matching the CURRENT generation may push to the tray.
+  const gen = ++connGeneration;
   connection = new ConnectionManager(factory, authToken, {
-    onConnectionState: (s) => { void pushTrayStatus(s); },
+    onConnectionState: (s) => { if (gen === connGeneration) void pushTrayStatus(s); },
   });
   connection.connect();
 });

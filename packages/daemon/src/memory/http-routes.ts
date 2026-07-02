@@ -20,6 +20,13 @@
  * refuses machine ctx, which we never send from HTTP. A 409 path goes live the moment a
  * non-human HTTP actor is introduced (a later ADR); Hatch.edit/forget signatures will need
  * to surface the boolean refusal at that point. Per plan §217-244 BINDING decision.
+ *
+ * CORS seam (chunk-01, memory-transparency-ui): the exported `handleMemoryHttp` now wraps
+ * `route()` (the original dispatch body, unchanged) with a narrow CORS layer so the overlay
+ * webview (a cross-origin caller — ADR-0005 engine-owned native surface) can read the
+ * token-gated JSON. The allowed-origin reflection is keyed off the existing `origin.ts`
+ * allowlist — never `*` — and is purely additive response headers; the bearer-token gate
+ * (ADR-0013 rider) is completely unchanged.
  */
 
 import type { Hatch } from "./hatch.js";
@@ -27,6 +34,7 @@ import type { MemoryStore } from "./store.js";
 import type { TokenStore } from "./token-store.js";
 import type { WriteContext } from "./write-gate.js";
 import { HISTORY_HTML } from "./history-page.js";
+import { isOriginAllowed } from "../origin.js";
 
 export interface MemoryHttpDeps {
   hatch: Hatch;
@@ -42,6 +50,16 @@ export interface MemoryHttpDeps {
  */
 const HTTP_CTX: WriteContext = { actor: "user", authored_by: "human" };
 
+const CORS_METHODS = "GET, POST, OPTIONS";
+const CORS_ALLOW_HEADERS = "authorization, content-type";
+
+/** Reflect the request Origin iff it is the overlay's (origin.ts allowlist); never `*`. */
+function corsHeaders(origin: string | null): Record<string, string> {
+  return isOriginAllowed(origin)
+    ? { "access-control-allow-origin": origin as string, vary: "Origin" }
+    : {};
+}
+
 /**
  * Handle a request whose pathname starts with `/memory/` or equals `/history.html`.
  *
@@ -50,6 +68,35 @@ const HTTP_CTX: WriteContext = { actor: "user", authored_by: "human" };
  * never falls through to the WS upgrade path.
  */
 export async function handleMemoryHttp(
+  req: Request,
+  url: URL,
+  deps: MemoryHttpDeps,
+): Promise<Response> {
+  const origin = req.headers.get("origin");
+
+  // CORS preflight. The token is NEVER checked here — a preflight carries no credentials
+  // (browsers send OPTIONS before any Authorization-bearing cross-origin fetch); auth is
+  // enforced on the actual GET/POST in route(). We reflect only the allowlisted overlay
+  // origin (origin.ts). ADR-0013 rider: this widens read-*visibility* to the overlay
+  // browser only; the bearer-token gate is unchanged, and non-browser clients ignore CORS.
+  if (req.method === "OPTIONS") {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        ...corsHeaders(origin),
+        "access-control-allow-methods": CORS_METHODS,
+        "access-control-allow-headers": CORS_ALLOW_HEADERS,
+        "access-control-max-age": "600",
+      },
+    });
+  }
+
+  const res = await route(req, url, deps);
+  for (const [k, v] of Object.entries(corsHeaders(origin))) res.headers.set(k, v);
+  return res;
+}
+
+async function route(
   req: Request,
   url: URL,
   deps: MemoryHttpDeps,

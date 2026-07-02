@@ -791,11 +791,12 @@ export class MemoryStore {
   /**
    * List all threads ordered by last_active_at DESC (T2.1a — additive SELECT only).
    * Used by GET /memory/threads to populate the History page thread list.
+   * chunk-02: `status` added (additive; 'active' | 'dismissed', schema.ts:33). No new route.
    */
-  listThreads(): { thread_id: string; title: string | null; last_active_at: number }[] {
+  listThreads(): { thread_id: string; title: string | null; last_active_at: number; status: string }[] {
     return this.db
-      .query("SELECT thread_id, title, last_active_at FROM threads ORDER BY last_active_at DESC")
-      .all() as { thread_id: string; title: string | null; last_active_at: number }[];
+      .query("SELECT thread_id, title, last_active_at, status FROM threads ORDER BY last_active_at DESC")
+      .all() as { thread_id: string; title: string | null; last_active_at: number; status: string }[];
   }
 
   /** Raw helpers used by WriteGate (mutations) — kept here so all SQL lives in the store. */

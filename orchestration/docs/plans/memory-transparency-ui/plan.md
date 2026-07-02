@@ -573,3 +573,240 @@ Intermediate gates use real I/O (Step 1 tests use a real store/hatch/tokenStore 
 - **WKWebView custom-scheme CORS is the one live-demo risk** (see `## Fetch-path decision`). Escalation fallback (b) needs an ADR (new dep) — escalate, don't switch silently.
 - **Tauri v2 tray API names** — FLAG-IF-UNSURE note in Step 2; verify against pinned Tauri 2 docs, adjust + report, never add a crate to route around a name mismatch.
 - **macOS activation policy** (Dock-icon hiding via `ActivationPolicy::Accessory`) is deliberately OUT — do not change it (could disturb the existing windows/hotkey). Note only.
+
+---
+
+## Demo-1 fix — diagnosis + decision
+
+> Appended after Demo-1 (Lior, live macOS). Steps 1–3 shipped (6ebf695/9f2ba71/53e29a6/c35a230);
+> tray shows, "Open Memory…" opens the window, real token-gated GET works ("Connected (8 threads)"),
+> no token paste. These steps fix the two defect clusters Lior found. Every behavioral claim below
+> is marked as a **code-path fact** (verified by reading source) or a **runtime inference** (NOT
+> assertable from code-reading — §6.1); the DoD items ride Demo-2.
+>
+> **Orchestrator flag for Lior (Demo-2):** the tray-liveness mechanism (Step 6) DIVERGED from
+> Lior's literal "ws reconnect loop … driving set_tray_status" to a **Rust-side TCP health probe** —
+> because tuning the shared reconnect would change the AGENT connection (the exact coupling the chunk
+> OUT-scope forbids), and a JS poll would run in the same hidden-window webview that already failed in
+> Demo-1. This honors "or equivalent" + "your call on implementation." Tradeoff: TCP-accept is a
+> coarser signal than a full WS/token handshake, and it's demo-only (no JS unit test). A testable
+> JS-fetch variant is a one-paragraph swap if Lior prefers it.
+
+### Diagnosis point 1 — window destroyed on close (defect cluster 1)
+
+**Confirmed (code fact).** `lib.rs` has **no** `on_window_event` / `WindowEvent::CloseRequested`
+hook — the open handler (`lib.rs:95-101`) *only* `get_webview_window("memory")` → show/unminimize/focus.
+Tauri 2's native × **destroys** the window by default, so after a close `get_webview_window("memory")`
+returns `None` and the handler silently no-ops — dead until app restart. Exactly Lior's repro.
+
+**Tauri 2.11.2 API verified against the vendored crate** (`~/.cargo/registry/.../tauri-2.11.2`):
+`WindowEvent::CloseRequested { api: CloseRequestApi }` (`app.rs:118`, `#[non_exhaustive]` → match must
+use `{ api, .. }`); `CloseRequestApi::prevent_close(&self)` (`app.rs:103`); `Builder::on_window_event`
+(`app.rs:2052`, fires for all windows → filter on `window.label()`); `WebviewWindowBuilder::from_config(&app,&cfg).build()`
+(`webview_window.rs:150`).
+
+### Diagnosis point 2 — connection-manager reconnect (defect cluster 2B, tray direction)
+
+**Code facts:** `onConnectionState("connected")` fires in the `"open"` listener called by `openSocket()`
+on initial connect AND every reconnect; a failed initial connect schedules a reconnect (`active` is
+true, `close` fires). Backoff (`backoff.ts`): `baseMs=500, capMs=10_000`, full jitter → after ~5 fails
+each retry waits up to **10 s** → **alone violates "within a few seconds."** **Runtime inference (NOT
+code-assertable, §6.1):** the leading hypothesis for a *stalled* (not just slow) loop is WKWebView
+occlusion / App-Nap throttling of `setTimeout` in the `visible:false` main window — which is why a
+restart (re-running first connect before occlusion) was the only recovery. **Any JS-in-hidden-main
+mechanism shares this failure surface** → the fix must leave that context.
+
+### Diagnosis point 3 — memory.ts is one-shot (defect cluster 2A + window-half of 2B)
+
+**Confirmed (code fact).** `memory.ts` runs a single `fetch` at load and never re-checks → stale
+"Connected" after a kill (2A) and stale "unreachable" after a later start (window-half of 2B). The
+memory window is **visible** when its state matters → its own JS loop is alive → a periodic + on-focus
+re-check fixes both halves (a status-poll, not an auto-hide timer → unrelated to #33/#34; Lior allowed it).
+
+### Diagnosis point 4 — one source of truth for the tray
+
+**Confirmed (code fact).** Today the tray is driven solely by `main.ts`'s `onConnectionState` tap
+(+ `connGeneration` guard). A second driver added without removing the first would race → the fix
+makes the tray single-source.
+
+### THE decision (runtime coupling — flagged)
+
+- **Option A — tune the shared `ConnectionManager` reconnect (lower `capMs`).** *Rejected.* Changes the
+  AGENT connection's timing (the coupling the OUT-scope forbids); stays hostage to backoff + the
+  dismiss/re-create lifecycle; doesn't address the hidden-window-throttle hypothesis (same failed context).
+- **Option B — dedicated health-poll as the single tray source.** *Chosen*, realized as a **Rust-side
+  TCP probe** (`std::net::TcpStream::connect_timeout("127.0.0.1:7777", 1.5s)` every 3 s in a
+  `std::thread`, driving the tray via `apply_tray_status`). A JS poll was considered but runs in the same
+  hidden-main webview → rejected. **std::net only — no new crate.**
+
+**Why lowest-risk:** zero agent-connection coupling (`connection-manager.ts` left **byte-unchanged** —
+agent semantics provably unchanged; only the tray *wiring* is removed from `main.ts`); immune to
+WKWebView throttling (not in a webview); bounded 3 s latency both directions; single source of truth.
+**Reviewer, confirm:** (a) `packages/protocol/` diff empty; (b) `connection-manager.ts` byte-unchanged;
+(c) `main.ts` `inFlight`/submit/hotkey/dismiss identical after tray-wiring removal; (d) the poll thread
+mutates the tray only via `set_title`/`set_tooltip` (self-proxy to main thread — `tray/mod.rs`
+`run_item_main_thread!`), no GUI-safety violation.
+
+### Step 4: Memory-window lifecycle — hide-on-close + recreate-on-destroy (Rust)
+
+**Files:** Modify `apps/overlay/src-tauri/src/lib.rs`.
+
+**Interfaces:** native × on `memory` **hides** it (webview persists) instead of destroying; any destroy
+path recovered by rebuild-from-config. "Open Memory…" then works every time.
+
+> **FLAG-IF-UNSURE:** `app.config().app.windows` (`Vec<WindowConfig>`, `.label: String`, `Clone`) +
+> `WebviewWindowBuilder::from_config` verified against tauri-2.11.2 vendored source; if a field/path
+> differs at build, adjust + report. No new crate. **Demo-only (no unit test), gated by `cargo build`.**
+
+- [ ] **Step 4.1 — Add the close-intercept + recreate fallback in `lib.rs`.**
+  Imports: `use tauri::{Manager, WebviewWindowBuilder, WindowEvent};`
+  Insert a Builder-level hook after `tauri::Builder::default()` and before `.setup(...)`:
+  ```rust
+  // Demo-1 fix (cluster 1): the memory window's native × must HIDE, not DESTROY, so
+  // "Open Memory…" can re-show the SAME webview every time (a destroyed window makes
+  // get_webview_window("memory") return None → dead until restart). Keeping the webview
+  // alive also lets memory.ts's liveness poll (Step 5) survive close/reopen. Filtered by
+  // label so main/widget are unaffected.
+  .on_window_event(|window, event| {
+      if window.label() == "memory" {
+          if let WindowEvent::CloseRequested { api, .. } = event {
+              api.prevent_close();
+              let _ = window.hide();
+          }
+      }
+  })
+  ```
+  In the `"open_memory"` arm, add the recreate-from-config belt-and-braces path:
+  ```rust
+  "open_memory" => {
+      if let Some(win) = app.get_webview_window("memory") {
+          let _ = win.show();
+          let _ = win.unminimize();
+          let _ = win.set_focus();
+      } else if let Some(cfg) = app.config().app.windows.iter().find(|w| w.label == "memory").cloned() {
+          if let Ok(win) = WebviewWindowBuilder::from_config(app, &cfg).and_then(|b| b.build()) {
+              let _ = win.show();
+              let _ = win.set_focus();
+          }
+      }
+  }
+  ```
+  (`"quit" => app.exit(0)` unchanged — `exit` bypasses per-window close, so Quit still exits.)
+- [ ] **Step 4.2 — Compile.** `cd apps/overlay/src-tauri && cargo build` (clean; apply FLAG-IF-UNSURE if a name differs, never add a crate).
+- [ ] **Step 4.3 — Commit.** `fix(overlay): memory window hides on close (prevent_close) + recreates if destroyed` + the `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>` trailer.
+
+### Step 5: Memory-window liveness — periodic + on-focus re-check (memory.ts)
+
+**Files:** Create `apps/overlay/src/memory-liveness.ts` (pure logic, NO tauri/DOM imports → unit-testable)
++ `apps/overlay/src/memory-liveness.test.ts`; modify `apps/overlay/src/memory.ts`.
+
+**Interfaces:** `runMemoryCheck(fetchFn,url,token,timeoutMs?) → Promise<MemoryCheckResult>` and
+`createMemoryLiveness(deps) → { start; checkNow; stop }`. `memory.ts` renders every state + forces a
+re-check on `focus`/`visibilitychange`. Interacts with Step 4 (hide-on-close keeps the webview alive →
+memory.ts does NOT re-run on re-open → forced `checkNow()` prevents stale state).
+
+- [ ] **Step 5.1 — Write failing tests** `memory-liveness.test.ts`: `runMemoryCheck` maps 200→connected(N threads),
+  401→unauthorized, 500→unreachable(HTTP 500), network-error→unreachable; token rides `Authorization: Bearer`
+  and is NEVER in the URL (ADR-0013); `createMemoryLiveness` flips connected→unreachable→connected across
+  simulated ticks (Demo-1 2A + 2B window-half). (Full test bodies as authored by the architect — inject
+  `setIntervalFn`/`clearIntervalFn`, use a mode-switched fake fetch.)
+- [ ] **Step 5.2 — Run; verify FAIL** (module missing).
+- [ ] **Step 5.3 — Create `memory-liveness.ts`** — `runMemoryCheck` (never throws; maps every path to a
+  state; `AbortController` timeout `2500ms`; Bearer header only) + `createMemoryLiveness` (default
+  `intervalMs=3000`; injectable `setIntervalFn`/`clearIntervalFn`; `isHidden` gate to skip while hidden;
+  `inFlight` guard so fetches never stack; `start()` does an immediate check + interval; `checkNow()`
+  forces one; `stop()` clears). NO tauri/DOM imports.
+- [ ] **Step 5.4 — Run; verify GREEN.**
+- [ ] **Step 5.5 — Refactor `memory.ts`** to read the token (unchanged), build `createMemoryLiveness`
+  with `fetchFn:(u,i)=>fetch(u,i)`, `isHidden:()=>document.hidden`, `onState: render`; `liveness.start()`;
+  add `window.addEventListener("focus", () => liveness.checkNow())` +
+  `document.addEventListener("visibilitychange", () => { if (!document.hidden) liveness.checkNow(); })`.
+  Keep the honest-state `render` (no-token/unreachable/unauthorized/connected). Status-poll only — never
+  changes visibility (unrelated to #33/#34).
+- [ ] **Step 5.6 — Verify gates:** `bun run typecheck`, `bun run lint:strict`, `bun test`; `git diff --stat packages/protocol/` empty.
+- [ ] **Step 5.7 — Commit.** `fix(overlay): memory window re-checks daemon liveness (poll + focus/visibility)` + trailer.
+
+### Step 6: Tray liveness — Rust TCP health poll (single source) + remove JS tray driver
+
+**Files:** Modify `apps/overlay/src-tauri/src/lib.rs` + `apps/overlay/src/main.ts`.
+
+**Interfaces:** a Rust `std::thread` probes `127.0.0.1:7777` every 3 s and drives the tray glyph via a
+shared `apply_tray_status(&AppHandle, &str)` in BOTH directions; `main.ts` no longer pushes tray status
+(Rust poll = single source). Apply **after** Step 4 (both touch `lib.rs`, disjoint regions).
+
+> **FLAG-IF-UNSURE:** `app.handle().clone() → AppHandle` (Send+Sync); `set_title`/`set_tooltip`
+> self-proxy to the main thread (`tray/mod.rs` `run_item_main_thread!`) → safe from the poll thread.
+> If a thread-safety error appears, wrap the mutation in `app.handle().run_on_main_thread(...)`
+> (`app.rs:495`). `std::net` is std — no new crate. Demo-only (no unit test).
+
+- [ ] **Step 6.1 — Refactor tray sink + add the Rust poll in `lib.rs`.** Extract
+  `fn apply_tray_status(app:&AppHandle, status:&str)` (glyph ●/◐/○ + tooltip, via `tray_by_id("main-tray")`
+  → `set_title`/`set_tooltip`); make `#[tauri::command] set_tray_status` a thin wrapper calling it
+  (retained for a future JS-driven "busy"). Inside `setup(...)`, after `let _tray = ….build(app)?;` and
+  before `Ok(())`, spawn:
+  ```rust
+  {
+      let handle = app.handle().clone();
+      std::thread::spawn(move || {
+          use std::net::{SocketAddr, TcpStream};
+          use std::time::Duration;
+          let addr: SocketAddr = "127.0.0.1:7777".parse().expect("valid daemon socket addr");
+          let mut last: Option<&str> = None;
+          loop {
+              let status = if TcpStream::connect_timeout(&addr, Duration::from_millis(1500)).is_ok() { "connected" } else { "disconnected" };
+              if last != Some(status) { last = Some(status); apply_tray_status(&handle, status); }
+              std::thread::sleep(Duration::from_secs(3));
+          }
+      });
+  }
+  ```
+  (Leave `generate_handler![hide_panel, read_auth_token, set_tray_status]` unchanged.)
+- [ ] **Step 6.2 — Compile.** `cd apps/overlay/src-tauri && cargo build` (clean; FLAG-IF-UNSURE → `run_on_main_thread` fallback).
+- [ ] **Step 6.3 — Remove the JS tray driver in `main.ts`** (reverts Step 3.5 + the gen-guard; Rust poll
+  is now sole source): delete `pushTrayStatus` + `type TrayStatus` (replace with a one-line note that tray
+  is Rust-driven); both `ConnectionManager` construction sites revert to
+  `new ConnectionManager(factory, authToken); connection.connect();` (delete `connGeneration`/`gen0`/`gen`
+  + the `onConnectionState` option + the stale review-fix comment). **Do NOT touch `connection-manager.ts`**
+  — the additive `onConnectionState` tap + its 2 tests stay (now unused by tray, retained for a future
+  in-window indicator) → `connection-manager.ts` byte-unchanged → agent semantics provably unchanged.
+- [ ] **Step 6.4 — Verify gates:** `bun run typecheck`, `bun run lint:strict`, `bun test` (the
+  `onConnectionState` tests still pass — `ConnectionManager` unchanged); `git diff --stat packages/protocol/` empty.
+- [ ] **Step 6.5 — Commit.** `fix(overlay): drive tray liveness from a Rust TCP health poll (single source)` + trailer.
+
+### Verification (Demo-1 fix — DoD mapping)
+
+**Mechanical (worker now):** `git diff packages/protocol/` empty (5.6, 6.4); `connection-manager.ts`
+byte-unchanged (assert in 6); `bun test`/`lint:strict`/`typecheck` green (5.4, 5.6, 6.4); `cargo build`
+clean (4.2, 6.2); `memory-liveness` state-machine + `runMemoryCheck` tri-state/token-discipline covered.
+
+**Behavioral — ALL "requires live macOS demo to confirm" (Demo-2; §6.1):** close-×-then-reopen works
+every time (Step 4); window open+Connected → kill daemon → unreachable within seconds, no restart (Step 5, 2A);
+window open+unreachable → start daemon → Connected, no restart + re-focus re-checks (Step 5, 2B window-half);
+tray reflects up↔down both directions within seconds incl. launch-down→start recovery (Step 6, 2B tray).
+Runtime risk: confirm the Rust poll's tray mutation renders from the spawned thread; else apply the
+`run_on_main_thread` fallback.
+
+## ADR worthy: no
+
+Window hide-on-close + recreate-from-config = standard Tauri lifecycle. The memory-window poll +
+focus/visibility re-check and the tray Rust TCP poll are read-only **status polls** Lior explicitly
+authorized; no protocol change, no new route, no new dep (std::net only; window reuses the shipped CORS'd
+`GET /memory/threads`), no new boundary; the tray poll executes ADR-0006 p.4. **Reviewer escalation
+clause:** if the reviewer judges (a) the Rust process probing the daemon TCP port, or (b) reusing
+`GET /memory/threads` as a health signal, a NEW posture beyond ADR-0006 p.4 / ADR-0013, escalate to
+`adr-curator` for a note/rider (not a new ADR) before merge.
+
+## Risks & flags (Demo-1 fixes)
+
+- **Runtime-coupling flag (reviewer):** tray liveness deliberately moved OUT of the shared agent
+  `ConnectionManager` into a Rust probe → NO agent-connection semantics change; `connection-manager.ts`
+  byte-unchanged; confirm `main.ts` `inFlight`/submit/hotkey/dismiss unchanged after tray-wiring removal.
+- **Steps 4 and 6 both touch `lib.rs`** (disjoint regions) — sequential, Step 4 before Step 6.
+- **`onConnectionState` tap now unused by the tray** but retained (additive, tested) — deliberate low-churn
+  choice to keep `ConnectionManager` byte-unchanged; do NOT delete here.
+- **Two localhost pollers** while both surfaces alive (Rust tray probe 3 s + memory-window JS poll 3 s
+  when visible) — negligible on localhost; JS poll skips while `document.hidden`.
+- **Hidden-window-throttling is a hypothesis, not a code fact** (§6.1) — the Rust probe is robust
+  regardless of the true 2B root; Demo-2 confirms.
+- **Tray signal is coarser** (TCP-accept vs full WS/token handshake) and demo-only (no JS unit test) —
+  acceptable for a coarse ADR-0006 p.4 glyph; JS-fetch variant is a one-paragraph swap if Lior prefers.

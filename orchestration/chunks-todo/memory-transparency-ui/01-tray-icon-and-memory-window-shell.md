@@ -39,14 +39,37 @@
 
 ## Done criteria
 
+> **Demo-1 result (Lior, live §6.1, 2026-07-02): PARTIAL FAIL.** PASS-half: tray icon shows,
+> "Open Memory…" opens the window, real token-gated GET works ("Connected (8 threads)"), no
+> token paste. Two defect clusters found → three criteria ADDED below (window-lifecycle +
+> liveness). Original items were "sampled once" and fail under live transitions; the added
+> criteria make them hold. All behavioral items ride Demo-2.
+
 - [ ] **[behavioral]** Tray icon appears in the macOS menu bar; its state visibly changes when
-      the daemon is stopped/started (connected ↔ error at minimum).
+      the daemon is stopped/started (connected ↔ error at minimum). *(Demo-1: icon shows;
+      stop/start transition retested in Demo-2 — see the two transition criteria below.)*
 - [ ] **[behavioral]** Tray → "Open Memory…" opens the memory window; the shell page shows
       "connected" state via a real token-gated `GET /memory/threads` (no manual token entry
-      anywhere). Re-open focuses, does not duplicate.
+      anywhere). Re-open focuses, does not duplicate. *(Demo-1: PASS on first open; re-open
+      after native close is the added window-lifecycle criterion below.)*
 - [ ] **[behavioral]** With the daemon down, the shell page shows the honest "daemon
       unreachable" state (NOT a false "Loading…" — spec inherits the history.html lesson).
-- [ ] **[mechanical]** `bun test` green, `lint:strict` green, typecheck green.
+      *(Demo-1: PASS on a fresh open with daemon down; the live-transition case is the added
+      liveness criterion below.)*
+- [ ] **[behavioral — added 2026-07-02 Demo-1 finding, cluster 1]** Close the memory window with
+      the native **×** button, then re-open it from the tray "Open Memory…" — it opens **every
+      time**, repeatably across multiple close→re-open cycles (no dead tray until a full app
+      restart). *(Root cause: Tauri 2 native close DESTROYS the window; the open handler only
+      show/focus-es an existing one.)*
+- [ ] **[behavioral — added 2026-07-02 Demo-1 finding, cluster 2A]** With the memory window
+      **open** showing "Connected", **kill the daemon** → the window transitions to the honest
+      "unreachable" state within a few seconds, **without an app restart** (live re-check, not
+      sampled-once).
+- [ ] **[behavioral — added 2026-07-02 Demo-1 finding, cluster 2B]** Launch with the daemon
+      **down** (tray shows disconnected), then **start the daemon** → the **tray flips to
+      connected** AND an **open memory window recovers** to "Connected" within a few seconds,
+      **both without an app restart** (down→up transition on both surfaces).
+- [ ] **[mechanical]** `bun test` green, `lint:strict` green, typecheck green, `cargo build` clean.
 - [ ] **[mechanical]** `git diff` on `packages/protocol/` is empty.
 
 ## Orchestrator brief (read by the orchestrator from this file)
@@ -87,3 +110,15 @@ ADRs in scope: 0006 (p.4 — executes the deferred tray decision; two-zone UX un
   v1; note only, do not build monitor-resolution logic.
 - Gotchas #33/#34 (stale hide/reset timers): do NOT add any auto-hide/linger timers to the
   memory window — it is a normal window, closed by the user.
+- **Liveness contract (added 2026-07-02 Demo-1, Lior — explicit honest contract):** the tray
+  MUST reflect daemon up/down transitions in **BOTH directions within a few seconds** (e.g. the
+  WS reconnect loop with backoff driving `set_tray_status`, or equivalent); the memory window
+  MUST transition Connected ↔ unreachable **without an app restart** (a lightweight periodic
+  re-check and/or a re-fetch on window focus and on tray re-open). A **status-poll / reconnect
+  timer is EXPLICITLY ALLOWED** and is unrelated to gotchas #33/#34 — those forbid only
+  auto-**HIDE** / linger timers (which change window visibility), not a read-only status poll.
+- **Window lifecycle (added 2026-07-02 Demo-1):** native **×** close must NOT leave the tray's
+  "Open Memory…" dead. Fix direction (implementation is the architect's call): intercept
+  `WindowEvent::CloseRequested` for the `memory` window → `prevent_close()` + `hide()` so
+  re-open show/focus works; AND/OR make the open handler recreate the window from config when
+  `get_webview_window("memory")` returns `None` (belt-and-braces for any destroy path).

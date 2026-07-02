@@ -514,3 +514,39 @@ test("ConnectionManager.runSession: onSessionStart fires once, right after sessi
   await p;
   expect(order).toEqual(["start", "text"]); // start never fires again
 });
+
+// ---------------------------------------------------------------------------
+// chunk-01 (memory-transparency-ui) — read-only onConnectionState tap for the tray
+// ---------------------------------------------------------------------------
+
+test("onConnectionState fires 'connected' on socket open", () => {
+  const states: string[] = [];
+  const listeners: Record<string, ((e: { data: unknown }) => void)[]> = {};
+  const factory = () => ({
+    send: () => {},
+    close: () => (listeners["close"] ?? []).forEach((cb) => cb({ data: undefined })),
+    addEventListener: (t: string, cb: (e: { data: unknown }) => void) => { (listeners[t] ??= []).push(cb); },
+  });
+  const cm = new ConnectionManager(factory, "tok", { onConnectionState: (s) => states.push(s) });
+  cm.connect();
+  (listeners["open"] ?? []).forEach((cb) => cb({ data: undefined }));
+  expect(states).toContain("connected");
+});
+
+test("onConnectionState fires 'disconnected' on socket close (reconnect suppressed)", () => {
+  const states: string[] = [];
+  const listeners: Record<string, ((e: { data: unknown }) => void)[]> = {};
+  const factory = () => ({
+    send: () => {},
+    close: () => (listeners["close"] ?? []).forEach((cb) => cb({ data: undefined })),
+    addEventListener: (t: string, cb: (e: { data: unknown }) => void) => { (listeners[t] ??= []).push(cb); },
+  });
+  const cm = new ConnectionManager(factory, "tok", {
+    onConnectionState: (s) => states.push(s),
+    setTimeoutFn: () => 0 as unknown as ReturnType<typeof setTimeout>,
+  });
+  cm.connect();
+  (listeners["open"] ?? []).forEach((cb) => cb({ data: undefined }));
+  (listeners["close"] ?? []).forEach((cb) => cb({ data: undefined }));
+  expect(states).toEqual(["connected", "disconnected"]);
+});

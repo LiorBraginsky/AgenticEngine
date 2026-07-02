@@ -22,6 +22,10 @@ import { HideScheduler } from "./lifecycle/hide-scheduler.js";
 import { statusForEndReason } from "./lifecycle/session-end-reason.js";
 import type { StatusVariant } from "./widgets/status.js";
 
+// Demo-1 fix (Step 6): tray liveness is driven ENTIRELY by the Rust-side TCP
+// health poll (lib.rs, single source) — independent of this webview and the
+// agent ConnectionManager below.
+
 // ---------------------------------------------------------------------------
 // Per-install auth token — read once at boot via Rust command (spec §3.2, B1).
 // The token is install-stable; reading once satisfies every reconnect (A1 approach).

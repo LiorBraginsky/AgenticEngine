@@ -17,12 +17,16 @@ import { backoffDelayMs, DEFAULT_BACKOFF } from "./backoff.js";
  *   on the wire) and schedules a backoff reconnect (D1). currentThreadId is owned by
  *   the caller (main.ts) and is NOT reset here (involuntary drop ≠ dismiss).
  */
+export type ConnectionState = "connected" | "disconnected";
+
 export interface ConnectionManagerDeps {
   setTimeoutFn?: (cb: () => void, ms: number) => ReturnType<typeof setTimeout>;
   clearTimeoutFn?: (h: ReturnType<typeof setTimeout>) => void;
   random?: () => number;
   baseMs?: number;
   capMs?: number;
+  /** chunk-01: read-only connection-state tap for the tray. Additive; never mutates manager state. */
+  onConnectionState?: (state: ConnectionState) => void;
 }
 
 export class ConnectionManager {
@@ -36,6 +40,7 @@ export class ConnectionManager {
   private readonly random: () => number;
   private readonly baseMs: number;
   private readonly capMs: number;
+  private readonly onConnectionState?: (state: ConnectionState) => void;
 
   constructor(private readonly factory: WebSocketFactory, private readonly token: string, deps: ConnectionManagerDeps = {}) {
     this.setTimeoutFn = deps.setTimeoutFn ?? ((cb, ms) => setTimeout(cb, ms));
@@ -43,6 +48,7 @@ export class ConnectionManager {
     this.random = deps.random ?? Math.random;
     this.baseMs = deps.baseMs ?? DEFAULT_BACKOFF.baseMs;
     this.capMs = deps.capMs ?? DEFAULT_BACKOFF.capMs;
+    this.onConnectionState = deps.onConnectionState;
   }
 
   connect(): void {
@@ -53,7 +59,7 @@ export class ConnectionManager {
   private openSocket(): void {
     const ws = this.factory(WS_URL, [this.token]);
     this.ws = ws;
-    ws.addEventListener("open", () => { this.reconnectAttempt = 0; });
+    ws.addEventListener("open", () => { this.reconnectAttempt = 0; this.onConnectionState?.("connected"); });
     ws.addEventListener("message", (ev) => this.dispatch(ev.data));
     ws.addEventListener("error", () => {/* close event drives recovery */});
     ws.addEventListener("close", () => this.onSocketClose());
@@ -71,6 +77,7 @@ export class ConnectionManager {
     this.pending.clear();
     this.pendingByCid = undefined;
     this.ws = undefined;
+    this.onConnectionState?.("disconnected");
     if (this.active) this.scheduleReconnect();
   }
 

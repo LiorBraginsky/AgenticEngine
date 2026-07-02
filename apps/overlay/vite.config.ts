@@ -14,6 +14,7 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, "index.html"),
         widget: resolve(__dirname, "widget.html"),
+        memory: resolve(__dirname, "memory.html"),
       },
     },
   },

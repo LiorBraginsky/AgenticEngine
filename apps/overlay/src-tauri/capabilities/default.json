@@ -1,7 +1,7 @@
 {
   "identifier": "default",
   "description": "default",
-  "windows": ["main", "widget"],
+  "windows": ["main", "widget", "memory"],
   "permissions": [
     "core:default",
     "global-shortcut:allow-register",

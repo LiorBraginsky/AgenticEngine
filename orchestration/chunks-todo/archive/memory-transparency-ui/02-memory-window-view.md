@@ -1,6 +1,8 @@
+> 🗄️ ARCHIVED 2026-07-02 — done. Historical record; do not edit.
+
 # Chunk 2: Memory window — VIEW (threads, facts, provenance)
 
-**Status:** todo
+**Status:** done
 **Created:** 2026-07-02
 **Phase:** memory-transparency-ui (backlog Theme A — spec `docs/specs/2026-07-02-memory-transparency-ui.md`)
 **Estimated size:** ~1 day
@@ -38,17 +40,38 @@
 
 ## Done criteria
 
-- [ ] **[behavioral]** From the tray, the memory window lists real threads from
+- [x] **[behavioral]** From the tray, the memory window lists real threads from
       `~/.agentic-engine/memory.sqlite`; clicking a thread shows its messages, the distilled
       facts, and distillation events (including a 0-fact event if present) — with no token
       entry.
-- [ ] **[behavioral]** Each distilled fact shows its provenance; the provenance link navigates
+- [x] **[behavioral]** Each distilled fact shows its provenance; the provenance link navigates
       to the source thread's detail.
-- [ ] **[behavioral]** A fact with default `expiry`/`confidence` shows NO expiry/confidence
+- [x] **[behavioral]** A fact with default `expiry`/`confidence` shows NO expiry/confidence
       chrome; (test-seeded) non-default values ARE shown.
-- [ ] **[mechanical]** `bun test` green (incl. any new UI/data-shaping tests), `lint:strict`
-      green, typecheck green.
-- [ ] **[mechanical]** `git diff` on `packages/protocol/` is empty.
+- [x] **[behavioral]** (Demo-1, Lior 2026-07-02) **Down-with-content-rendered:** with the
+      threads list (or a thread detail) rendered, killing the daemon flips BOTH the header
+      banner AND the content sections to the same honest "Daemon unreachable" state within a
+      few seconds — the header and content never contradict, no stale content lingers.
+- [x] **[behavioral]** (Demo-1, Lior 2026-07-02) **Recover-refetch-without-restart:** starting
+      the daemon again re-populates the content sections (the same poll/transition that flips
+      the header to "Connected (N)" also re-fetches the current view) — full recovery with NO
+      `tauri` restart; if a thread detail is open, that same thread re-loads in place.
+- [x] **[mechanical]** `bun test` green (incl. any new UI/data-shaping tests + the new
+      `controller.test.ts` covering both state-sync transitions), `lint:strict` green,
+      typecheck green.
+- [x] **[mechanical]** `git diff` on `packages/protocol/` is empty.
+
+## Honest-state contract (Lior, Demo-1 2026-07-02) — the state-sync rule
+
+The connection **banner** and the **content sections** are driven by the same liveness poll and
+MUST never contradict each other:
+1. The header and the sections never show contradictory states.
+2. The same poll/transition that flips the header to **Connected** must also **re-fetch section
+   content**, so the window fully recovers **without a restart**.
+3. On daemon-down, already-rendered content adopts ONE honest behavior, applied consistently to
+   both the list and the open-detail views. **Chosen: clear-to-unreachable** (content clears to
+   the same honest "unreachable"/"locked" message the banner shows) — NOT a stale marker
+   (plan `## Demo-1 fix — state-sync (item 4)` → `## The decision`).
 
 ## Orchestrator brief (read by the orchestrator from this file)
 

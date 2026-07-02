@@ -1,0 +1,62 @@
+/**
+ * DOM-harness tests for the memory read-UI renderers (happy-dom via test-setup/dom-preload).
+ * Covers the load-bearing DoD bits: 0-fact event label, per-fact provenance jump-link +
+ * callback, and the expiry/confidence "shown only when non-default" rule.
+ */
+import { test, expect } from "bun:test";
+import { renderFacts, renderEvents, renderThreadList } from "./render.js";
+import type { DistilledFactView, DistillationEventView, ThreadSummary } from "./types.js";
+
+function host(): HTMLElement { const d = document.createElement("div"); document.body.appendChild(d); return d; }
+const baseFact: DistilledFactView = {
+  id: "f1", fact: "likes blue", provenance: "thread:T1", scope: "cross-thread",
+  expiry: null, confidence: 1, authored_by: "machine",
+};
+
+test("renderEvents: a 0-fact event renders the 'deliberately retained nothing' label", () => {
+  const el = host();
+  const ev: DistillationEventView = { facts_produced: 0, trigger: "dismiss", distiller_version: "v", created_at: 1 };
+  renderEvents(el, [ev]);
+  expect(el.textContent).toContain("deliberately retained nothing");
+});
+
+test("renderFacts: thread:<id> provenance is a jump-link firing onOpenThread(id)", () => {
+  const el = host();
+  let opened = ""; // sentinel: no valid thread id is ever "" (avoids TS narrowing a `null` sentinel across the closure boundary)
+  renderFacts(el, [baseFact], (id) => { opened = id; });
+  const link = el.querySelector<HTMLElement>(".prov-link");
+  expect(link).not.toBeNull();
+  link!.click();
+  expect(opened).toBe("T1");
+});
+
+test("renderFacts: non-thread provenance renders as text, no jump-link", () => {
+  const el = host();
+  renderFacts(el, [{ ...baseFact, provenance: "id1,id2" }], () => {});
+  expect(el.querySelector(".prov-link")).toBeNull();
+  expect(el.textContent).toContain("id1,id2");
+});
+
+test("renderFacts: default expiry/confidence → NO expiry/confidence chrome", () => {
+  const el = host();
+  renderFacts(el, [baseFact], () => {});
+  expect(el.querySelector(".fact-expiry")).toBeNull();
+  expect(el.querySelector(".fact-confidence")).toBeNull();
+});
+
+test("renderFacts: non-default expiry/confidence ARE shown", () => {
+  const el = host();
+  renderFacts(el, [{ ...baseFact, expiry: 1730000000000, confidence: 0.5 }], () => {});
+  expect(el.querySelector(".fact-expiry")).not.toBeNull();
+  expect(el.querySelector(".fact-confidence")).not.toBeNull();
+});
+
+test("renderThreadList: click fires onOpen(thread_id); status shown when present", () => {
+  const el = host();
+  let opened = ""; // sentinel: no valid thread id is ever "" (avoids TS narrowing a `null` sentinel across the closure boundary)
+  const t: ThreadSummary = { thread_id: "T9", title: "Hi", last_active_at: 1, status: "dismissed" };
+  renderThreadList(el, [t], (id) => { opened = id; });
+  expect(el.textContent).toContain("dismissed");
+  el.querySelector<HTMLElement>(".thread-list-item")!.click();
+  expect(opened).toBe("T9");
+});

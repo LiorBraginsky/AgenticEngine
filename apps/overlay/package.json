@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.memory-dom-tests.json",
     "predev": "lsof -ti:1420 | xargs kill -9 2>/dev/null; true",
     "dev": "vite",
     "build": "vite build",

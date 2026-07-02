@@ -1713,3 +1713,494 @@ Rationale:
 ---
 
 ## Status: Done
+
+
+---
+
+## Demo-1 fix — state-sync (item 4)
+
+> Appended after Demo-1 (Lior, live macOS) of chunk-02. Steps 1–3 shipped (PR #76 chunk-02
+> commits); the read UI works — items 1, 2 PASSED; item 3's default-half passed and its
+> non-default half is already unit-tested (see Diagnosis); item 4 FAILED. This fix couples the
+> two uncoordinated in-window state machines so the header and content can never contradict and
+> the window recovers without a `tauri` restart. Every claim below is a **code-path fact**
+> (verified by reading source, lines cited) or a **runtime inference** (NOT assertable from
+> code-reading — PIPELINE §6.1); the behavioral DoD rides Lior's re-demo.
+
+### Diagnosis
+
+**The window has TWO uncoordinated state machines (confirmed, code facts):**
+
+1. **Connection banner** — `apps/overlay/src/memory.ts` builds `createMemoryLiveness`
+   (`apps/overlay/src/memory-liveness.ts`) with `onState: renderBanner`, driving only `#conn-state`.
+   It polls `GET /memory/threads` on an interval (`memory-liveness.ts` — immediate `check()`
+   + `setInterval` at `intervalMs=3000`) plus a forced `checkNow()` on `focus`/`visibilitychange`.
+2. **Content sections** — `apps/overlay/src/memory/controller.ts` fetches threads only in `loadList`
+   (called from `start()` and the back-button handler) and thread detail only in `loadThread`
+   (called from `openThread`, which is also the provenance-jump target). **The controller never
+   subscribes to the liveness poll.**
+
+**The transition-vs-every-poll finding (load-bearing for the fix):** `createMemoryLiveness`
+`check()` calls `deps.onState(...)` **unconditionally on every check** — the interface doc-comment
+states it verbatim: "Fired with every terminal result." So `onState` fires **~every 3s, NOT only on
+transitions.** Consequence: the controller must **de-dupe** — re-fetch content ONLY on a genuine
+transition **into `connected` from a non-connected state**; a naïve subscribe-and-refetch would
+re-fetch every 3s (flicker/waste). This is why the de-dupe lives in the controller and
+`memory-liveness.ts` is left **unchanged** (its per-poll `onState` is wired from `memory.ts`).
+
+**Root causes, mapped to Lior's repro:**
+- **(4a)** daemon killed with the list rendered → the poll flips the banner to "Daemon unreachable"
+  within ≤3s, but the controller never re-fetches → the **stale threads list stays rendered** →
+  header/content contradict. Root: no coupling from the poll to the content.
+- **(4b)** while down: enter a thread → empty detail; back → "Threads — Daemon unreachable". **Already
+  honest** because `openThread`/back re-fetch on nav and get `unreachable`. No change needed for this
+  half; the fix keeps it honest.
+- **(4c)** daemon restarted → the poll recovers the banner to "Connected (N threads)", but the content
+  is **stuck on "Daemon unreachable" forever** — only a full `tauri` restart recovers it (a restart
+  re-runs `controller.start()` → `loadList()`). Root: the controller re-fetches only on explicit nav,
+  never on the poll's connected-transition.
+
+**Test gap that let this ship green (meta-cause):** there is **no `controller.test.ts`** —
+`apps/overlay/src/memory/` contains only `memory-api.test.ts`, `fact-view.test.ts`, `render.test.ts`.
+The controller's coordination — the exact locus of the defect — was never unit-tested, so green tests
++ a clean review could not catch it. Step 4's test closes this gap and is the point of the fix.
+
+**Item 3 — ALREADY covered, no action (reality-check note for Lior):** `render.test.ts:47-52`
+("renderFacts: non-default expiry/confidence ARE shown") asserts `.fact-expiry` **and**
+`.fact-confidence` are present for `{ expiry: 1730000000000, confidence: 0.5 }`, and `:40-45` asserts
+both absent for the default `baseFact` (`expiry:null, confidence:1`). The seeded-non-default half of
+item 3 is proven mechanically. No new test needed for item 3.
+
+### The decision
+
+**On daemon-down, CLEAR the already-rendered content to the honest "unreachable"/"locked" state
+(clear-to-unreachable), applied consistently to BOTH the list view and the open-detail view — NOT an
+explicit stale-marker.**
+
+Justification (Lior asked for one, so this is the operative honest-state rule for this window):
+
+1. **It reuses the path already shipped.** The controller already does clear-to-unreachable on explicit
+   nav (`loadList`/`loadThread` render the `DOWN`/`LOCKED` constants on `unreachable`/`unauthorized`).
+   Choosing clear-to-unreachable makes the poll-driven path **identical** to the nav-driven path — one
+   honest-state mechanism, using the same two constants. A stale-marker would introduce a **second**
+   rendering path the nav path lacks → more surface, more divergence risk.
+2. **It satisfies contract rule 1 (never contradict) literally.** The banner says "Daemon unreachable";
+   clearing content to the same message means header and content say the **same** thing. A stale-marker
+   leaves the header saying "unreachable" while the content still shows 8 threads — a softer
+   contradiction the user must reconcile.
+3. **Zero retained state / smallest diff.** A stale-marker requires the controller to cache the last-good
+   payload and add distinct "stale" chrome. Clear-to-unreachable retains nothing and re-renders the
+   existing honest state — fewer moving parts, fewer bugs (pragmatic over perfect).
+4. **Honesty over cached-but-possibly-wrong.** Memory mutates asynchronously (a dismiss flips
+   `status`; a distillation adds/replaces facts). Cached facts/threads shown during a down window can be
+   silently wrong by the time the daemon returns — which cuts against this feature's whole
+   transparency/honest-state ethos (ADR-0012 "no opaque memory"; chunk-01's honest tri-state, no false
+   "Loading…"). Clear-to-unreachable never shows possibly-stale memory as current.
+5. **Nothing to preserve.** This is read-only (mutations are chunk-03). There is no in-progress user work
+   the stale-marker would protect; the only cost of clearing is a ≤3s wait for the next poll to recover —
+   cheap.
+
+> ☆ Альтернатива: explicit stale-marker — плюси: keeps context visible during a brief blip, less jarring;
+> мінуси: a second rendering path the nav path doesn't have, a softer header/content contradiction, needs
+> a last-good cache, and risks presenting since-mutated memory as current. Rejected for a read-only
+> honest-state window.
+
+**Coordination sub-choice (implementation detail, decided here):** on the **down** transition, render
+the honest state **directly** (`applyDownState`, synchronous — no doomed re-fetch), and on the **up**
+transition **re-fetch** the current view. The alternative (re-fetch on *any* transition and let the
+down-fetch fail into `unreachable`) is one method fewer but flashes "Loading…" before the failure and
+makes the down-render async. Direct-render-on-down matches the brief's framing ("re-fetch only on a
+transition into connected"), keeps the down-render deterministic, and still uses the same `DOWN`/`LOCKED`
+constants → fully consistent with the nav path.
+
+### Step 4: Failing controller coordination test (RED)
+
+**Files:**
+- Create: `apps/overlay/src/memory/controller.test.ts`
+
+**Interfaces:**
+- Consumes (from Step 5): `createMemoryController(deps): MemoryController` where
+  `MemoryController = { start(): void; onLivenessState(state: ShellState): void }`, and the existing
+  `MemoryControllerEls`. `ShellState` is the chunk-01 type from `../memory-liveness.js`.
+
+- [ ] **Step 4.1 — Write the failing test.** Create `apps/overlay/src/memory/controller.test.ts`
+  (happy-dom via the root `bunfig.toml` preload; a switchable up/down fake `fetchFn` + a call counter):
+```ts
+/**
+ * controller — list<->detail nav + the Demo-1 (item 4) state-sync coupling.
+ * happy-dom via test-setup/dom-preload. Fake fetchFn with a switchable up/down mode + a call
+ * counter. Reproduces the demo defect: a daemon kill must CLEAR content to the banner's honest
+ * state (never contradict), a later start must RECOVER content without a restart, and repeated
+ * same-state polls must NOT re-fetch (no every-3s flicker/waste). This is the test that would
+ * have caught item 4 — the controller shipped with no unit test.
+ */
+import { test, expect } from "bun:test";
+import {
+  createMemoryController,
+  type MemoryController,
+  type MemoryControllerEls,
+} from "./controller.js";
+
+function host(): HTMLElement { const d = document.createElement("div"); document.body.appendChild(d); return d; }
+function makeEls(): MemoryControllerEls {
+  return {
+    listView: host(), detailView: host(),
+    threadListEl: host(), messagesEl: host(), factsEl: host(), eventsEl: host(),
+    backBtn: host(),
+  };
+}
+
+interface FakeFetch {
+  fn: (url: string, init?: RequestInit) => Promise<Response>;
+  setMode: (m: "up" | "down") => void;
+  calls: () => number;
+}
+function makeFetch(): FakeFetch {
+  let mode: "up" | "down" = "up";
+  let calls = 0;
+  const fn = (url: string): Promise<Response> => {
+    calls += 1;
+    if (mode === "down") return Promise.reject(new Error("connection refused"));
+    const body = url.includes("/memory/thread/")
+      ? { messages: [{ id: "m1", role: "user", content: "hi" }], distilledFacts: [], distillationEvents: [] }
+      : { threads: [{ thread_id: "T1", title: "One", last_active_at: 1, status: "active" }] };
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+  };
+  return { fn, setMode: (m) => { mode = m; }, calls: () => calls };
+}
+
+const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+function make(f: FakeFetch): { c: MemoryController; els: MemoryControllerEls } {
+  const els = makeEls();
+  const c = createMemoryController({
+    api: { fetchFn: f.fn, baseUrl: "http://127.0.0.1:7777", token: "TOK" },
+    els,
+  });
+  return { c, els };
+}
+
+test("item 4a: daemon-down transition CLEARS the list to the banner's honest 'unreachable' (never contradict)", async () => {
+  const f = makeFetch();
+  const { c, els } = make(f);
+  c.start();
+  await flush();
+  expect(els.threadListEl.querySelector(".thread-list-item")).not.toBeNull(); // rendered while up
+
+  c.onLivenessState("connected");   // initial connect baseline (prev undefined -> no re-fetch)
+  f.setMode("down");
+  c.onLivenessState("unreachable"); // the daemon-kill transition (synchronous down-render)
+  expect(els.threadListEl.textContent).toContain("Daemon unreachable");
+  expect(els.threadListEl.querySelector(".thread-list-item")).toBeNull(); // stale list cleared
+});
+
+test("item 4c: connected transition RE-FETCHES and recovers the list WITHOUT a restart", async () => {
+  const f = makeFetch();
+  const { c, els } = make(f);
+  c.start();
+  await flush();
+  c.onLivenessState("connected");   // baseline
+  f.setMode("down");
+  c.onLivenessState("unreachable"); // down
+  expect(els.threadListEl.textContent).toContain("Daemon unreachable");
+
+  f.setMode("up");
+  c.onLivenessState("connected");   // recovery transition (unreachable -> connected)
+  await flush();
+  expect(els.threadListEl.querySelector(".thread-list-item")).not.toBeNull(); // recovered, no restart
+});
+
+test("item 4: repeated same-state 'connected' polls do NOT re-fetch (no every-3s flicker/waste)", async () => {
+  const f = makeFetch();
+  const { c } = make(f);
+  c.start();
+  await flush();
+  const afterStart = f.calls();     // start()'s single loadList
+  c.onLivenessState("connected");   // initial connect -> no re-fetch (prev undefined)
+  c.onLivenessState("connected");   // repeat -> de-duped
+  c.onLivenessState("connected");   // repeat -> de-duped
+  await flush();
+  expect(f.calls()).toBe(afterStart); // zero extra fetches from the poll
+});
+
+test("item 4: down->up while viewing a thread clears AND recovers the detail view consistently", async () => {
+  const f = makeFetch();
+  const { c, els } = make(f);
+  c.start();
+  await flush();
+  c.onLivenessState("connected");   // baseline
+  els.threadListEl.querySelector<HTMLElement>(".thread-list-item")!.click(); // open thread
+  await flush();
+  expect(els.messagesEl.textContent).toContain("hi"); // detail rendered while up
+
+  f.setMode("down");
+  c.onLivenessState("unreachable"); // kill while in detail
+  expect(els.messagesEl.textContent).toContain("Daemon unreachable");
+  expect(els.factsEl.textContent).toContain("Daemon unreachable");
+  expect(els.eventsEl.textContent).toContain("Daemon unreachable");
+
+  f.setMode("up");
+  c.onLivenessState("connected");   // recover -> re-fetch the SAME open thread
+  await flush();
+  expect(els.messagesEl.textContent).toContain("hi"); // detail recovered, still on the same thread
+});
+```
+
+- [ ] **Step 4.2 — Run; verify it fails.** Run: `bun test apps/overlay/src/memory/controller.test.ts`.
+  Expected: FAIL — `onLivenessState` / `MemoryController` are not yet exported, and (before the fix) the
+  down assertions would fail because content never clears.
+
+### Step 5: The coordination fix (GREEN)
+
+**Files:**
+- Modify: `apps/overlay/src/memory/controller.ts`
+- Modify: `apps/overlay/src/memory.ts`
+
+**Interfaces:**
+- Produces: `MemoryController = { start(): void; onLivenessState(state: ShellState): void }`. `start()`
+  keeps its current contract; `onLivenessState` is the coupling hook, called per-poll and de-duped
+  internally (re-fetch only on a genuine down->up transition).
+- Consumes: `ShellState` (type-only) from `../memory-liveness.js` — a pure type, no runtime coupling,
+  `memory-liveness.ts` is unchanged.
+
+- [ ] **Step 5.1 — Rewrite `apps/overlay/src/memory/controller.ts`** to track the current view + last
+  liveness state and add `onLivenessState`. Full file:
+```ts
+/**
+ * controller (chunk-02, memory-transparency-ui) — list<->detail navigation glue.
+ * Thin: no DOM building of its own (render.ts) and no fetch mechanics (memory-api.ts).
+ * Honest states throughout (locked / daemon-down / empty) — never a stuck "Loading…".
+ * Provenance jump reuses openThread -> the same detail-load path (DoD box 2).
+ *
+ * Demo-1 fix (item 4, state-sync): the top-of-window liveness banner (memory.ts ->
+ * createMemoryLiveness) and these content sections were two uncoordinated state machines —
+ * the banner polls every 3s while the content only re-fetched on explicit nav, so a daemon
+ * kill left a stale list under an "unreachable" banner (they contradicted) and a later start
+ * left the content stuck on "unreachable" until a full restart (no restart-free recovery).
+ * `onLivenessState` couples them: memory.ts forwards the banner's EXISTING per-poll onState
+ * result here (memory-liveness.ts is unchanged). Repeated same-state polls are a no-op, so
+ * content is NOT re-fetched every 3s (no flicker/waste); on a transition INTO `connected`
+ * from a non-connected state it re-fetches the current view (restart-free recovery); on a
+ * transition into a non-connected state it clears the current view to the SAME honest
+ * down/locked state the banner shows (clear-to-unreachable — plan "## The decision").
+ */
+import type { ShellState } from "../memory-liveness.js";
+import type { MemoryApiDeps } from "./memory-api.js";
+import { fetchThreads, fetchThread } from "./memory-api.js";
+import { renderThreadList, renderMessages, renderFacts, renderEvents, renderState } from "./render.js";
+
+export interface MemoryControllerEls {
+  listView: HTMLElement;
+  detailView: HTMLElement;
+  threadListEl: HTMLElement;
+  messagesEl: HTMLElement;
+  factsEl: HTMLElement;
+  eventsEl: HTMLElement;
+  backBtn: HTMLElement;
+}
+export interface MemoryControllerDeps {
+  api: MemoryApiDeps;
+  els: MemoryControllerEls;
+}
+export interface MemoryController {
+  start(): void;
+  /** Coupling hook — called by memory.ts on EVERY liveness poll result (per-poll, not
+   *  per-transition). De-dupes internally -> content re-fetches only on a down->up transition. */
+  onLivenessState(state: ShellState): void;
+}
+
+type ViewState = { kind: "list" } | { kind: "detail"; threadId: string };
+
+const LOCKED = "🔒 Token rejected — the engine did not accept this token.";
+const DOWN = "Daemon unreachable — is the engine running?";
+
+export function createMemoryController(deps: MemoryControllerDeps): MemoryController {
+  const { els } = deps;
+
+  // The two facts onLivenessState needs: WHICH view to refresh on recovery, and the last
+  // observed state so repeated same-state polls are a no-op (never re-fetch every 3s).
+  let currentView: ViewState = { kind: "list" };
+  let lastLiveness: ShellState | undefined;
+
+  function showList(): void { els.detailView.style.display = "none"; els.listView.style.display = "block"; }
+  function showDetail(): void { els.listView.style.display = "none"; els.detailView.style.display = "block"; }
+
+  async function loadList(): Promise<void> {
+    renderState(els.threadListEl, "Loading…", "li");
+    const r = await fetchThreads(deps.api);
+    if (r.kind === "unauthorized") { renderState(els.threadListEl, LOCKED, "li"); return; }
+    if (r.kind === "unreachable") { renderState(els.threadListEl, DOWN, "li"); return; }
+    renderThreadList(els.threadListEl, r.data.threads ?? [], openThread);
+  }
+
+  async function loadThread(threadId: string): Promise<void> {
+    renderState(els.messagesEl, "Loading…");
+    renderState(els.factsEl, "Loading…");
+    renderState(els.eventsEl, "Loading…");
+    const r = await fetchThread(deps.api, threadId);
+    if (r.kind === "unauthorized") { renderState(els.messagesEl, LOCKED); renderState(els.factsEl, LOCKED); renderState(els.eventsEl, LOCKED); return; }
+    if (r.kind === "unreachable") { renderState(els.messagesEl, DOWN); renderState(els.factsEl, DOWN); renderState(els.eventsEl, DOWN); return; }
+    renderMessages(els.messagesEl, r.data.messages ?? []);
+    renderFacts(els.factsEl, r.data.distilledFacts ?? [], openThread);
+    renderEvents(els.eventsEl, r.data.distillationEvents ?? []);
+  }
+
+  function openThread(threadId: string): void { currentView = { kind: "detail", threadId }; showDetail(); void loadThread(threadId); }
+  function backToList(): void { currentView = { kind: "list" }; showList(); void loadList(); }
+
+  /** Re-fetch whatever the user is currently looking at (list or the open thread). */
+  function refreshCurrentView(): void {
+    if (currentView.kind === "detail") void loadThread(currentView.threadId);
+    else void loadList();
+  }
+
+  /** Clear the current view to the banner's honest state (clear-to-unreachable). Same
+   *  DOWN/LOCKED constants + tags the nav path uses, applied to whichever view is up. */
+  function applyDownState(state: ShellState): void {
+    const msg = state === "unauthorized" ? LOCKED : DOWN;
+    if (currentView.kind === "detail") {
+      renderState(els.messagesEl, msg);
+      renderState(els.factsEl, msg);
+      renderState(els.eventsEl, msg);
+    } else {
+      renderState(els.threadListEl, msg, "li");
+    }
+  }
+
+  function onLivenessState(state: ShellState): void {
+    const prev = lastLiveness;
+    lastLiveness = state;
+    if (prev === state) return; // repeated same-state poll -> no-op (never re-fetch every 3s)
+
+    if (state === "connected") {
+      // Down->up transition -> recover content without a restart. The initial connect
+      // (prev === undefined) is already covered by start()'s loadList -> skip the double-fetch.
+      if (prev !== undefined) refreshCurrentView();
+      return;
+    }
+    // Transition into a non-connected state -> clear to the banner's honest state (never contradict).
+    applyDownState(state);
+  }
+
+  function start(): void {
+    els.backBtn.addEventListener("click", backToList);
+    currentView = { kind: "list" };
+    showList();
+    void loadList();
+  }
+  return { start, onLivenessState };
+}
+```
+
+- [ ] **Step 5.2 — Wire the coupling in `apps/overlay/src/memory.ts`.** Construct the controller BEFORE
+  the liveness poll and forward each `onState` result into it. Replace the body of `main()` (imports,
+  `renderBanner`, and the `el(id)` helper are unchanged):
+```ts
+async function main(): Promise<void> {
+  let token: string;
+  try { token = (await invoke<string>("read_auth_token")).trim(); }
+  catch { renderBanner("no-token"); return; }
+  if (!token) { renderBanner("no-token"); return; }
+
+  // Read UI (chunk-02): threads list + thread detail. Constructed BEFORE the liveness poll so
+  // the banner's per-poll onState result can be forwarded into the controller (Demo-1 fix item 4).
+  const controller = createMemoryController({
+    api: { fetchFn: (u, i) => fetch(u, i), baseUrl: BASE_URL, token },
+    els: {
+      listView: el("thread-list-view"), detailView: el("thread-view"),
+      threadListEl: el("thread-list"), messagesEl: el("messages-container"),
+      factsEl: el("facts-container"), eventsEl: el("events-container"), backBtn: el("back-btn"),
+    },
+  });
+  controller.start();
+
+  // Top-of-window connection banner (chunk-01 liveness poll — renderBanner behavior unchanged).
+  // Demo-1 fix (item 4): the SAME per-poll result that drives the banner is forwarded to the
+  // controller so the content sections can never contradict the banner and recover on reconnect
+  // without a restart. memory-liveness.ts is untouched — the controller de-dupes.
+  const liveness = createMemoryLiveness({
+    fetchFn: (u, i) => fetch(u, i), url: THREADS_URL, token,
+    onState: (state, detail) => { renderBanner(state, detail); controller.onLivenessState(state); },
+    intervalMs: 3000, isHidden: () => document.hidden,
+  });
+  liveness.start();
+  window.addEventListener("focus", () => liveness.checkNow());
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) liveness.checkNow(); });
+}
+```
+
+- [ ] **Step 5.3 — Run the controller test; verify green.** Run:
+  `bun test apps/overlay/src/memory/controller.test.ts`. Expected: PASS (all four tests).
+
+### Step 6: Gate re-runs + frozen-surface checks + commit
+
+- [ ] **Step 6.1 — Full mechanical gates + frozen/agent-path proof.** Run:
+  `bun test` (whole suite — Expected: all green, incl. the existing `render.test.ts` /
+  `memory-api.test.ts` / `fact-view.test.ts` unchanged), `bun run lint:strict` (`--max-warnings=0`),
+  `bun run typecheck` (root) AND `cd apps/overlay && bun run typecheck` (overlay). Then confirm the
+  untouched surfaces:
+  `git diff --stat packages/protocol/` → no output;
+  `git diff --stat apps/overlay/src/memory-liveness.ts apps/overlay/src/ws/connection-manager.ts apps/overlay/src/main.ts apps/overlay/src-tauri/ packages/daemon/src/memory/http-routes.ts`
+  → **no output** (proves the liveness poll behavior, the agent connection, and the security-adjacent
+  daemon file are all byte-unchanged).
+
+- [ ] **Step 6.2 — Commit.**
+```bash
+git add apps/overlay/src/memory/controller.ts apps/overlay/src/memory/controller.test.ts apps/overlay/src/memory.ts
+git commit -m "fix(overlay): couple memory-window content to the liveness poll (item 4 state-sync)
+
+The banner (liveness poll) and the content sections were two uncoordinated state
+machines: content only re-fetched on explicit nav, so a daemon kill left a stale
+list under an 'unreachable' banner (contradiction) and a later start left content
+stuck on 'unreachable' until a full restart. controller.onLivenessState (de-duped;
+acts only on a genuine transition) now clears content to the banner's honest state
+on down and re-fetches the current view on the connected transition — restart-free.
+memory-liveness.ts + connection-manager.ts + main.ts byte-unchanged (agent path
+and banner behavior untouched); no protocol/daemon change.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+```
+
+### Verification (Demo-1 fix item 4 — DoD mapping)
+
+**Mechanical (provable by the worker now):**
+- **The two new behavioral transitions are covered by `controller.test.ts` (the test that would have
+  caught the demo defect):**
+  - *down-with-content-rendered* → content clears to the banner's honest state, consistent for both
+    views: test "item 4a … CLEARS the list" (list) + test "down->up while viewing a thread clears …"
+    (detail: messages/facts/events all show "Daemon unreachable").
+  - *recover-refetch-without-restart* → content re-fetches on the connected transition: test "item 4c …
+    RE-FETCHES and recovers the list WITHOUT a restart" (list) + the recovery half of the detail test.
+  - *no-flicker guard* → test "repeated same-state 'connected' polls do NOT re-fetch" proves the
+    controller does not re-fetch every 3s.
+- `bun test` / `lint:strict` / `typecheck` (root + overlay) green (Steps 5.3, 6.1).
+- Frozen/agent-path byte-unchanged: `packages/protocol/`, `memory-liveness.ts`, `connection-manager.ts`,
+  `main.ts`, `src-tauri/`, `http-routes.ts` all show empty diffs (Step 6.1).
+
+**Behavioral — ALL "requires live macOS demo to confirm" (PIPELINE §6.1; a probe is evidence only when
+executed; NOT assertable from code-reading). This is Lior's item-4 re-demo:**
+- **[requires live macOS demo to confirm] (4a)** With the threads list rendered, kill the daemon → within
+  ~3s (one poll) the banner shows "Daemon unreachable" **and** the threads section clears to the same
+  honest state — header and content agree, no stale list.
+- **[requires live macOS demo to confirm] (4b, regression-guard)** While down, enter a thread → detail
+  shows "Daemon unreachable"; back → the list shows "Daemon unreachable" (still honest).
+- **[requires live macOS demo to confirm] (4c)** Start the daemon again → within ~3s the banner shows
+  "Connected (N threads)" **and** the threads section re-populates — **no `tauri` restart**. If a thread
+  detail is open when the daemon returns, that same thread re-loads in place.
+
+### ADR worthy: no
+
+Rationale:
+- **No new boundary.** The fix couples two **existing** in-window state machines (the chunk-01 liveness
+  poll and the chunk-02 controller) by forwarding an **already-existing** callback (`onState`). It adds no
+  route, no dependency, no protocol change, and does not touch the agent-connection path.
+- **Executes decided ADRs, adds no decision.** It realizes the honest-state / no-opaque-memory posture of
+  **ADR-0012** and the token-gated-read contract of **ADR-0013** (consumed unchanged) inside an
+  engine-owned native surface (**ADR-0006** tray-opened window / **ADR-0005** — not closed-set
+  primitives). The "header and content never contradict" invariant is a UX rule realized in existing
+  files, not an architectural decision.
+
+**Reviewer escalation clause (mirrors chunk-01/-02):** if the reviewer judges the honest-state
+coupling invariant to warrant recording, that is a **note/rider** on ADR-0012, not a new ADR — escalate
+to `adr-curator` before merge. (Not expected.)
+
+## Status: Done

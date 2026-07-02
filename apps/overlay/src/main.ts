@@ -22,6 +22,14 @@ import { HideScheduler } from "./lifecycle/hide-scheduler.js";
 import { statusForEndReason } from "./lifecycle/session-end-reason.js";
 import type { StatusVariant } from "./widgets/status.js";
 
+// chunk-01 (memory-transparency-ui): read-only tray status tap. Purely observes
+// ConnectionManager's socket open/close via onConnectionState — never touches
+// inFlight, submit, or hotkey flow. Tray is optional UI: never throw into the flow.
+type TrayStatus = "connected" | "disconnected" | "busy";
+async function pushTrayStatus(status: TrayStatus): Promise<void> {
+  try { await invoke("set_tray_status", { status }); } catch { /* tray optional; never throw into flow */ }
+}
+
 // ---------------------------------------------------------------------------
 // Per-install auth token — read once at boot via Rust command (spec §3.2, B1).
 // The token is install-stable; reading once satisfies every reconnect (A1 approach).
@@ -47,7 +55,9 @@ const factory: WebSocketFactory = (url, protocols) => {
 // CM-02: one persistent connection for the overlay's lifetime. Opened on activation.
 // CM-03: a voluntary dismiss (EV_TEXT_DISMISS) closes this socket and re-creates a fresh
 // manager for the next conversation — hence `let`, reassigned in the dismiss handler.
-let connection = new ConnectionManager(factory, authToken);
+let connection = new ConnectionManager(factory, authToken, {
+  onConnectionState: (s) => { void pushTrayStatus(s); },
+});
 connection.connect();
 
 // ---------------------------------------------------------------------------
@@ -196,7 +206,9 @@ void listen(EV_TEXT_DISMISS, () => {
   // so construct a fresh one and open its socket on activation-equivalent. The prior
   // manager is intentionally orphaned — active=false guarantees its trailing close
   // event neither reconnects nor reopens; GC reclaims it once the socket closes.
-  connection = new ConnectionManager(factory, authToken);
+  connection = new ConnectionManager(factory, authToken, {
+    onConnectionState: (s) => { void pushTrayStatus(s); },
+  });
   connection.connect();
 });
 

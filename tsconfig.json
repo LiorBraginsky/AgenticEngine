@@ -1,5 +1,5 @@
 {
   "extends": "./tsconfig.base.json",
   "include": ["packages/*/src/**/*.ts", "packages/*/scripts/**/*.ts", "smoke.test.ts", "apps/overlay/src/ws/**/*.ts", "apps/overlay/src/*.test.ts", "apps/overlay/src/memory/**/*.test.ts"],
-  "exclude": ["apps/overlay/src/memory/render.test.ts"]
+  "exclude": ["apps/overlay/src/memory/render.test.ts", "apps/overlay/src/memory/controller.test.ts"]
 }

@@ -9,5 +9,5 @@
     "verbatimModuleSyntax": true,
     "noEmit": true
   },
-  "include": ["src/memory/render.test.ts"]
+  "include": ["src/memory/render.test.ts", "src/memory/controller.test.ts"]
 }

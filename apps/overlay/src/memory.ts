@@ -45,16 +45,8 @@ async function main(): Promise<void> {
   catch { renderBanner("no-token"); return; }
   if (!token) { renderBanner("no-token"); return; }
 
-  // Top-of-window connection banner (chunk-01 liveness poll — unchanged behavior).
-  const liveness = createMemoryLiveness({
-    fetchFn: (u, i) => fetch(u, i), url: THREADS_URL, token,
-    onState: renderBanner, intervalMs: 3000, isHidden: () => document.hidden,
-  });
-  liveness.start();
-  window.addEventListener("focus", () => liveness.checkNow());
-  document.addEventListener("visibilitychange", () => { if (!document.hidden) liveness.checkNow(); });
-
-  // Read UI (chunk-02): threads list + thread detail.
+  // Read UI (chunk-02): threads list + thread detail. Constructed BEFORE the liveness poll so
+  // the banner's per-poll onState result can be forwarded into the controller (Demo-1 fix item 4).
   const controller = createMemoryController({
     api: { fetchFn: (u, i) => fetch(u, i), baseUrl: BASE_URL, token },
     els: {
@@ -64,6 +56,19 @@ async function main(): Promise<void> {
     },
   });
   controller.start();
+
+  // Top-of-window connection banner (chunk-01 liveness poll — renderBanner behavior unchanged).
+  // Demo-1 fix (item 4): the SAME per-poll result that drives the banner is forwarded to the
+  // controller so the content sections can never contradict the banner and recover on reconnect
+  // without a restart. memory-liveness.ts is untouched — the controller de-dupes.
+  const liveness = createMemoryLiveness({
+    fetchFn: (u, i) => fetch(u, i), url: THREADS_URL, token,
+    onState: (state, detail) => { renderBanner(state, detail); controller.onLivenessState(state); },
+    intervalMs: 3000, isHidden: () => document.hidden,
+  });
+  liveness.start();
+  window.addEventListener("focus", () => liveness.checkNow());
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) liveness.checkNow(); });
 }
 
 void main();

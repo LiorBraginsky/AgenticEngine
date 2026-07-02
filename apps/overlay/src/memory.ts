@@ -5,12 +5,18 @@
  * token-gated GET /memory/threads. NO threads/facts UI here (that is chunk-02).
  * Token discipline (ADR-0013): Bearer header ONLY — never logged, never in a URL/query.
  * No auto-hide/linger timers (gotchas #33/#34) — this is a normal, user-closed window.
+ *
+ * Demo-1 fix (Step 5): the memory window survives close (hidden, not destroyed — lib.rs
+ * Step 4), so a one-shot fetch at load goes stale after a daemon restart while the window
+ * stays open (cluster 2A) or stays open across a later daemon start (cluster 2B, window
+ * half). `createMemoryLiveness` (memory-liveness.ts) adds a periodic re-check plus a forced
+ * re-check on window focus/visibility. This is a read-only STATUS POLL — it never changes
+ * window visibility, so it is unrelated to gotchas #33/#34.
  */
 import { invoke } from "@tauri-apps/api/core";
+import { createMemoryLiveness, type ShellState } from "./memory-liveness.js";
 
 const MEMORY_URL = "http://127.0.0.1:7777/memory/threads";
-
-type ShellState = "no-token" | "unreachable" | "unauthorized" | "connected";
 
 function render(state: ShellState, detail?: string): void {
   const el = document.getElementById("conn-state");
@@ -33,27 +39,22 @@ async function main(): Promise<void> {
   }
   if (!token) { render("no-token"); return; }
 
-  // Defensive abort: a stalled TCP (accepts but never answers) flips to "unreachable"
-  // rather than hanging on "Checking…". This is a fetch timeout, NOT a window timer.
-  const ctrl = new AbortController();
-  const abortTimer = setTimeout(() => ctrl.abort(), 4000);
+  const liveness = createMemoryLiveness({
+    fetchFn: (u, i) => fetch(u, i),
+    url: MEMORY_URL,
+    token,
+    onState: render,
+    intervalMs: 3000,
+    isHidden: () => document.hidden,
+  });
+  liveness.start();
 
-  try {
-    const res = await fetch(MEMORY_URL, {
-      headers: { Authorization: `Bearer ${token}` },
-      signal: ctrl.signal,
-    });
-    if (res.status === 401) { render("unauthorized"); return; }
-    if (!res.ok) { render("unreachable", `HTTP ${res.status}`); return; }
-    const body = (await res.json()) as { threads?: unknown[] };
-    const n = Array.isArray(body.threads) ? body.threads.length : 0;
-    render("connected", `${n} thread${n === 1 ? "" : "s"}`);
-  } catch {
-    // Network error / connection refused / abort → daemon down. Honest state, NOT "Loading…".
-    render("unreachable");
-  } finally {
-    clearTimeout(abortTimer);
-  }
+  // Forced re-checks: the window survives close (hidden, not destroyed — lib.rs Step 4),
+  // so re-focusing/re-showing it must not show stale state until the next periodic tick.
+  window.addEventListener("focus", () => liveness.checkNow());
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) liveness.checkNow();
+  });
 }
 
 void main();

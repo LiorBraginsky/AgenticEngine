@@ -32,26 +32,32 @@ fn read_auth_token() -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
-/// Read-only status sink for the tray. Called by main.ts from a connection-state tap
-/// (ADR-0006 p.4 — the deferred menu-bar status indicator). No app logic here: purely
-/// reflects daemon connectivity. Unknown/"disconnected" -> error state.
-///
-/// Icon-asset decision (chunk-01, plan Step 2): asset-free path — no new PNGs, no
-/// `include_image!`. The tray reuses the app's existing default window icon (set once at
-/// build time); the VISIBLE state change is a glyph in `set_title` (macOS renders the tray
-/// title text next to the icon in the menu bar) plus the tooltip — NOT tooltip-only.
-#[tauri::command]
-fn set_tray_status(app: tauri::AppHandle, status: String) {
+/// Shared tray-mutation sink (Demo-1 fix, Step 6): sets the glyph + tooltip on
+/// "main-tray". Called from BOTH the JS-invokable command below (kept for a future
+/// JS-driven "busy") AND the Rust-side TCP health-poll thread spawned in `setup()`.
+/// `set_title`/`set_tooltip` self-proxy to the main thread (tauri-2.11.2
+/// `tray/mod.rs` `run_item_main_thread!`), so calling this from a background
+/// thread is safe without an explicit `run_on_main_thread`.
+fn apply_tray_status(app: &tauri::AppHandle, status: &str) {
     let Some(tray) = app.tray_by_id("main-tray") else {
         return;
     };
-    let (glyph, tip) = match status.as_str() {
+    let (glyph, tip) = match status {
         "connected" => ("●", "AgenticEngine — connected"),
         "busy" => ("◐", "AgenticEngine — working…"),
         _ => ("○", "AgenticEngine — daemon unreachable"),
     };
     let _ = tray.set_title(Some(glyph));
     let _ = tray.set_tooltip(Some(tip));
+}
+
+/// Read-only status sink for the tray. Kept registered (thin wrapper over
+/// `apply_tray_status`) for a future JS-driven "busy" state; tray liveness
+/// (connected/disconnected) is now driven solely by the Rust TCP poll below
+/// (ADR-0006 p.4 — the deferred menu-bar status indicator; Demo-1 fix Step 6).
+#[tauri::command]
+fn set_tray_status(app: tauri::AppHandle, status: String) {
+    apply_tray_status(&app, &status);
 }
 
 pub fn run() {
@@ -133,6 +139,36 @@ pub fn run() {
                 tray_builder = tray_builder.icon(icon);
             }
             let _tray = tray_builder.build(app)?;
+
+            // Demo-1 fix (Step 6, tray direction): the tray's ONLY liveness source is
+            // this Rust-side TCP health poll — a JS poll would run in the same hidden
+            // main webview whose reconnect loop was the suspected root cause in Demo-1
+            // (WKWebView occlusion / App-Nap throttling), and tuning the shared agent
+            // ConnectionManager would couple tray timing to agent-connection semantics
+            // (forbidden by this chunk's OUT-scope). std::net only — no new crate.
+            {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    use std::net::{SocketAddr, TcpStream};
+                    use std::time::Duration;
+                    let addr: SocketAddr =
+                        "127.0.0.1:7777".parse().expect("valid daemon socket addr");
+                    let mut last: Option<&str> = None;
+                    loop {
+                        let status = if TcpStream::connect_timeout(&addr, Duration::from_millis(1500)).is_ok()
+                        {
+                            "connected"
+                        } else {
+                            "disconnected"
+                        };
+                        if last != Some(status) {
+                            last = Some(status);
+                            apply_tray_status(&handle, status);
+                        }
+                        std::thread::sleep(Duration::from_secs(3));
+                    }
+                });
+            }
 
             Ok(())
         })

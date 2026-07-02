@@ -39,28 +39,24 @@ The structure is sound for single-user dogfood. Everything below is **deferred /
 > Vision (ADR-0012 + memory `project_conversational_interaction_model`): *"the user never directly
 > contacting the super-chat is the single most expensive mistake."* Build view/edit/forget +
 > provenance + expiry day-one. Today this exists ONLY as the browser `history.html` page.
+>
+> **→ IN BUILD since 2026-07-02** — brainstorm settled, spec =
+> `specs/2026-07-02-memory-transparency-ui.md` (that doc records the rulings; the residue
+> below is what did NOT go into the build).
 
-- **In-overlay memory UI** — view/edit/forget threads + distilled facts + provenance **inside the
-  overlay** (not a separate browser page). *Deferred:* needs the **tray-icon + settings-overlay shell**
-  prerequisite (ADR-0006 p.4; see `project_tray_icon_followup`). *Lives:* scope split in
-  `specs/2026-06-12-memory-quality.md` §1 + `docs/2026-06-12-memory-quality-scope.md`. **The biggest
-  gap vs the stated vision.**
-- **In-overlay "where did this come from?" provenance affordance** — when the agent uses a remembered
-  fact, a lightweight in-overlay "from where?" link into History. ADR-0012 **5a says MANDATORY**, but it
-  shipped only as `history.html`. *Lives:* `specs/2026-06-04-memory-foundation.md` §7 (5a-open),
-  ADR-0012 5a. Must be an ADR-0005 closed-set primitive if rendered in the overlay.
-- **Finer (message-level) provenance** — provenance is currently **thread-level** (`thread:<id>`).
-  Message-level would give better "dig deeper" links AND finer forget granularity. *Deferred:* from
-  v2-06 (forget-by-id shipped instead; message-level explicitly punted). *Lives:* roadmap "Memory —
-  next"; v2-06 chunk note.
-- **Expiry / confidence per fact — DORMANT, not built.** The vision wanted decay/confidence tags. The
-  DB columns exist and `retrieve` even filters `WHERE expiry IS NULL OR expiry > now`, BUT the distiller
-  always writes `expiry: null` and `confidence: 1` (hardcoded, `distiller-registration.ts`). So **facts
-  never expire and confidence is meaningless today.** Building real aging/decay + confidence scoring +
-  surfacing them is unbuilt. *Lives:* ADR-0012 transparency mandate; verified dormant in code 2026-06-16.
-- **history.html UX backlog** (move with the in-overlay UI follow-on): (1) shows a false "Loading…"
-  instead of an explicit "🔒 paste your token to view" locked state; (2) auth-token trailing-`%`
-  footgun (zsh artifact — should trim non-token chars). *Lives:* `docs/2026-06-12-memory-quality-scope.md`.
+- **In-overlay memory UI + tray-icon shell + history.html UX tails** — **moved into the 2026-07-02
+  spec** (full view/edit/forget, tray entry point un-defers ADR-0006 p.4, 🔒 locked-state + token-trim).
+- **In-answer "where did this come from?" provenance affordance** — **CARVED OUT to its own design
+  task** (Lior 2026-07-02): weigh pros/cons of dragging fact→thread linkage through live answers —
+  Lior's concern is memory UX overcomplication. ⚠️ ADR-0012 **5a names it MANDATORY** — this is a
+  recorded deliberate revisit, NOT a silent drop; the design task owns reconciling with (or amending)
+  ADR-0012. Anchor: forget stays "release the reference" (fact-delete only, sources untouched).
+  *Lives:* `specs/2026-06-04-memory-foundation.md` §7 (5a-open), ADR-0012 5a.
+- **Expiry / confidence per fact — decision RECORDED 2026-07-02: leave as-is, do NOT build.** The DB
+  columns exist and `retrieve` filters `WHERE expiry IS NULL OR expiry > now`, but the distiller
+  hardcodes `expiry: null` / `confidence: 1` — dormant. Ruling: no scoring/decay until Lior's own
+  fact base shows stale-fact pain; columns stay (cheap); the in-overlay UI shows these fields only
+  when non-default. *Lives:* 2026-07-02 spec (display rule); verified dormant in code 2026-06-16.
 
 ### B. Conversational forget / memory-action tools  (roadmap 2c)
 - **2c — agent memory-action tools.** Today the agent can only *say* "I can't forget — use History"
@@ -126,6 +122,10 @@ The structure is sound for single-user dogfood. Everything below is **deferred /
   fact-delete already removes it from the agent's view. Replaced by **thread-forget** (§C). [v2 spec §3.6]
 - **Global re-projection distiller (the original 2b)** — proven UNSTABLE on Lior's 2026-06-13 demo
   (facts churned/reordered/vanished); re-architected to the incremental distiller that shipped.
+- **Finer (message-level) provenance** — CLOSED 2026-07-02 (was §A, deferred since v2-06): no concrete
+  benefit identified — thread-level provenance suffices for "where from", and the finer-forget upside
+  died with per-message forget (already ruled out above). Revisit only if a real "dig deeper" need
+  shows up in dogfood.
 
 ---
 
@@ -154,10 +154,9 @@ surface). **Theme A above is the direct execution of that mandate and is the lea
 
 ---
 
-## Suggested next step (when you return — not a commitment)
-If finishing the *user-facing* memory promise matters most, the natural next feature is **Theme A
-(transparency & control)** — specifically the in-overlay memory UI + the provenance affordance + a real
-expiry/confidence decision — because it's the largest gap vs the stated vision and what a user actually
-touches. **2c (conversational forget)** is the strong runner-up (it's the "забути про X" lever). 2d
-(semantic retrieval) is the "proper" infra fix but is premature until the corpus grows. Decide via a
-fresh brainstorm → spec → decompose when you're back.
+## Suggested next step
+**Theme A picked 2026-07-02** (brainstorm → spec `specs/2026-07-02-memory-transparency-ui.md` →
+decompose → conveyor). After it ships, the queue in rough order: **2c (conversational forget)** —
+Lior re-confirmed 2026-07-02 as the small next feature; the **in-answer provenance affordance design
+task** (carved out of Theme A — see §A); then 2d (semantic retrieval) once the corpus outgrows
+all-facts-below-cap.

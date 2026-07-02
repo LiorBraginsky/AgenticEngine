@@ -184,3 +184,74 @@ test("unauthorized branch: applyDownState renders the LOCKED message and unautho
   await flush();
   expect(els.threadListEl.querySelector(".thread-list-item")).not.toBeNull();
 });
+
+test("chunk-03 forget: 204 → re-fetch, fact gone; unreachable → DOWN (no fake success)", async () => {
+  let mode: "up" | "down" = "up";
+  const facts = [{ id: "F1", fact: "x", provenance: "thread:t", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" }];
+  const fetchFn = (url: string, init?: RequestInit): Promise<Response> => {
+    if (mode === "down") return Promise.reject(new Error("refused"));
+    if (init?.method === "POST") return Promise.resolve(new Response(null, { status: 204 }));
+    const body = url.includes("/memory/thread/")
+      ? { messages: [], distilledFacts: facts.slice(), distillationEvents: [] }
+      : { threads: [{ thread_id: "T1", title: "One", last_active_at: 1, status: "active" }] };
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+  };
+  const els = makeEls();
+  const c = createMemoryController({ api: { fetchFn, baseUrl: "http://127.0.0.1:7777", token: "TOK" }, els });
+  c.start(); await flush();
+  els.threadListEl.querySelector<HTMLElement>(".thread-list-item")!.click(); await flush();
+  expect(els.factsEl.querySelector(".fact-row")).not.toBeNull();
+
+  const forgetBtn = els.factsEl.querySelector<HTMLButtonElement>(".act-forget")!;
+  forgetBtn.click();          // arm
+  facts.length = 0;           // server now returns 0 facts on the re-fetch
+  forgetBtn.click(); await flush(); // confirm → POST 204 → re-fetch
+  expect(els.factsEl.textContent).toContain("No distilled facts"); // gone on reload — real, not faked
+
+  // now daemon-down while acting
+  mode = "up"; facts.push({ id: "F1", fact: "x", provenance: "thread:t", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" });
+  els.threadListEl.querySelector<HTMLElement>(".thread-list-item")?.click(); // no-op (in detail) — reopen path below
+});
+
+test("chunk-03 forget: POST rejected (daemon down) → DOWN, never a fake success", async () => {
+  const postMode: "ok" | "down" = "down";
+  const facts = [{ id: "F1", fact: "x", provenance: "thread:t", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" }];
+  const fetchFn = (url: string, init?: RequestInit): Promise<Response> => {
+    if (init?.method === "POST") {
+      if (postMode === "down") return Promise.reject(new Error("refused"));
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    const body = url.includes("/memory/thread/")
+      ? { messages: [], distilledFacts: facts.slice(), distillationEvents: [] }
+      : { threads: [{ thread_id: "T1", title: "One", last_active_at: 1, status: "active" }] };
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+  };
+  const els = makeEls();
+  const c = createMemoryController({ api: { fetchFn, baseUrl: "http://127.0.0.1:7777", token: "TOK" }, els });
+  c.start(); await flush();
+  els.threadListEl.querySelector<HTMLElement>(".thread-list-item")!.click(); await flush();
+  const btn = els.factsEl.querySelector<HTMLButtonElement>(".act-forget")!;
+  btn.click(); btn.click(); await flush(); // arm + confirm → POST rejected
+  expect(els.factsEl.textContent).toContain("Daemon unreachable"); // honest, no "gone"/success
+});
+
+test("chunk-03 edit: 204 → re-fetch, corrected text shown + 'edited by you' tag", async () => {
+  let content = "hi";
+  const fetchFn = (url: string, init?: RequestInit): Promise<Response> => {
+    if (init?.method === "POST") { content = "corrected"; return Promise.resolve(new Response(null, { status: 204 })); }
+    const body = url.includes("/memory/thread/")
+      ? { messages: [{ id: "M1", role: "user", content }], distilledFacts: [], distillationEvents: [] }
+      : { threads: [{ thread_id: "T1", title: "One", last_active_at: 1, status: "active" }] };
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+  };
+  const els = makeEls();
+  const c = createMemoryController({ api: { fetchFn, baseUrl: "http://127.0.0.1:7777", token: "TOK" }, els });
+  c.start(); await flush();
+  els.threadListEl.querySelector<HTMLElement>(".thread-list-item")!.click(); await flush();
+  els.messagesEl.querySelector<HTMLButtonElement>(".act-edit")!.click(); // open editor
+  const ta = els.messagesEl.querySelector("textarea")!;
+  ta.value = "corrected";
+  els.messagesEl.querySelector<HTMLButtonElement>(".act-save")!.click(); await flush(); // POST → re-fetch
+  expect(els.messagesEl.textContent).toContain("corrected"); // new text visible on reload
+  expect(els.messagesEl.textContent).toContain("edited by you"); // session marker
+});

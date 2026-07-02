@@ -20,6 +20,7 @@ import type { ShellState } from "../memory-liveness.js";
 import type { MemoryApiDeps } from "./memory-api.js";
 import { fetchThreads, fetchThread } from "./memory-api.js";
 import { renderThreadList, renderMessages, renderFacts, renderEvents, renderState } from "./render.js";
+import { forgetFact, editMessage, type WriteResult } from "./memory-write.js";
 
 export interface MemoryControllerEls {
   listView: HTMLElement;
@@ -54,6 +55,11 @@ export function createMemoryController(deps: MemoryControllerDeps): MemoryContro
   let currentView: ViewState = { kind: "list" };
   let lastLiveness: ShellState | undefined;
 
+  // chunk-03 (ACT): messages the user edited THIS session → an "edited by you" tag on re-render.
+  // The wire has no persistent per-message correction flag (plan "## Reality check" §2); the
+  // corrected TEXT is persistent via the daemon's readThreadArchive COALESCE.
+  const editedIds = new Set<string>();
+
   // Generation guard (reviewer minor, Demo-1 fix follow-up): loads are async but
   // applyDownState writes synchronously. Without this, a stale loadThread/loadList that
   // resolves AFTER a down transition can overwrite the honest "Daemon unreachable" render
@@ -83,8 +89,13 @@ export function createMemoryController(deps: MemoryControllerDeps): MemoryContro
     if (gen !== loadGen) return; // stale load, invalidated by a down transition -> skip
     if (r.kind === "unauthorized") { renderState(els.messagesEl, LOCKED); renderState(els.factsEl, LOCKED); renderState(els.eventsEl, LOCKED); return; }
     if (r.kind === "unreachable") { renderState(els.messagesEl, DOWN); renderState(els.factsEl, DOWN); renderState(els.eventsEl, DOWN); return; }
-    renderMessages(els.messagesEl, r.data.messages ?? []);
-    renderFacts(els.factsEl, r.data.distilledFacts ?? [], openThread);
+    renderMessages(els.messagesEl, r.data.messages ?? [], {
+      onEdit: (messageId, newText) => void editAction(messageId, newText),
+      editedIds,
+    });
+    renderFacts(els.factsEl, r.data.distilledFacts ?? [], openThread, {
+      onForget: (factId) => void forgetAction(factId),
+    });
     renderEvents(els.eventsEl, r.data.distillationEvents ?? []);
   }
 
@@ -109,6 +120,40 @@ export function createMemoryController(deps: MemoryControllerDeps): MemoryContro
     } else {
       renderState(els.threadListEl, msg, "li");
     }
+  }
+
+  /** Map a write result to an honest state — NEVER a fake success (DoD box 3). */
+  function handleWriteResult(r: WriteResult): void {
+    switch (r.kind) {
+      case "ok":            // the mutation landed → re-fetch so the change is visible
+      case "stale":         // target already gone → a refresh reconciles the view honestly
+        refreshCurrentView(); return;
+      case "unauthorized":  applyDownState("unauthorized"); return; // 🔒 LOCKED
+      case "unreachable":   applyDownState("unreachable"); return;  // DOWN — no fake success
+      case "bad_request":   renderActionError(); return;            // client contract bug (unexpected)
+    }
+  }
+
+  /** Honest inline error for a 400 (should not happen with correct bodies) — never fake success. */
+  function renderActionError(): void {
+    const msg = "Action rejected by the engine — please refresh and retry.";
+    if (currentView.kind === "detail") {
+      renderState(els.messagesEl, msg);
+      renderState(els.factsEl, msg);
+      renderState(els.eventsEl, msg);
+    } else {
+      renderState(els.threadListEl, msg, "li");
+    }
+  }
+
+  async function forgetAction(factId: string): Promise<void> {
+    handleWriteResult(await forgetFact(deps.api, factId));
+  }
+
+  async function editAction(messageId: string, newText: string): Promise<void> {
+    const r = await editMessage(deps.api, messageId, newText);
+    if (r.kind === "ok") editedIds.add(messageId); // mark THIS session's edit for the tag
+    handleWriteResult(r);
   }
 
   function onLivenessState(state: ShellState): void {

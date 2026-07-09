@@ -26,3 +26,19 @@ test("sanitizeToken: strips surrounding quotes; clean token unchanged; non-strin
 test("no drift: the served page inlines the exact tested sanitizer verbatim", () => {
   expect(HISTORY_HTML).toContain(SANITIZE_TOKEN_FN);
 });
+
+// ── A: honest locked / empty / daemon-down states (chunk-04 tail A) ──────────
+
+test("A: initial thread-list is the honest locked state, not 'Loading…'", () => {
+  expect(HISTORY_HTML).toContain("Locked — paste your auth token"); // em-dash copy
+  const listUl = HISTORY_HTML.match(
+    /<ul class="thread-list" id="thread-list">([\s\S]*?)<\/ul>/,
+  );
+  expect(listUl).not.toBeNull();
+  expect(listUl![1]).not.toContain("Loading…"); // list initial state must not be "Loading…"
+});
+
+test("A: loadThreadList has an explicit 401 -> locked branch (not 'No threads')", () => {
+  expect(HISTORY_HTML).toContain("r.status === 401");
+  expect(HISTORY_HTML).toContain("renderLocked");
+});

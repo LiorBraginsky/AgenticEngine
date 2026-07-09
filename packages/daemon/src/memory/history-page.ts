@@ -187,7 +187,7 @@ export const HISTORY_HTML = `<!DOCTYPE html>
   <div id="thread-list-view">
     <div class="panel">
       <h2>Threads</h2>
-      <ul class="thread-list" id="thread-list"><li class="empty">Loading…</li></ul>
+      <ul class="thread-list" id="thread-list"><li class="empty locked">&#128274; Locked &mdash; paste your auth token above to view your memory.</li></ul>
     </div>
   </div>
 
@@ -258,15 +258,35 @@ export const HISTORY_HTML = `<!DOCTYPE html>
     // ── Thread list ───────────────────────────────────────────────────────────────
     function loadThreadList() {
       fetch("/memory/threads", { headers: { "Authorization": "Bearer " + _authToken } })
-        .then(function (r) { return r.json(); })
-        .then(function (data) { renderThreadList(data.threads || []); })
-        .catch(function (err) {
+        .then(function (r) {
+          if (r.status === 401) {
+            // Honest: unauthorized, NOT "no threads". (ADR-0012 5a / ADR-0013 read-gate.)
+            renderLocked("Unauthorized — check the token you pasted.");
+            setStatus("401 — bad or missing token.", false);
+            return null;
+          }
+          return r.json();
+        })
+        .then(function (data) {
+          if (data === null) return;              // 401 already handled
+          renderThreadList(data.threads || []);   // 200: real list or honest "No threads yet."
+        })
+        .catch(function () {
+          // Honest daemon-down / network error, NOT "no threads".
           clearChildren(threadList);
           var li = document.createElement("li");
           li.className = "empty";
-          li.textContent = "Failed to load threads.";
+          li.textContent = "Couldn’t reach the daemon — is it running?";
           threadList.appendChild(li);
         });
+    }
+
+    function renderLocked(msg) {
+      clearChildren(threadList);
+      var li = document.createElement("li");
+      li.className = "empty locked";
+      li.textContent = "🔒 " + (msg || "Locked — paste your auth token above to view your memory.");
+      threadList.appendChild(li);
     }
 
     function renderThreadList(threads) {

@@ -1,17 +1,18 @@
 # Chunk 4: history.html fallback UX tails + feature closeout (joint demo)
 
-**Status:** blocked
+**Status:** todo
 **Created:** 2026-07-02
 **Phase:** memory-transparency-ui (backlog Theme A — spec `docs/specs/2026-07-02-memory-transparency-ui.md`)
 **Estimated size:** ~0.5–1 day
 **Depends on:** code: none (parallelizable) · closeout/demo: 01+02+03+**05** merged
 
-> **BLOCKED note (conductor, 2026-07-09):** chunk-05 (fact-edit, added after the chunk-03
-> demo ruling) must merge first so the joint §6.1 demo covers it. **Unblock ritual: flip
-> Status back to `todo` right after chunk-05 merges** — the conveyor picks it up then.
-> Additional closeout duty added: the **ADR-0012 rider** via adr-curator (edit = two blessed
-> semantics: message-correction w/ session-local tag (03) + fact-edit w/ durable human badge
-> (05)); plus the token-revocation backlog note (demo-3 item-4) lands in memory-backlog §A.
+> **UNBLOCKED (conductor, 2026-07-09):** chunk-05 merged (PR #79, `5919f99`) — flipped back
+> to `todo` per the unblock ritual. Closeout duties carried in: the **ADR-0012 rider** via
+> adr-curator (edit = two blessed semantics: message-correction w/ session-local tag (03) +
+> fact-edit w/ durable human badge (05)); the token-revocation backlog note already landed
+> (memory-backlog §A, PR #78). Chunk-05 file stays `in-progress` deliberately — its live
+> behavioral half rides THIS chunk's joint demo; archive it (done + banner + move) together
+> with the rest of the §4.4 closeout ritual here.
 
 ## Scope
 

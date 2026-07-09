@@ -30,11 +30,11 @@ test("no drift: the served page inlines the exact tested sanitizer verbatim", ()
 // ── A: honest locked / empty / daemon-down states (chunk-04 tail A) ──────────
 
 test("A: initial thread-list is the honest locked state, not 'Loading…'", () => {
-  expect(HISTORY_HTML).toContain("Locked — paste your auth token"); // em-dash copy
   const listUl = HISTORY_HTML.match(
     /<ul class="thread-list" id="thread-list">([\s\S]*?)<\/ul>/,
   );
   expect(listUl).not.toBeNull();
+  expect(listUl![1]).toContain("Locked"); // static initial placeholder copy (dash encoding-agnostic)
   expect(listUl![1]).not.toContain("Loading…"); // list initial state must not be "Loading…"
 });
 

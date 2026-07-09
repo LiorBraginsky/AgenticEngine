@@ -109,6 +109,12 @@ test("renderFacts: persistent 'yours' badge iff authored_by==='human' (data-driv
     { id: "M", fact: "machine fact", provenance: "thread:t", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
   ], () => {});
   const rows = el.querySelectorAll(".fact-row");
-  expect(rows[0]!.querySelector(".human-badge")).not.toBeNull();     // human → badge
+  const badge = rows[0]!.querySelector(".human-badge");
+  expect(badge).not.toBeNull();     // human → badge
   expect(rows[1]!.querySelector(".human-badge")).toBeNull();          // machine → no badge
+  // inline placement: badge is appended INTO the fact-text element (same line), not a
+  // sibling block of .fact-row — i.e. its parent is the row's first child (factEl), not the row itself.
+  const factTextEl = rows[0]!.children[0] as HTMLElement;
+  expect(badge!.parentElement).toBe(factTextEl);
+  expect(badge!.parentElement).not.toBe(rows[0]);
 });

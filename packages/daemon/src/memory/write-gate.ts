@@ -199,6 +199,10 @@ export class WriteGate {
     const db = this.store.rawDb();
     const row = db.query("SELECT authored_by FROM distilled_facts WHERE id = ?").get(factId) as { authored_by: string } | null;
     if (!row) return false;
+    // This guard only refuses machine-over-HUMAN today. store.editFactById's stamp is
+    // unconditionally 'human', so a machine-over-MACHINE ctx would still promote a machine
+    // fact to 5e-protected human-owned (inverting never-replace-human) — a machine ctx MUST
+    // be rejected here (not just when row is human) before 2c is wired (see store.editFactById).
     if (row.authored_by === "human" && ctx.authored_by === "machine") return false; // 5e seam (never fires on HTTP)
     return this.store.editFactById(factId, newText, { actor: ctx.actor, reason });
   }

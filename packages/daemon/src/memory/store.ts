@@ -912,6 +912,11 @@ export class MemoryStore {
       const prior = this.db.query("SELECT fact FROM distilled_facts WHERE id = ?").get(id) as { fact: string } | null;
       if (prior === null) return false;
       this.recordReplacedFact(id, prior.fact, ctx);
+      // authored_by is ALWAYS stamped 'human' here — this primitive is for HUMAN correction only.
+      // Do NOT reuse it for a machine ctx: it would promote a machine fact to 5e-protected
+      // human-owned and invert never-replace-human. If 2c (agent memory-action) is ever wired
+      // through editFact, close this (reject machine ctx in WriteGate.editFact, or honor
+      // ctx.authored_by here).
       this.db.query("UPDATE distilled_facts SET fact = ?, authored_by = 'human', derived_at = ? WHERE id = ?")
         .run(newText, Date.now(), id);
       this.db.query("DELETE FROM fact_fts WHERE fact_id = ?").run(id);

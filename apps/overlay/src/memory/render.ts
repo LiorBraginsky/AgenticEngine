@@ -101,12 +101,14 @@ export function renderFacts(
     row.appendChild(factEl);
 
     // chunk-05: persistent, DATA-DRIVEN "yours" badge (from the fact's own authored_by; survives
-    // restart — unlike the session-local message "edited by you" tag).
+    // restart — unlike the session-local message "edited by you" tag). Appended INTO factEl
+    // (inline, right after the fact text) so it renders on the same line, not as a sibling
+    // block wrapping to its own line.
     if (f.authored_by === "human") {
       const badge = document.createElement("span");
       badge.className = "human-badge";
       badge.textContent = " yours";
-      row.appendChild(badge);
+      factEl.appendChild(badge);
     }
 
     // Provenance (ADR-0012 5c) — thread:<id> is a jump-link; else plain text.

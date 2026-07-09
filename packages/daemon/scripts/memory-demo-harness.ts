@@ -46,10 +46,11 @@ import type { FactOp } from "../src/memory/memory-provider.js";
 
 console.log("");
 console.log("╔══════════════════════════════════════════════════════════════════════════════╗");
-console.log("║  memory-demo-harness — Strike-5 EXECUTED evidence (chunk v2-09)            ║");
+console.log("║  memory-demo-harness — Strike-5 EXECUTED evidence (chunk-05 FACT-EDIT)     ║");
 console.log("║  Drives REAL daemon via WS + HTTP (same interfaces as the overlay)         ║");
 console.log("║  Verifies C/B/A/E + STEP 2b + DEDUP-AFTER-RECALL +                        ║");
-console.log("║  CHANGE→ONE-FACT (preference change replaces, not duplicates).             ║");
+console.log("║  CHANGE→ONE-FACT (preference change replaces, not duplicates) +           ║");
+console.log("║  FACT-EDIT (human correction survives re-distill: no overwrite/dup).      ║");
 console.log("║  Type-check alone is NOT evidence. Must be run.                            ║");
 console.log("╚══════════════════════════════════════════════════════════════════════════════╝");
 console.log("");
@@ -279,6 +280,17 @@ function buildScriptedClient(): Anthropic {
                 canonical: "user favourite colour green",
                 topics: ["#preferences"],
               });
+            }
+          } else if (content.includes("бірюзовий")) {
+            // chunk-05 FACT-EDIT harness: re-distill of a human-edited colour fact. canonical = the
+            // line content itself so it equals normalizeFactText(edit text) → dedup deterministically
+            // suppresses the never-replace-human demote (proves 5e + no-duplicate over the real daemon).
+            if (colourCandidateIdx !== -1) {
+              const existing = candidateLines[colourCandidateIdx]?.match(/^\d+\.\s+(.+?)(?:\s+\[|$)/);
+              ops.push({ op: "replace", fact: content, canonical: content, topics: ["#preferences"],
+                targetOrdinal: colourCandidateIdx + 1, ...(existing?.[1] ? { expectedTargetText: existing[1].trim() } : {}) });
+            } else {
+              ops.push({ op: "new", fact: content, canonical: content, topics: ["#preferences"] });
             }
           }
         }
@@ -709,6 +721,40 @@ try {
   }
   console.log("");
 
+  // ── FACT-EDIT: edit what the agent remembers (chunk-05) ──────────────────
+  console.log("[demo-harness] FACT-EDIT: edit a distilled fact's TEXT via POST /memory/edit {target_type:fact}");
+  const EDIT_COLOUR_TEXT = "мій улюблений колір бірюзовий"; // lowercase, no punctuation → canonical-stable
+  const feRes = await fetch(`http://127.0.0.1:${PORT}/memory/thread/${encodeURIComponent(threadA)}`, { headers: { Authorization: `Bearer ${token}` } });
+  const feFacts = (await feRes.json() as { distilledFacts: { fact: string; id: string; authored_by: string }[] }).distilledFacts;
+  const colourFact = feFacts.find((f) => f.fact.includes("синій") || f.fact.includes("зелений") || f.fact.includes("колір") || f.fact.includes("Люблю"));
+  if (!colourFact) { console.error("[demo-harness] FACT-EDIT: no colour fact to edit"); await cleanup(); process.exit(1); }
+  const editRes = await fetch(`http://127.0.0.1:${PORT}/memory/edit`, {
+    method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ target_type: "fact", fact_id: colourFact.id, replacement: EDIT_COLOUR_TEXT, reason: "demo-harness-fact-edit" }),
+  });
+  console.log(`[demo-harness] FACT-EDIT: POST /memory/edit → ${editRes.status}`);
+  // read back: text changed + authored_by human (durable)
+  const afterEdit = (await (await fetch(`http://127.0.0.1:${PORT}/memory/thread/${encodeURIComponent(threadA)}`, { headers: { Authorization: `Bearer ${token}` } })).json() as { distilledFacts: { fact: string; id: string; authored_by: string }[] }).distilledFacts;
+  const edited = afterEdit.find((f) => f.id === colourFact.id);
+  const editApplied = editRes.status === 204 && edited?.fact === EDIT_COLOUR_TEXT && edited?.authored_by === "human";
+  // re-distill: restate the same edited value in a new thread
+  const feColourBefore = countColourFacts(tmpDir);
+  const threadFE = crypto.randomUUID();
+  await wsTurnAndSettle(PORT, token, { threadId: threadFE, text: EDIT_COLOUR_TEXT }, 200);
+  const feColourAfter = countColourFacts(tmpDir);
+  const afterRedistill = (await (await fetch(`http://127.0.0.1:${PORT}/memory/thread/${encodeURIComponent(threadA)}`, { headers: { Authorization: `Bearer ${token}` } })).json() as { distilledFacts: { fact: string; id: string; authored_by: string }[] }).distilledFacts;
+  const stillOne = afterRedistill.filter((f) => f.id === colourFact.id && f.fact === EDIT_COLOUR_TEXT && f.authored_by === "human").length === 1;
+  const noDup = feColourAfter === feColourBefore;
+  console.log(`[demo-harness] FACT-EDIT: applied=${editApplied} colourCount before=${feColourBefore} after=${feColourAfter} human-stable=${stillOne}`);
+  if (MODE === "stub") {
+    if (!editApplied) { console.error("[demo-harness] FACT-EDIT: RED — edit did not persist as human text (route/primitive not applied)."); await cleanup(); process.exit(1); }
+    if (!stillOne || !noDup) { console.error("[demo-harness] FACT-EDIT: RED — human fact overwritten or duplicated by re-distill (5e demote + dedup-suppress not holding)."); await cleanup(); process.exit(1); }
+    console.log("[demo-harness] FACT-EDIT: GREEN — edit persists as human text; re-distill neither overwrote nor duplicated it.");
+  } else {
+    console.log(`[demo-harness] FACT-EDIT: informational (real mode, LLM-fuzzy) — applied=${editApplied} stillOne=${stillOne} noDup=${noDup}.`);
+  }
+  console.log("");
+
   // ── SEQUENCE STEP 5: Forget ONE fact (HTTP) — C FIX VERIFICATION ────────
   console.log("[demo-harness] STEP 5: Forget ONE fact (HTTP) — C fix: forgetFactById");
 
@@ -1024,8 +1070,10 @@ try {
   console.log("║     (stub hard assertion: process.exit(1) if new/dup colour fact created)  ║");
   console.log("║  CHANGE→ONE-FACT: colour CHANGE in separate thread → exactly 1 colour fact ║");
   console.log("║     (stub hard assert: process.exit(1) if duplicate — v2-09 Part 1+3)      ║");
+  console.log("║  FACT-EDIT: human-edited fact text survives re-distill (chunk-05)          ║");
+  console.log("║     (stub hard assert: process.exit(1) if not applied / overwritten / dup) ║");
   console.log("║                                                                              ║");
-  console.log("║  Paste this stdout into the PR body = Strike-5 EXECUTED evidence (v2-09).  ║");
+  console.log("║  Paste this stdout into the PR body = Strike-5 EXECUTED evidence.          ║");
   console.log("╚══════════════════════════════════════════════════════════════════════════════╝");
   console.log("");
 

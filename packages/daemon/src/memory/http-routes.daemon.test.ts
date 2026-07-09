@@ -37,6 +37,9 @@ let seededThreadId: string;
 // The seeded message id — used by T2.1c write-route tests.
 let seededMessageId: string;
 
+// chunk-05: the seeded MACHINE distilled fact — used by the fact-edit route tests.
+let seededFactId: string;
+
 beforeAll(async () => {
   sharedDataDir = mkdtempSync(join(tmpdir(), "mf05-t21a-"));
   process.env.AGENTIC_DATA_DIR = sharedDataDir;
@@ -48,6 +51,12 @@ beforeAll(async () => {
   seededThreadId = seedStore.createThread("test thread title");
   const seededIds = seedStore.appendMessages(seededThreadId, [{ role: "user", content: "seeded message" }], "seed-session");
   seededMessageId = seededIds[0]!;
+  // chunk-05: a MACHINE distilled fact for the fact-edit route tests
+  seededFactId = seedStore.insertFact({
+    fact: "favourite colour blue", canonical: "favourite colour blue",
+    provenance: `thread:${seededThreadId}`, scope: "cross-thread", expiry: null,
+    confidence: 1, authored_by: "machine", topics: ["#preferences"],
+  }, "seed");
   seedStore.close();
 
   const { startDaemon } = await import("../index.js");
@@ -538,4 +547,50 @@ test("v2-06: POST /memory/forget with target_type=message → 400 (unchanged aft
     body: JSON.stringify({ target_type: "message", target: seededMessageId }),
   });
   expect(res.status).toBe(400);
+});
+
+// ─── chunk-05 FACT-EDIT: POST /memory/edit target_type:"fact" ────────────────
+
+function editPost(body: unknown, withToken = true): Promise<Response> {
+  return fetch(`http://127.0.0.1:${PORT}/memory/edit`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(withToken ? { Authorization: `Bearer ${readToken()}` } : {}) },
+    body: JSON.stringify(body),
+  });
+}
+
+test("fact-edit: valid → 204 + text updated + authored_by=human on disk", async () => {
+  const res = await editPost({ target_type: "fact", fact_id: seededFactId, replacement: "favourite colour green", reason: "t" });
+  expect(res.status).toBe(204);
+  const s = new MemoryStore({ dataDir: sharedDataDir });
+  const row = s.rawDb().query("SELECT fact, authored_by FROM distilled_facts WHERE id = ?").get(seededFactId) as { fact: string; authored_by: string };
+  s.close();
+  expect(row.fact).toBe("favourite colour green");
+  expect(row.authored_by).toBe("human");
+});
+
+test("fact-edit: missing fact_id → 400", async () => {
+  expect((await editPost({ target_type: "fact", replacement: "x" })).status).toBe(400);
+});
+
+test("fact-edit: non-uuid fact_id → 400", async () => {
+  expect((await editPost({ target_type: "fact", fact_id: "not-a-uuid", replacement: "x" })).status).toBe(400);
+});
+
+test("fact-edit: empty replacement → 400", async () => {
+  expect((await editPost({ target_type: "fact", fact_id: seededFactId, replacement: "" })).status).toBe(400);
+});
+
+test("fact-edit: unknown uuid fact_id → 404 target_not_found", async () => {
+  const res = await editPost({ target_type: "fact", fact_id: crypto.randomUUID(), replacement: "x" });
+  expect(res.status).toBe(404);
+  expect((await res.json() as { error: string }).error).toBe("target_not_found");
+});
+
+test("fact-edit: no token → 401", async () => {
+  expect((await editPost({ target_type: "fact", fact_id: seededFactId, replacement: "x" }, false)).status).toBe(401);
+});
+
+test("message-edit regression: {target,replacement} (no target_type) still → 204", async () => {
+  expect((await editPost({ target: seededMessageId, replacement: "corrected msg" })).status).toBe(204);
 });

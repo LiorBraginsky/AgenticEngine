@@ -1,6 +1,6 @@
 # Chunk 5: Memory window — FACT-edit (edit what the agent remembers)
 
-**Status:** todo
+**Status:** in-progress
 **Created:** 2026-07-09
 **Phase:** memory-transparency-ui (backlog Theme A — spec `docs/specs/2026-07-02-memory-transparency-ui.md`)
 **Estimated size:** ~1 day

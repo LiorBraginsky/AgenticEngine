@@ -3688,3 +3688,243 @@ The ADR-0012 rider documenting **both** edit semantics (message-correction vs fa
 ## Status: Done
 
 ---
+
+
+---
+
+## Chunk 04 — history.html fallback UX tails
+
+> **For agentic workers:** REQUIRED SUB-SKILL: use `superpowers:subagent-driven-development` or `superpowers:executing-plans`. Steps use `- [ ]` checkboxes. Scope is FROZEN by `orchestration/chunks-todo/memory-transparency-ui/04-history-fallback-ux-and-closeout.md` (## Scope In items A+B) and `orchestration/docs/specs/2026-07-02-memory-transparency-ui.md` Scope-IN item 3. This section is the **code half only** — the closeout/archive/ADR-rider half is owned by the orchestrator and is explicitly out of this plan.
+
+**Goal:** Two honest-state/token tails on the browser fallback page `history.html`: (A) an explicit locked / "paste a token to view" state that replaces the false "Loading…"→"no threads" sequence when there is no/bad token; (B) tolerate whitespace + the zsh trailing-`%` artifact on the paste path.
+
+**Architecture:** Single daemon file `packages/daemon/src/memory/history-page.ts` (a server-rendered HTML string with inline JS, served verbatim by `http-routes.ts` at `GET /history.html`). A new pure sanitizer `sanitizeToken` becomes the single source of truth for B — kept as a JS-source string constant, inlined verbatim into the page `<script>` AND compiled in the unit test via `new Function`, so there is zero drift and no DOM harness / transpile dependency. A is static-copy + a `401` render branch. `@agentic/protocol` is untouched; no HTTP route, no wire change.
+
+**Tech Stack:** Bun + TypeScript; `bun:test` (pure-function + string-presence assertions, matching `normalize-fact-text.test.ts`). No new deps (runtime or dev).
+
+### Global Constraints (verbatim from chunk + spec + ADRs)
+
+- **`@agentic/protocol` is FROZEN** — `git diff packages/protocol/` MUST be empty. This chunk touches only `packages/daemon/src/memory/`.
+- **Token discipline (ADR-0013):** the credential is NEVER logged and travels ONLY in `Authorization: Bearer <token>` — never URL/query/body/log. The paste-path change must not introduce any log of the pasted value. (Existing code already obeys this; do not regress it.)
+- **ADR-0013:** the locked state is the honest face of the read-gate — `GET /memory/*` is now token-gated (Option-A end-state shipped; see Reality check #2), so "you genuinely cannot view without a token" is the *true* state, which is exactly what the locked copy must say.
+- **ADR-0012 decision 5a:** the fallback hatch stays truthful — no false "Loading…"; honest locked / empty / daemon-down states.
+- **Scope OUT (deliberate cuts, PIPELINE §7.2):** NO restyling / feature-extending `history.html`; do NOT remove it; NO overlay/memory-window change (chunks 01–03/05 own that); do NOT touch `token-store.ts` or any auth mechanism (see Reality check #4). Keep the diff to the two tails.
+- **CI gate:** `bun test`, `bun run lint:strict` (`--max-warnings=0`), `bun run typecheck` all green.
+
+---
+
+### Reality check
+
+Findings are **code-path existence facts** verified by reading source. Per PIPELINE §6.1, no runtime/visible-behavior claim is asserted as verified — those are marked **"requires live demo to confirm."** Citations are `file:line`.
+
+1. **Page structure — server-rendered HTML string with inline JS, one file, no build step.** `history-page.ts:15` exports `HISTORY_HTML` (a template literal). `http-routes.ts:131-136` serves it verbatim at `GET /history.html` (`content-type: text/html; charset=utf-8`, Host-guard only, open on loopback). The client-side fetch+render is the inline `<script>` (`history-page.ts:198-623`): `loadThreadList()` (`:240-251`) does `fetch("/memory/threads", { headers: { Authorization: "Bearer " + _authToken } })` and `renderThreadList()` (`:253-276`) builds the list via `textContent`/`createElement` only (no `innerHTML` with API data — must preserve this XSS discipline). It is a plain static string; there is **no separate asset** and no framework.
+
+2. **Current no/bad-token behavior (the dishonest sequence).** *Code-path facts:* the thread-list ships a static placeholder `<li class="empty">Loading…</li>` (`history-page.ts:174`), and the bootstrap **does not** call `loadThreadList()` on load — it is deferred to the Unlock click (`:620-622`, comment: "loadThreadList() is NOT called here … deferred to the Unlock handler … ADR-0013 read-gate"). `loadThreadList()` resolves `r.json()` and calls `renderThreadList(data.threads || [])` (`:243`); on an empty/`undefined` array `renderThreadList` renders `"No threads yet."` (`:255-260`). Reads are token-gated, so a bad token yields `401` with a JSON body `{error:"Unauthorized"}` (`http-routes.ts:147,151`) — and because `fetch` does **not** reject on `401`, `data.threads` is `undefined` → `[]` → `"No threads yet."` *Requires live demo to confirm* the visible sequence, but by code-reading: **no token → "Loading…" shown perpetually** (nothing is loading; the honest state is "locked"); **bad token after Unlock → "No threads yet."** (dishonest — the truth is "unauthorized"). Both are the false states A must replace.
+
+3. **Token capture / paste path.** Captured from a `<input type="password" id="token-input">` (`:154-160`) on Unlock click (`:220-232`): currently `var val = tokenInput.value.trim(); … _authToken = val; tokenInput.value = "";`. Held in a plain JS variable `_authToken` ONLY — never localStorage/sessionStorage/cookies (`:199-203`, ADR-0013 threat model). Sent as `Authorization: Bearer <token>` on every fetch (`:241,287,489,563`) — never URL/body. `.trim()` (`:221`) removes surrounding whitespace but **does not** strip the zsh trailing-`%` (a literal `%`, not whitespace) — this is exactly B's gap.
+
+4. **Is the token ever displayed/served? NO → the "copy-clean at source" sub-item is a no-op for this page.** `history.html` displays only the token *file path* (`<code id="token-path">~/.agentic-engine/auth-token</code>`, `:164`) — a hardcoded string, not the secret. The page never serves/echoes the token value. So "make the served token copy-clean" has nothing to act on here. The *true* origin of the zsh `%` is that `token-store.ts:32` writes the hex secret with **no trailing newline** (`writeFileSync(tokenPath, hex, {mode:0o600})`), so `cat auth-token` in zsh renders the no-newline `%` marker. Writing `hex + "\n"` is **deliberately OUT of scope**: `token-store.ts` is not in this chunk's file scope, it is security-critical, and the overlay reads the same file Rust-side for the WS-subprotocol token (`read_auth_token`) with `verifyToken(raw)` doing an exact constant-time compare (`token-store.ts:83-86`) — a trailing newline could break overlay WS auth unless the Rust side also trims. Not "cheap," and cross-boundary. **The entire footgun is neutralized on the paste path by B** (sanitize strips the `%`), and A honestly handles any residual bad token with a `401` locked state. Record the optional trailing-newline-at-mint idea as a backlog note (orchestrator), do not implement.
+
+5. **Test harness.** `bun:test`, no DOM/jsdom (confirmed: `packages/daemon/package.json` has no happy-dom/jsdom; deps are `@agentic/protocol`, `@anthropic-ai/sdk`, `zod`). Two styles: pure-function unit tests (`normalize-fact-text.test.ts` — the template for B) and real-HTTP `*.daemon.test.ts` (`http-routes.daemon.test.ts` already covers `GET /history.html` serving + `401` gating — no new daemon test needed). `history-page.ts` is currently **not** directly tested (`grep HISTORY_HTML` in test files = 0 hits). Consequence: **B gets real behavioral coverage** via an extracted pure sanitizer; **A's render branches are DOM-coupled inline JS**, so without a DOM lib they get **string-presence guards** on `HISTORY_HTML` — the true behavioral proof of A is Lior's live demo (§6.1). (Adding happy-dom/jsdom to unit-test the render branches is an available dev-dep option but is rejected: scope-creep for a two-tail chunk, no existing test uses it.)
+
+---
+
+### Steps
+
+Three sequential, independently-testable tasks. Branch: `chunk/04-history-fallback-ux`. TDD within each (test → fail → implement → pass → commit).
+
+#### Step 1 — B: extract + inline `sanitizeToken`, wire the paste path (test-first)
+
+**Files:** Modify `packages/daemon/src/memory/history-page.ts`; Create `packages/daemon/src/memory/history-page.test.ts`.
+
+- [ ] **1.1 — Write the failing unit test.** In the new `history-page.test.ts`:
+
+```ts
+import { test, expect } from "bun:test";
+import { HISTORY_HTML, SANITIZE_TOKEN_FN } from "./history-page.js";
+
+// Compile the SAME source the page inlines — real behavioral coverage, no DOM, no transpile dep.
+const sanitizeToken = new Function(
+  `${SANITIZE_TOKEN_FN}; return sanitizeToken;`,
+)() as (raw: string) => string;
+
+const T = "a".repeat(64); // token shape = 64 lowercase hex (token-store.ts)
+
+test("sanitizeToken: strips zsh trailing % and surrounding whitespace", () => {
+  expect(sanitizeToken(T + "%")).toBe(T);
+  expect(sanitizeToken("  " + T + "  ")).toBe(T);
+  expect(sanitizeToken(T + "%\n")).toBe(T);
+  expect(sanitizeToken("\t" + T + " %")).toBe(T);
+});
+
+test("sanitizeToken: strips surrounding quotes; clean token unchanged; non-string → ''", () => {
+  expect(sanitizeToken('"' + T + '"')).toBe(T);
+  expect(sanitizeToken("'" + T + "'")).toBe(T);
+  expect(sanitizeToken("deadbeef")).toBe("deadbeef");
+  // @ts-expect-error runtime guard
+  expect(sanitizeToken(undefined)).toBe("");
+});
+
+test("no drift: the served page inlines the exact tested sanitizer verbatim", () => {
+  expect(HISTORY_HTML).toContain(SANITIZE_TOKEN_FN);
+});
+```
+
+- [ ] **1.2 — Run:** `cd packages/daemon && bun test src/memory/history-page.test.ts` → Expected FAIL (`SANITIZE_TOKEN_FN` not exported).
+
+- [ ] **1.3 — Implement in `history-page.ts`.** Add, above `export const HISTORY_HTML`, the single-source-of-truth sanitizer (kept as a JS-source string so it can be inlined verbatim; contains NO backticks, so no template escaping):
+
+```ts
+/**
+ * Paste-path token sanitizer (chunk-04 tail B). Single source of truth:
+ * inlined verbatim into the served <script> below AND compiled in the unit test.
+ * Tolerates the zsh no-newline "%" marker + surrounding whitespace/quotes that
+ * ride along when a token is copied from a terminal. Format-agnostic (does NOT
+ * assume hex) so a future token format is unaffected; the real gate stays the
+ * server-side constant-time compare (token-store.ts).
+ */
+export const SANITIZE_TOKEN_FN = `function sanitizeToken(raw) {
+  if (typeof raw !== "string") return "";
+  var t = raw.trim();
+  t = t.replace(/%+$/, "").trim();            // zsh no-newline marker(s)
+  t = t.replace(/^["']+|["']+$/g, "").trim(); // surrounding quotes
+  return t;
+}`;
+```
+
+- [ ] **1.4 — Inline it into the page and rewire the Unlock handler.** In the `<script>`, insert `${SANITIZE_TOKEN_FN}` once near the top of the script block (e.g. immediately after the `_authToken` declaration at `:203`), then change the Unlock handler (`:220-232`) so it uses the sanitizer instead of bare `.trim()`:
+
+```js
+    unlockBtn.addEventListener("click", function () {
+      var val = sanitizeToken(tokenInput.value);   // chunk-04 tail B (was: .trim())
+      if (!val) {
+        setStatus("Enter a token first.", false);
+        return;
+      }
+      _authToken = val;
+      tokenInput.value = "";
+      setStatus("Token set for this session.", true);
+      loadThreadList();
+    });
+```
+
+(Do NOT log `val`/`raw` anywhere — ADR-0013.)
+
+- [ ] **1.5 — Run:** `bun test src/memory/history-page.test.ts` → Expected PASS.
+
+- [ ] **1.6 — Commit:** `feat(memory-transparency-ui): chunk-04 tail B — tolerate zsh % / whitespace on history.html paste path`.
+
+#### Step 2 — A: honest locked / empty / daemon-down states (test-first)
+
+**Files:** Modify `packages/daemon/src/memory/history-page.ts`; extend `history-page.test.ts`.
+
+- [ ] **2.1 — Add failing string-guard tests** to `history-page.test.ts`:
+
+```ts
+test("A: initial thread-list is the honest locked state, not 'Loading…'", () => {
+  expect(HISTORY_HTML).toContain("Locked — paste your auth token"); // em-dash copy
+  const listUl = HISTORY_HTML.match(
+    /<ul class="thread-list" id="thread-list">([\s\S]*?)<\/ul>/,
+  );
+  expect(listUl).not.toBeNull();
+  expect(listUl![1]).not.toContain("Loading…"); // list initial state must not be "Loading…"
+});
+
+test("A: loadThreadList has an explicit 401 -> locked branch (not 'No threads')", () => {
+  expect(HISTORY_HTML).toContain("r.status === 401");
+  expect(HISTORY_HTML).toContain("renderLocked");
+});
+```
+
+- [ ] **2.2 — Run:** `bun test src/memory/history-page.test.ts` → Expected FAIL.
+
+- [ ] **2.3 — Implement.** (a) Change the static list placeholder (`:174`) from `Loading…` to the locked copy:
+
+```html
+      <ul class="thread-list" id="thread-list"><li class="empty locked">&#128274; Locked &mdash; paste your auth token above to view your memory.</li></ul>
+```
+
+(b) Add a `renderLocked` helper near `renderThreadList` (uses `textContent` only — XSS discipline):
+
+```js
+    function renderLocked(msg) {
+      clearChildren(threadList);
+      var li = document.createElement("li");
+      li.className = "empty locked";
+      li.textContent = "🔒 " + (msg || "Locked — paste your auth token above to view your memory.");
+      threadList.appendChild(li);
+    }
+```
+
+(c) Rewrite `loadThreadList` (`:240-251`) to branch on status — honest locked (401), honest empty (200 + `[]`, unchanged path), honest daemon-down (network reject):
+
+```js
+    function loadThreadList() {
+      fetch("/memory/threads", { headers: { "Authorization": "Bearer " + _authToken } })
+        .then(function (r) {
+          if (r.status === 401) {
+            // Honest: unauthorized, NOT "no threads". (ADR-0012 5a / ADR-0013 read-gate.)
+            renderLocked("Unauthorized — check the token you pasted.");
+            setStatus("401 — bad or missing token.", false);
+            return null;
+          }
+          return r.json();
+        })
+        .then(function (data) {
+          if (data === null) return;              // 401 already handled
+          renderThreadList(data.threads || []);   // 200: real list or honest "No threads yet."
+        })
+        .catch(function () {
+          // Honest daemon-down / network error, NOT "no threads".
+          clearChildren(threadList);
+          var li = document.createElement("li");
+          li.className = "empty";
+          li.textContent = "Couldn’t reach the daemon — is it running?";
+          threadList.appendChild(li);
+        });
+    }
+```
+
+Leave the thread-**detail** view's `Loading…` placeholders (`:184,189,194`) as-is: they are shown only during an already-authenticated in-flight fetch (post-`openThread`), so they are honest-transient, not the false state A targets. Note this in the commit body.
+
+- [ ] **2.4 — Run:** `bun test src/memory/history-page.test.ts` → Expected PASS.
+
+- [ ] **2.5 — Commit:** `feat(memory-transparency-ui): chunk-04 tail A — honest locked/empty/daemon-down states on history.html (kill false Loading…)`.
+
+#### Step 3 — Full verification + protocol-freeze assertion
+
+**Files:** none (verification only).
+
+- [ ] **3.1 — Full suite green:** from repo root run `bun test`, `bun run lint:strict`, `bun run typecheck` — all must pass (0 warnings). Fix any fallout in the two touched files only.
+- [ ] **3.2 — Freeze assertion:** `git diff --stat packages/protocol/` MUST be empty. `git diff --stat` should show ONLY `packages/daemon/src/memory/history-page.ts` and `packages/daemon/src/memory/history-page.test.ts`.
+- [ ] **3.3 — Commit** any lint/type fixups if needed; push the branch and open the PR against `main` per CLAUDE.md (auto-merge only on the all-green gate set). **Leave the chunk file `in-progress`** with the closeout DoD boxes unchecked — the joint live demo + archive ritual are the orchestrator's post-demo half (do NOT split-archive).
+
+---
+
+### Test plan
+
+Matches the existing harness (`bun:test`, pure-function + string-presence; no DOM lib added). All in the new `packages/daemon/src/memory/history-page.test.ts`.
+
+- **B — trim tolerance (real behavioral coverage):** compile `SANITIZE_TOKEN_FN` via `new Function` and assert: trailing `%` stripped; trailing `%\n` stripped; leading/trailing whitespace stripped; interior `" %"` tail stripped; surrounding single/double quotes stripped; a clean token is returned unchanged; non-string → `""`. Plus the **drift guard** `HISTORY_HTML.toContain(SANITIZE_TOKEN_FN)` — proves the served bytes are exactly the tested function (no `.toString()`/transpile dependency, so nothing here is "requires runtime confirm").
+- **A — honest states (mechanical guards on the served string):** the list-view initial placeholder contains the "Locked — paste your auth token" copy and does NOT contain `Loading…` (regex-scoped to the `#thread-list` `<ul>` so the honest detail-view transient placeholders don't trip it); the `loadThreadList` source contains the `r.status === 401` branch and calls `renderLocked`. These are guards that the copy/branch shipped; **the visible end-to-end behavior of A is verified only by the live demo** (see DoD).
+- **No new `*.daemon.test.ts`:** `http-routes.daemon.test.ts` already covers `GET /history.html` serving and `401` gating; A/B add no route and need no server test.
+
+---
+
+### DoD mapping
+
+Chunk `## Done criteria` boxes vs the code half:
+
+1. **[behavioral] locked state on no token; trailing-`%`/whitespace paste works** → satisfied by A (locked initial + `401`→locked branch + honest daemon-down) and B (`sanitizeToken`). Mechanical proxy: Step 1/2 tests green. The **visible behavior is "requires live demo to confirm"** — it is part of the joint §6.1 demo, not self-certifiable from code/tests.
+2. **[behavioral] joint feature demo (Lior, live), spec's 5-item checklist** → **NOT self-certifiable.** This is a §5.2 Lior gate. The code half must NOT check this box or run closeout before Lior signs the demo. (Out of this plan's authority.)
+3. **[mechanical] `bun test` + `lint:strict` + typecheck green** → Step 3.1.
+4. **[mechanical] archive ritual (spec/chunks/plans moved + banners + backlog/roadmap)** → **NOT the code half** — orchestrator-owned, post-demo. Out of this plan.
+5. **[mechanical] `git diff packages/protocol/` empty** → Step 3.2 (this chunk touches only `packages/daemon/src/memory/`).
+
+---
+
+### ADR worthy: no
+
+Executes existing decisions only — ADR-0013 (the locked state is the honest face of the already-shipped read-gate; token stays a Bearer header, never logged) and ADR-0012 5a (truthful fallback states). No new HTTP route, no new dependency (runtime or dev), no protocol/wire change, no new boundary. `sanitizeToken` is a client-side, in-page helper; `@agentic/protocol` is byte-unchanged.
+
+### Status: shipped-pending-demo (code half planned + executable; joint §6.1 demo + closeout are orchestrator-owned, post-demo)

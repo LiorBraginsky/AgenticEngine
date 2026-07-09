@@ -57,6 +57,12 @@ The structure is sound for single-user dogfood. Everything below is **deferred /
   hardcodes `expiry: null` / `confidence: 1` — dormant. Ruling: no scoring/decay until Lior's own
   fact base shows stale-fact pain; columns stay (cheap); the in-overlay UI shows these fields only
   when non-default. *Lives:* 2026-07-02 spec (display rule); verified dormant in code 2026-06-16.
+- **Token revocation / rotation — noted 2026-07-09 (chunk-03 demo, item 4).** Deleting the
+  auth-token FILE mid-session does not lock live windows: both overlay and daemon hold the bearer
+  in memory from startup, and file deletion is not revocation (standard bearer semantics; the
+  at-load 🔒 locked state works). If revocation ever matters (multi-user, or a leaked-token drill):
+  daemon re-reads/rotates the token + rejects stale bearers → live sessions drop. ADR-0013 polish;
+  low priority for single-user loopback. *Lives:* here + chunk-03 DONE ledger line.
 
 ### B. Conversational forget / memory-action tools  (roadmap 2c)
 - **2c — agent memory-action tools.** Today the agent can only *say* "I can't forget — use History"

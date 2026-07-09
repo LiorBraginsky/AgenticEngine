@@ -20,7 +20,7 @@ import type { ShellState } from "../memory-liveness.js";
 import type { MemoryApiDeps } from "./memory-api.js";
 import { fetchThreads, fetchThread } from "./memory-api.js";
 import { renderThreadList, renderMessages, renderFacts, renderEvents, renderState } from "./render.js";
-import { forgetFact, editMessage, type WriteResult } from "./memory-write.js";
+import { forgetFact, editMessage, editFact, type WriteResult } from "./memory-write.js";
 
 export interface MemoryControllerEls {
   listView: HTMLElement;
@@ -95,6 +95,7 @@ export function createMemoryController(deps: MemoryControllerDeps): MemoryContro
     });
     renderFacts(els.factsEl, r.data.distilledFacts ?? [], openThread, {
       onForget: (factId) => void forgetAction(factId),
+      onEditFact: (factId, newText) => void editFactAction(factId, newText), // chunk-05
     });
     renderEvents(els.eventsEl, r.data.distillationEvents ?? []);
   }
@@ -164,6 +165,13 @@ export function createMemoryController(deps: MemoryControllerDeps): MemoryContro
     const r = await editMessage(deps.api, messageId, newText);
     if (r.kind === "ok") editedIds.add(messageId); // mark THIS session's edit for the tag
     handleWriteResult(r);
+  }
+
+  // chunk-05 (FACT-EDIT): NO session set for the badge — data-driven. On `ok`, refreshCurrentView()
+  // re-fetches and the fact returns authored_by:"human" from the daemon, so the "yours" badge is
+  // durable (survives restart), unlike the session-local message editedIds tag above.
+  async function editFactAction(factId: string, newText: string): Promise<void> {
+    handleWriteResult(await editFact(deps.api, factId, newText));
   }
 
   function onLivenessState(state: ShellState): void {

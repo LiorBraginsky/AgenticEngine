@@ -269,6 +269,58 @@ test("chunk-03 write-path down-state re-couples liveness: a POST-triggered DOWN 
   expect(els.factsEl.querySelector(".fact-row")).not.toBeNull(); // recovered — not stuck on DOWN
 });
 
+test("chunk-05 fact-edit: 204 → POST target_type:fact + re-fetch shows the human-authored text", async () => {
+  const facts = [{ id: "F1", fact: "colour blue", provenance: "thread:t", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" }];
+  const postCalls: { url: string; init?: RequestInit }[] = [];
+  const fetchFn = (url: string, init?: RequestInit): Promise<Response> => {
+    if (init?.method === "POST") {
+      postCalls.push({ url, init });
+      facts[0] = { ...facts[0]!, fact: "colour green", authored_by: "human" };
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    const body = url.includes("/memory/thread/")
+      ? { messages: [], distilledFacts: facts.slice(), distillationEvents: [] }
+      : { threads: [{ thread_id: "T1", title: "One", last_active_at: 1, status: "active" }] };
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+  };
+  const els = makeEls();
+  const c = createMemoryController({ api: { fetchFn, baseUrl: "http://127.0.0.1:7777", token: "TOK" }, els });
+  c.start(); await flush();
+  els.threadListEl.querySelector<HTMLElement>(".thread-list-item")!.click(); await flush();
+  els.factsEl.querySelector<HTMLButtonElement>(".act-edit")!.click(); // open editor
+  const ta = els.factsEl.querySelector("textarea")!;
+  ta.value = "colour green";
+  els.factsEl.querySelector<HTMLButtonElement>(".act-save")!.click(); await flush(); // POST → re-fetch
+
+  expect(postCalls.length).toBe(1);
+  expect(postCalls[0]!.url).toBe("http://127.0.0.1:7777/memory/edit");
+  const body = JSON.parse(postCalls[0]!.init!.body as string) as { target_type: string; fact_id: string; replacement: string; reason: string };
+  expect(body).toEqual({ target_type: "fact", fact_id: "F1", replacement: "colour green", reason: "hatch-fact-edit" });
+  expect(els.factsEl.textContent).toContain("colour green"); // new text visible on reload
+  expect(els.factsEl.querySelector(".human-badge")).not.toBeNull(); // data-driven badge, no session set
+});
+
+test("chunk-05 fact-edit: POST rejected (daemon down) → DOWN, never a fake success", async () => {
+  const facts = [{ id: "F1", fact: "colour blue", provenance: "thread:t", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" }];
+  const fetchFn = (url: string, init?: RequestInit): Promise<Response> => {
+    if (init?.method === "POST") return Promise.reject(new Error("refused"));
+    const body = url.includes("/memory/thread/")
+      ? { messages: [], distilledFacts: facts.slice(), distillationEvents: [] }
+      : { threads: [{ thread_id: "T1", title: "One", last_active_at: 1, status: "active" }] };
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+  };
+  const els = makeEls();
+  const c = createMemoryController({ api: { fetchFn, baseUrl: "http://127.0.0.1:7777", token: "TOK" }, els });
+  c.start(); await flush();
+  els.threadListEl.querySelector<HTMLElement>(".thread-list-item")!.click(); await flush();
+  els.factsEl.querySelector<HTMLButtonElement>(".act-edit")!.click(); // open editor
+  const ta = els.factsEl.querySelector("textarea")!;
+  ta.value = "colour green";
+  els.factsEl.querySelector<HTMLButtonElement>(".act-save")!.click(); await flush(); // POST rejected
+
+  expect(els.factsEl.textContent).toContain("Daemon unreachable"); // honest, no "colour green"/fake success
+});
+
 test("chunk-03 edit: 204 → re-fetch, corrected text shown + 'edited by you' tag", async () => {
   let content = "hi";
   const fetchFn = (url: string, init?: RequestInit): Promise<Response> => {

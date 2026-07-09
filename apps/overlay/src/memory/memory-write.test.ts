@@ -4,7 +4,7 @@
  * NON-DOM by construction (Response/RequestInit/AbortController only) → root tsconfig coverage.
  */
 import { test, expect } from "bun:test";
-import { forgetFact, editMessage } from "./memory-write.js";
+import { forgetFact, editMessage, editFact } from "./memory-write.js";
 import type { MemoryApiDeps } from "./memory-api.js";
 
 function fakeFetch(status: number, calls: { url: string; init?: RequestInit }[]) {
@@ -53,4 +53,20 @@ test("edit POSTs target(messageId) + replacement", async () => {
   expect(calls[0]!.url).toBe("http://127.0.0.1:7777/memory/edit");
   expect(body.target).toBe("MSG-ID");
   expect(body.replacement).toBe("new text");
+});
+
+test("editFact 204 → ok; sends target_type:fact + fact_id + replacement (Bearer only)", async () => {
+  const calls: { url: string; init?: RequestInit }[] = [];
+  const r = await editFact(deps(fakeFetch(204, calls)), "F1", "new text");
+  expect(r.kind).toBe("ok");
+  const body = JSON.parse(calls[0]!.init!.body as string);
+  expect(body).toEqual({ target_type: "fact", fact_id: "F1", replacement: "new text", reason: "hatch-fact-edit" });
+  expect((calls[0]!.init!.headers as Record<string, string>).Authorization).toBe("Bearer TOK");
+});
+test("editFact status mapping: 401→unauthorized, 404→stale, 400→bad_request, 500→unreachable, net→unreachable", async () => {
+  expect((await editFact(deps(fakeFetch(401, [])), "F1", "x")).kind).toBe("unauthorized");
+  expect((await editFact(deps(fakeFetch(404, [])), "F1", "x")).kind).toBe("stale");
+  expect((await editFact(deps(fakeFetch(400, [])), "F1", "x")).kind).toBe("bad_request");
+  expect((await editFact(deps(fakeFetch(500, [])), "F1", "x")).kind).toBe("unreachable");
+  expect((await editFact(deps(fakeFetch(0, [])), "F1", "x")).kind).toBe("unreachable");
 });

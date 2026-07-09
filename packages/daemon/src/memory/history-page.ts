@@ -12,6 +12,22 @@
  *   - History/memory slice ONLY — NOT an SPA, NO settings/plugins/devtools.
  */
 
+/**
+ * Paste-path token sanitizer (chunk-04 tail B). Single source of truth:
+ * inlined verbatim into the served <script> below AND compiled in the unit test.
+ * Tolerates the zsh no-newline "%" marker + surrounding whitespace/quotes that
+ * ride along when a token is copied from a terminal. Format-agnostic (does NOT
+ * assume hex) so a future token format is unaffected; the real gate stays the
+ * server-side constant-time compare (token-store.ts).
+ */
+export const SANITIZE_TOKEN_FN = `function sanitizeToken(raw) {
+  if (typeof raw !== "string") return "";
+  var t = raw.trim();
+  t = t.replace(/%+$/, "").trim();            // zsh no-newline marker(s)
+  t = t.replace(/^["']+|["']+$/g, "").trim(); // surrounding quotes
+  return t;
+}`;
+
 export const HISTORY_HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -202,6 +218,9 @@ export const HISTORY_HTML = `<!DOCTYPE html>
     // The token is in-memory only: a separate-origin tab cannot read a JS variable.
     var _authToken = null; // eslint-disable-line no-var
 
+    // ── Paste-path token sanitizer (chunk-04 tail B) ─────────────────────────────
+    ${SANITIZE_TOKEN_FN}
+
     // ── DOM refs ─────────────────────────────────────────────────────────────────
     var tokenInput = document.getElementById("token-input");
     var unlockBtn = document.getElementById("unlock-btn");
@@ -218,7 +237,7 @@ export const HISTORY_HTML = `<!DOCTYPE html>
 
     // ── Unlock ────────────────────────────────────────────────────────────────────
     unlockBtn.addEventListener("click", function () {
-      var val = tokenInput.value.trim();
+      var val = sanitizeToken(tokenInput.value); // chunk-04 tail B (was: .trim())
       if (!val) {
         setStatus("Enter a token first.", false);
         return;

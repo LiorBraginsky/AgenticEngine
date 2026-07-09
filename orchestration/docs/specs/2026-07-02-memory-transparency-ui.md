@@ -38,6 +38,14 @@ and the stated vision (memory-backlog §A, "Lior's #1 vision item").
    construction** (kills the browser page's re-paste friction). Edit = the correction flow
    riding MUTATION-AS-APPEND (`authored_by:human` + 5e never-overwrite-human are already
    enforced by the write-gate). `history.html` stays as the no-install fallback.
+   > **EDIT ruling (Lior, 2026-07-09, chunk-03 demo):** "edit" split into TWO blessed
+   > semantics — (a) **message-correction** in the thread archive (shipped in chunk-03;
+   > MUTATION-AS-APPEND, session-local "edited by you" tag) and (b) **fact-edit** — editing
+   > the distilled-fact text itself, the actual 5a "correct what the agent remembers"
+   > promise — which the backend lacked (no fact-edit route existed; the spec's original
+   > wording over-promised against the seam). Fact-edit added as **chunk-05** (additive
+   > `target_type:"fact"` on `/memory/edit`, durable human badge). ADR-0012 rider documenting
+   > both rides the chunk-04 closeout.
 3. **UX tails inherited from history.html** (scope-note backlog A/B): an explicit
    **🔒 locked** state instead of the false "Loading…", and token-trimming /
    copy-clean-token on the browser-fallback paste path.

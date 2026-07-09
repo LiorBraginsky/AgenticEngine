@@ -946,3 +946,34 @@ test("v2-08 refined-B: factExistsByDedupKey matches case/whitespace/punct (base)
   expect(store.factExistsByDedupKey("favorite color red")).toBe(false);       // genuinely different
   store.close();
 });
+
+// ── chunk-05 FACT-EDIT: editFactById ─────────────────────────────────────────
+
+test("editFactById: updates text + stamps authored_by='human' + records prior text + refreshes canonical", () => {
+  const store = new MemoryStore({ dataDir: mkdtempSync(join(tmpdir(), "fe-store-")) });
+  const id = store.insertFact({
+    fact: "favourite colour blue", canonical: "favourite colour blue",
+    provenance: "thread:seed", scope: "cross-thread", expiry: null,
+    confidence: 1, authored_by: "machine", topics: ["#preferences"],
+  }, "seed");
+
+  const ok = store.editFactById(id, "favourite colour green", { actor: "user", reason: "hatch-fact-edit" });
+  expect(ok).toBe(true);
+
+  const row = store.rawDb().query("SELECT fact, authored_by FROM distilled_facts WHERE id = ?").get(id) as { fact: string; authored_by: string };
+  expect(row.fact).toBe("favourite colour green");
+  expect(row.authored_by).toBe("human");
+  // prior text durably recorded (5c / m4 audit)
+  const replaced = store.readReplacedFacts(id);
+  expect(replaced.length).toBe(1);
+  expect(replaced[0]!.replaced_text).toBe("favourite colour blue");
+  // fact_fts canonical refreshed to the new text → dedup + candidate visible
+  const fts = store.rawDb().query("SELECT canonical FROM fact_fts WHERE fact_id = ?").get(id) as { canonical: string };
+  expect(fts.canonical).toBe(normalizeFactText("favourite colour green"));
+  store.close();
+});
+test("editFactById: unknown id → false, no throw", () => {
+  const store = new MemoryStore({ dataDir: mkdtempSync(join(tmpdir(), "fe-store2-")) });
+  expect(store.editFactById(crypto.randomUUID(), "x", { actor: "user" })).toBe(false);
+  store.close();
+});

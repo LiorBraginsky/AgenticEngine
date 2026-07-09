@@ -302,3 +302,20 @@ test("T1.3: view().distillationEvents has a row with facts_produced===0 for a fu
   // "deliberately retained nothing" ≠ "silently lost"
   expect(zeroRow!.trigger).toBe("distill");
 });
+
+// ─── chunk-05 FACT-EDIT: Hatch.editFact ──────────────────────────────────────
+
+test("Hatch.editFact: applies the new text, stamps authored_by='human', returns true", () => {
+  const hatch = new Hatch(store, gate);
+  const id = store.insertFact({
+    fact: "colour blue", canonical: "colour blue", provenance: "thread:t",
+    scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: [],
+  }, "seed");
+
+  const applied = hatch.editFact(id, "colour green", { actor: "user", authored_by: "human" });
+  expect(applied).toBe(true);
+
+  const row = store.rawDb().query("SELECT fact, authored_by FROM distilled_facts WHERE id = ?").get(id) as { fact: string; authored_by: string };
+  expect(row.fact).toBe("colour green");
+  expect(row.authored_by).toBe("human");
+});

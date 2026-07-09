@@ -427,3 +427,33 @@ test("v2-07: forgetFactById with human ctx CAN delete a human-authored fact (5a 
 
   store.close();
 });
+
+// ── chunk-05 FACT-EDIT: WriteGate.editFact ───────────────────────────────────
+
+test("editFact (human): applies text + stamps human", () => {
+  const store = new MemoryStore({ dataDir: mkdtempSync(join(tmpdir(), "fe-wg-")) });
+  const gate = new WriteGate(store, new RuleBasedScanner());
+  const id = store.insertFact({ fact: "colour blue", canonical: "colour blue", provenance: "thread:t",
+    scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: [] }, "seed");
+  expect(gate.editFact(id, "colour green", { actor: "user", authored_by: "human" }, "hatch-fact-edit")).toBe(true);
+  const row = store.rawDb().query("SELECT fact, authored_by FROM distilled_facts WHERE id = ?").get(id) as { fact: string; authored_by: string };
+  expect(row.fact).toBe("colour green");
+  expect(row.authored_by).toBe("human");
+  store.close();
+});
+test("editFact (5e seam): machine ctx over a human fact → refused no-op", () => {
+  const store = new MemoryStore({ dataDir: mkdtempSync(join(tmpdir(), "fe-wg2-")) });
+  const gate = new WriteGate(store, new RuleBasedScanner());
+  const id = store.insertFact({ fact: "human pin", canonical: "human pin", provenance: "thread:t",
+    scope: "cross-thread", expiry: null, confidence: 1, authored_by: "human", topics: [] }, "seed");
+  expect(gate.editFact(id, "machine overwrite", { actor: "agent", authored_by: "machine" })).toBe(false);
+  const row = store.rawDb().query("SELECT fact FROM distilled_facts WHERE id = ?").get(id) as { fact: string };
+  expect(row.fact).toBe("human pin"); // untouched
+  store.close();
+});
+test("editFact: unknown id → false", () => {
+  const store = new MemoryStore({ dataDir: mkdtempSync(join(tmpdir(), "fe-wg3-")) });
+  const gate = new WriteGate(store, new RuleBasedScanner());
+  expect(gate.editFact(crypto.randomUUID(), "x", { actor: "user", authored_by: "human" })).toBe(false);
+  store.close();
+});

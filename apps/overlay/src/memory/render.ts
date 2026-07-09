@@ -21,6 +21,8 @@ export interface MessageActions {
 export interface FactActions {
   /** Attach a "release the reference" Forget control per fact → POST /memory/forget (durable delete). */
   onForget?: (factId: string) => void;
+  /** chunk-05: inline Edit on a fact row → POST /memory/edit {target_type:"fact"} (5a "correct what it remembers"). */
+  onEditFact?: (factId: string, newText: string) => void;
 }
 
 function clear(el: HTMLElement): void { el.replaceChildren(); }
@@ -98,6 +100,17 @@ export function renderFacts(
     factEl.textContent = f.fact || "";
     row.appendChild(factEl);
 
+    // chunk-05: persistent, DATA-DRIVEN "yours" badge (from the fact's own authored_by; survives
+    // restart — unlike the session-local message "edited by you" tag). Appended INTO factEl
+    // (inline, right after the fact text) so it renders on the same line, not as a sibling
+    // block wrapping to its own line.
+    if (f.authored_by === "human") {
+      const badge = document.createElement("span");
+      badge.className = "human-badge";
+      badge.textContent = " yours";
+      factEl.appendChild(badge);
+    }
+
     // Provenance (ADR-0012 5c) — thread:<id> is a jump-link; else plain text.
     const prov = document.createElement("div");
     prov.className = "fact-meta";
@@ -140,6 +153,11 @@ export function renderFacts(
     if (actions?.onForget) {
       const onForget = actions.onForget;
       row.appendChild(buildForgetControl(() => onForget(f.id)));
+    }
+    // chunk-05 (FACT-EDIT): inline edit control for the fact's TEXT (ADR-0012 5a).
+    if (actions?.onEditFact) {
+      const onEditFact = actions.onEditFact;
+      row.appendChild(buildEditControl(f.fact || "", (newText) => onEditFact(f.id, newText)));
     }
     el.appendChild(row);
   }

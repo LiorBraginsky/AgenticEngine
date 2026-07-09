@@ -183,6 +183,31 @@ export class WriteGate {
   }
 
   /**
+   * editFact — human correction of a distilled fact's TEXT (chunk-05 FACT-EDIT; ADR-0012 5a).
+   *
+   * Delegates to store.editFactById: updates the text in place (id stable) + stamps
+   * authored_by='human' so the fact is 5e-protected against future machine re-derivation
+   * (distiller-registration Q5 step 3 never-replace-human demote + factExistsByDedupKey suppress).
+   * NEVER scrubs messages, NEVER writes a tombstone (B1 — the fact path never touches messages/mutations).
+   *
+   * 5e seam (mirrors forgetFactById): a MACHINE ctx must not overwrite a human-authored fact → no-op.
+   * The HTTP path is human-ctx (HTTP_CTX), so this refusal never fires there; it reserves the 2c
+   * (agent memory-action) seam. A human editing any fact (human OR machine) is always applied.
+   * Returns true iff applied (false = id absent OR a machine-over-human refusal → the route maps to 404).
+   */
+  editFact(factId: string, newText: string, ctx: WriteContext, reason?: string): boolean {
+    const db = this.store.rawDb();
+    const row = db.query("SELECT authored_by FROM distilled_facts WHERE id = ?").get(factId) as { authored_by: string } | null;
+    if (!row) return false;
+    // This guard only refuses machine-over-HUMAN today. store.editFactById's stamp is
+    // unconditionally 'human', so a machine-over-MACHINE ctx would still promote a machine
+    // fact to 5e-protected human-owned (inverting never-replace-human) — a machine ctx MUST
+    // be rejected here (not just when row is human) before 2c is wired (see store.editFactById).
+    if (row.authored_by === "human" && ctx.authored_by === "machine") return false; // 5e seam (never fires on HTTP)
+    return this.store.editFactById(factId, newText, { actor: ctx.actor, reason });
+  }
+
+  /**
    * edit = appended correction record referencing the original (never in-place).
    * 5e: a machine edit of a human-authored entry is refused as a clobber —
    * appended as a competing, low-precedence machine note instead (MUTATION-AS-

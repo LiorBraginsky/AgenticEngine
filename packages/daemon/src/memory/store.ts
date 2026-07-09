@@ -894,6 +894,40 @@ export class MemoryStore {
   }
 
   /**
+   * Human fact-correction (chunk-05 FACT-EDIT; ADR-0012 5a "correct what the agent remembers").
+   * REPLACE a fact's display text in place (id UNCHANGED — stability) AND stamp
+   * authored_by='human', refreshing fact_fts + fact_topics and DURABLY recording the prior text
+   * (recordReplacedFact) for audit (spec §3.2 m4 / ADR-0012 5c). All in one tx. Returns false if id absent.
+   *
+   * Distinct from updateFactById (the distiller's MACHINE replace): this stamps authored_by='human'
+   * so the fact becomes 5e-protected — the never-replace-human demote (distiller-registration Q5 step 3)
+   * makes every future machine REPLACE targeting it non-destructive, and factExistsByDedupKey suppresses
+   * a demoted re-insert. Derived rows follow the human-fact convention (rebuildDerivedForHumanFacts):
+   * canonical = normalizeFactText(newText), topics = [] (human facts carry no LLM tags).
+   * provenance/scope/expiry/confidence/distiller_version are LEFT UNCHANGED — a human edit is not a
+   * distiller output; provenance stays the read-affordance to the fact's origin.
+   */
+  editFactById(id: string, newText: string, ctx: { actor: string; reason?: string }): boolean {
+    const tx = this.db.transaction((): boolean => {
+      const prior = this.db.query("SELECT fact FROM distilled_facts WHERE id = ?").get(id) as { fact: string } | null;
+      if (prior === null) return false;
+      this.recordReplacedFact(id, prior.fact, ctx);
+      // authored_by is ALWAYS stamped 'human' here — this primitive is for HUMAN correction only.
+      // Do NOT reuse it for a machine ctx: it would promote a machine fact to 5e-protected
+      // human-owned and invert never-replace-human. If 2c (agent memory-action) is ever wired
+      // through editFact, close this (reject machine ctx in WriteGate.editFact, or honor
+      // ctx.authored_by here).
+      this.db.query("UPDATE distilled_facts SET fact = ?, authored_by = 'human', derived_at = ? WHERE id = ?")
+        .run(newText, Date.now(), id);
+      this.db.query("DELETE FROM fact_fts WHERE fact_id = ?").run(id);
+      this.db.query("DELETE FROM fact_topics WHERE fact_id = ?").run(id);
+      this.writeFactDerived(id, normalizeFactText(newText), []);
+      return true;
+    });
+    return tx();
+  }
+
+  /**
    * APPEND a same-kind item to a fact's display list (spec §3.2 m1, capped at
    * APPEND_LIST_CAP). The fact's `fact` text becomes prior + "; " + item; its fact_fts
    * canonical is REPLACED with `appendedCanonical` — the CALLER (v2-03) must pass the

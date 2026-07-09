@@ -89,3 +89,32 @@ test("chunk-03: no actions param → read-only rows (chunk-02 behavior preserved
   renderMessages(el, [{ id: "M1", role: "user", content: "hi" }]);
   expect(el.querySelector(".act-edit")).toBeNull();
 });
+
+test("renderFacts: onEditFact attaches an Edit control that saves the fact id + new text", () => {
+  const el = document.createElement("div");
+  const saved: { id: string; text: string }[] = [];
+  renderFacts(el, [{ id: "F1", fact: "colour blue", provenance: "thread:t", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" }],
+    () => {}, { onEditFact: (id, text) => saved.push({ id, text }) });
+  (el.querySelector(".act-edit") as HTMLButtonElement).click();      // open inline editor
+  const ta = el.querySelector(".inline-editor textarea") as HTMLTextAreaElement;
+  expect(ta.value).toBe("colour blue");                              // prefilled with current text
+  ta.value = "colour green";
+  (el.querySelector(".act-save") as HTMLButtonElement).click();
+  expect(saved).toEqual([{ id: "F1", text: "colour green" }]);
+});
+test("renderFacts: persistent 'yours' badge iff authored_by==='human' (data-driven, not session)", () => {
+  const el = document.createElement("div");
+  renderFacts(el, [
+    { id: "H", fact: "human fact", provenance: "thread:t", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "human" },
+    { id: "M", fact: "machine fact", provenance: "thread:t", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
+  ], () => {});
+  const rows = el.querySelectorAll(".fact-row");
+  const badge = rows[0]!.querySelector(".human-badge");
+  expect(badge).not.toBeNull();     // human → badge
+  expect(rows[1]!.querySelector(".human-badge")).toBeNull();          // machine → no badge
+  // inline placement: badge is appended INTO the fact-text element (same line), not a
+  // sibling block of .fact-row — i.e. its parent is the row's first child (factEl), not the row itself.
+  const factTextEl = rows[0]!.children[0] as HTMLElement;
+  expect(badge!.parentElement).toBe(factTextEl);
+  expect(badge!.parentElement).not.toBe(rows[0]);
+});

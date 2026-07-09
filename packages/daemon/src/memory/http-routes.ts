@@ -8,6 +8,10 @@
  * T2.1a: read routes — GET /memory/threads + GET /memory/thread/:id, bearer-token gated
  *   (ADR-0013 read-token rider / spec §3.5 Option A end-state; 401 on missing/bad token).
  * T2.1c: write routes — POST /memory/edit + POST /memory/forget, bearer-token gated.
+ * chunk-05 FACT-EDIT: POST /memory/edit gained an additive `target_type:"fact"` branch
+ *   (mirrors the forget route's uuid `fact_id` discriminator) — updates a distilled_facts
+ *   row's TEXT and stamps authored_by:"human" (ADR-0012 5a). The message-edit path
+ *   (target_type absent) is byte-preserved.
  * GET /history.html is T2.2a: static shell open on loopback (Host-guard only); all data
  *   rendering is gated in-page (token in a JS var, paste-UX).
  *
@@ -227,16 +231,37 @@ async function handleEdit(req: Request, deps: MemoryHttpDeps): Promise<Response>
   const parsed = await parseBody(req);
   if (!parsed.ok) return Response.json({ error: "bad_body" }, { status: 400 });
 
-  const { target, replacement, reason } = parsed.data;
+  const { target_type, target, replacement, reason, fact_id } = parsed.data;
+  const reasonStr = typeof reason === "string" ? reason : undefined;
+
+  // chunk-05 FACT-EDIT: target_type:"fact" edits a distilled_facts row's TEXT + stamps
+  // authored_by='human' (ADR-0012 5a). Mirrors the forget route's uuid fact_id discriminator.
+  // Security-adjacent: sits INSIDE the token gate above, reuses HTTP_CTX (fixed human).
+  if (target_type === "fact") {
+    if (typeof replacement !== "string" || replacement === "") {
+      return Response.json({ error: "bad_body" }, { status: 400 });
+    }
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (typeof fact_id !== "string" || !fact_id || !UUID_RE.test(fact_id)) {
+      return Response.json({ error: "bad_body" }, { status: 400 });
+    }
+    try {
+      const applied = deps.hatch.editFact(fact_id, replacement, HTTP_CTX, reasonStr);
+      return applied
+        ? new Response(null, { status: 204 })
+        : Response.json({ error: "target_not_found" }, { status: 404 });
+    } catch (err: unknown) {
+      return mapWriteError(err);
+    }
+  }
+
+  // MESSAGE-edit (blessed as-is, chunk-03): target_type absent or "message". UNCHANGED.
   if (typeof target !== "string" || !target) {
     return Response.json({ error: "bad_body" }, { status: 400 });
   }
   if (typeof replacement !== "string") {
     return Response.json({ error: "bad_body" }, { status: 400 });
   }
-  const reasonStr = typeof reason === "string" ? reason : undefined;
-
-  // Execute edit — ctx fixed as human (5e refusal cannot fire; 409 unreachable here)
   try {
     deps.hatch.edit(target, replacement, HTTP_CTX, reasonStr);
     return new Response(null, { status: 204 });

@@ -8,7 +8,11 @@
  * ctx { actor:"user", authored_by:"human" } is FIXED server-side (http-routes.ts HTTP_CTX) — the
  * client sends NO ctx. forget targets a FACT by its stable uuid (target_type:"fact" + fact_id);
  * edit targets a MESSAGE by its id (MUTATION-AS-APPEND human correction — WriteGate.edit). See the
- * plan's "## Reality check" §2 for why edit is message-scoped, not fact-scoped.
+ * plan's "## Reality check" §2 for why message-edit is message-scoped.
+ *
+ * chunk-05 (FACT-EDIT): `/memory/edit` also accepts a `target_type:"fact"` discriminator (mirrors
+ * the forget route's `fact_id` shape) — `editFact` below is that variant (ADR-0012 5a "correct
+ * what the agent remembers"). `editMessage` is unchanged.
  */
 import type { MemoryApiDeps } from "./memory-api.js";
 
@@ -55,4 +59,11 @@ export function forgetFact(deps: MemoryApiDeps, factId: string): Promise<WriteRe
  *  machine-clobbered. `messageId` is a messages.id (a 404 means the message is gone → stale). */
 export function editMessage(deps: MemoryApiDeps, messageId: string, replacement: string): Promise<WriteResult> {
   return post(deps, "/memory/edit", { target: messageId, replacement, reason: "hatch-edit" });
+}
+
+/** Edit a FACT's text — "correct what the agent remembers" (ADR-0012 5a). Keys on the fact's
+ *  stable uuid (target_type:"fact" + fact_id); the daemon updates the distilled_facts row's text
+ *  and stamps authored_by:"human" server-side (5e-protected). A 404 → the fact is gone (stale). */
+export function editFact(deps: MemoryApiDeps, factId: string, replacement: string): Promise<WriteResult> {
+  return post(deps, "/memory/edit", { target_type: "fact", fact_id: factId, replacement, reason: "hatch-fact-edit" });
 }

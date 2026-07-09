@@ -72,6 +72,16 @@ export class Hatch {
   }
 
   /**
+   * Edit a FACT's text (chunk-05 FACT-EDIT; ADR-0012 5a "edit what the agent remembers").
+   * Delegates to WriteGate.editFact — updates the text + stamps authored_by='human' (5e-protected),
+   * never scrubs messages (B1). Returns true iff applied (false → 404 at the route).
+   * Distinct from edit(messageId) above, which is the MESSAGE correction (blessed as-is, chunk-03).
+   */
+  editFact(factId: string, newText: string, ctx: WriteContext, reason?: string): boolean {
+    return this.gate.editFact(factId, newText, ctx, reason);
+  }
+
+  /**
    * Forget a FACT — durable delete of the stable-id row, NO scrub.
    * Delegates to WriteGate.forgetFact. Never touches messages or mutations (B1 invariant).
    * This is the ONE user forget operation as of v2-04 (D-V6a-bis).

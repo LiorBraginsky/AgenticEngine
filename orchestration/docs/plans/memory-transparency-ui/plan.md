@@ -2997,3 +2997,694 @@ Rationale:
 - **NOT a freeze gate:** nothing touches `packages/protocol/**` or `packages/daemon/**`; verified in Step 3.5.
 
 ## Status: Done
+
+# ══════════════ CHUNK 5 — FACT-EDIT (appended by orchestrator, 2026-07-09) ══════════════
+
+> Chunks 01/02/03 are above (shipped). Below is chunk-05 (FACT-edit — edit what the agent *remembers*). Same per-feature plan file; chunk-04 archives the whole file at feature closeout.
+
+# Memory Window — FACT-EDIT (edit the distilled-fact text) Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax. This is **chunk-05** of feature `memory-transparency-ui` (backlog Theme A). Scope is FROZEN by `orchestration/chunks-todo/memory-transparency-ui/05-memory-window-fact-edit.md` — you may FLAG problems, do not exceed or edit it. Builds on chunk-03 (edit+forget plumbing, shipped PR #77) and chunk-02 (READ view, shipped PR #76).
+
+**Goal:** Add the ability to edit **what the agent remembers** — the distilled-fact *text* — closing the chunk-03 FLAG (its Edit operated only on messages; ADR-0012 5a promises "see, **correct**, and delete what the agent remembers"). Message-edit stays exactly as shipped.
+
+**Architecture:** One additive fact-correction primitive threaded through the existing seam `store → WriteGate → Hatch → HTTP route`, mirroring the already-shipped `forgetFactById` chain. The HTTP `POST /memory/edit` gains a `target_type:"fact"` discriminator (mirror of the forget route's `fact_id` shape) that updates a `distilled_facts` row's text and stamps `authored_by:"human"`. The existing v2 human-precedence machinery (never-replace-human demote + dedup-suppress) then protects the edited fact against the next distillation — this chunk **WIRES** that machinery (stamps the fact human + refreshes its FTS canonical), it does **not** rebuild it. Overlay adds an inline Edit affordance on fact rows (reusing chunk-03's `buildEditControl`) and a **data-driven, persistent** "yours" badge derived from the fact's own `authored_by`.
+
+**Tech Stack:** TypeScript on Bun, `bun:sqlite`, `Bun.serve` HTTP, Tauri webview, `fetch` + `AbortController`, `bun:test` + happy-dom (root `bunfig.toml` preload).
+
+## Global Constraints (chunk-05)
+
+- **`@agentic/protocol` frozen — byte-unchanged.** `git diff --stat packages/protocol/` MUST be empty. Fact-edit is an HTTP **body** field only (ADR-0015 relationship note: edit/forget fields are HTTP-body, never the WS envelope).
+- **Daemon diff limited to the additive edit path** — `store.ts` / `write-gate.ts` / `hatch.ts` / `http-routes.ts` + their tests + the harness. **Do NOT touch** message-edit behavior, `WriteGate.edit`/`forget`/`forgetFact`/`forgetFactById`, the WS envelope, `connection-manager.ts`, `memory-liveness.ts`, `src-tauri/**`, or the distiller (`distiller-registration.ts` / `smart-distiller-provider.ts` — the human-precedence logic there is CONSUMED unchanged).
+- **Security-adjacent (reviewer attention, flag in PR):** `http-routes.ts`, `write-gate.ts`, `hatch.ts`, `store.ts` are the ADR-0013 poisoning-write surface. The token gate and fixed server-side `HTTP_CTX = {actor:"user", authored_by:"human"}` are REUSED unchanged — the new fact branch sits **inside** the existing token gate and uses `HTTP_CTX`; no new auth surface.
+- **ADR-0013 token discipline:** the per-install token rides `Authorization: Bearer <token>` ONLY — never a URL/query/body key, never logged. Overlay reuses the token already in `MemoryApiDeps`.
+- **XSS discipline (security, not style):** all API-derived and user-entered strings via `textContent`/`createElement`. ZERO `innerHTML`. Mirrors chunk-02/03 `render.ts`/`actions.ts`.
+- **5e is honored by WIRING, not by new logic:** stamping the edited fact `authored_by:"human"` + refreshing its `fact_fts` canonical makes the existing `distiller-registration.ts` never-replace-human demote (`:203-207`) and dedup-suppress (`:277`, `store.factExistsByDedupKey`) protect it. Do NOT add a new guard in the distiller.
+- **Escaped-test discipline (bit chunks 01/02/03):** every new/changed test must be type-checked exactly once. Daemon tests (`packages/daemon/src/**/*.test.ts`, `scripts/**`) are auto-covered by `packages/daemon/tsconfig.json` + root `tsconfig.json`. Overlay **non-DOM** tests (`memory-write.test.ts`) are auto-covered by root `tsconfig.json`'s `apps/overlay/src/memory/**/*.test.ts` glob. Overlay **DOM** tests (`render.test.ts`, `controller.test.ts`) are covered by `apps/overlay/tsconfig.memory-dom-tests.json`. **APPEND cases to those EXISTING files** → no tsconfig edit. If you create any NEW DOM test file, you MUST add it to `tsconfig.memory-dom-tests.json` `include` AND root `tsconfig.json` `exclude` (the chunk-02/03 gap class).
+
+---
+
+## Reality check (chunk-05)
+
+Per PIPELINE §6.1: statements below are **code-path facts** (verified by reading source, lines cited) or **runtime inferences** marked *"requires runtime demo to confirm"* — never asserted as behavioral truth from reading. Every hypothesis in the chunk brief was checked against source; corrections noted.
+
+**1. `POST /memory/edit` and `POST /memory/forget` handler shapes (code facts, `packages/daemon/src/memory/http-routes.ts`):**
+- `handleEdit` (`:220-246`): token-gated first (`tokenStore.verify`, 401 on miss, `:222`). Reads body `{ target, replacement, reason? }` (`:230`); `target` must be a non-empty string and `replacement` a string (`:231-236`, else `400 bad_body`). Calls `deps.hatch.edit(target, replacement, HTTP_CTX, reasonStr)` (`:241`) → **message correction** → `204`. **There is NO `target_type` discriminator on the edit route today** (the brief's "extend edit with target_type" is correct: it does not exist yet).
+- `handleForget` (`:174-218`): the shape to **mirror**. Reads `{ target_type, reason?, fact_id }` (`:184`). Only accepted path is `target_type === "fact"` with a **uuid-shaped `fact_id`** (`:199-207`, `UUID_RE`) → `deps.hatch.forgetFactById(fact_id, HTTP_CTX, reasonStr)` → `204`; anything else → `400 bad_body` (`:210-213`).
+- `HTTP_CTX = { actor:"user", authored_by:"human" }` is fixed server-side (`:51`) and reused for all write routes — the 5e machine-clobber guard therefore never fires on the HTTP path (`:16-22`). `mapWriteError` (`:283-293`): `/not found/i` → `404 target_not_found`; the tombstone-guard message → `400 bad_target_shape`; else `500 internal`.
+
+**2. `WriteGate` API (code facts, `write-gate.ts`) — CONFIRMED: there is NO fact-edit / fact-correction primitive; one must be added.**
+- `edit(messageId, replacement, ctx, reason?)` (`:193-216`) is **message-scoped** (`threadOf(messageId)` throws `not found` for a non-message id; appends a `mutations` `kind='correction'`). Not usable for a `distilled_facts` row.
+- `forgetFactById(factId, ctx, reason?)` (`:150-183`) is the exact template for the new `editFact`: resolves the row's `authored_by`, applies the 5e seam (`row.authored_by==='human' && ctx.authored_by==='machine'` → refuse), delegates to a `store.*ById` primitive. **No route sets a fact's `authored_by='human'`** anywhere today (grep confirmed: `insertFact({authored_by:"human"})` appears ONLY in tests and never on the HTTP path; `distiller-registration.ts` always inserts `authored_by:"machine"`).
+
+**3. Store fact model + the v2 human-precedence machinery (code facts, `store.ts` / `schema.ts` / `distiller-registration.ts`):**
+- `distilled_facts` (`schema.ts:60-70`) has `id` (stable uuid), `fact` (display text), `provenance`, `scope`, `expiry`, `confidence`, `authored_by ('human'|'machine')`, `derived_at`, `distiller_version`. Derived tables `fact_fts` (canonical match key) + `fact_topics`; an AFTER-DELETE trigger cleans both (`schema.ts:122-127`).
+- `store.updateFactById(id, u, ctx, distillerVersion)` (`:880-894`) is the in-place REPLACE primitive (records prior text via `recordReplacedFact`, refreshes `fact_fts`/`fact_topics` via private `writeFactDerived`). **It does NOT touch `authored_by`** and its `UpdateFactInput` has no such field — so it cannot be used directly to stamp a fact human. → **The new `editFactById` mirrors it but ALSO sets `authored_by='human'` and follows the human-fact derived-row convention** (`writeFactDerived(id, normalizeFactText(newText), [])`, exactly as `rebuildDerivedForHumanFacts` `:940-954` treats human facts: canonical = `normalizeFactText`, topics = `[]`).
+- **The human-precedence machinery to WIRE (do NOT rebuild), named exactly:**
+  - **Never-overwrite-human (5e):** `distiller-registration.ts:203-207` — a REPLACE op whose target row `authored_by==='human'` is demoted to `new` (`effectiveOp="new"`); also demoted by the optimistic-concurrency check (`:199-202`). The demoted insert falls to the `new` branch (`:270-291`).
+  - **Dedup-suppress:** `store.factExistsByDedupKey(newItemCanonical)` (`:497-509`, matches on `normalizeFactText` OR `dedupConnectorKey` over `COALESCE(fact_fts.canonical, distilled_facts.fact)`) is called on that demoted insert (`distiller-registration.ts:277`) → hit ⇒ skip. **This is why the edited fact's `fact_fts.canonical` MUST be refreshed** (Step 1) — so the demoted machine re-derivation of the same content is suppressed rather than duplicated.
+  - `store.forgetFactById → deleteFactById` (`:974-977`) remains the forget path (idempotent). Forget on a `authored_by='human'` row by a **human** ctx is allowed (proven by `write-gate.test.ts:394-421`, "user CAN delete their own facts").
+
+**4. `HatchViewResult` already exposes `authored_by` per fact — NO additive read field needed (code fact).** `Hatch.view` (`hatch.ts:54-64`) returns `distilledFacts: DistilledFactRow[]`; `readDistilledFacts` (`store.ts:285-290`) SELECTs `authored_by`; `DistilledFactRow` includes `authored_by: string` (`:96-105`). The overlay wire type `DistilledFactView.authored_by` (`apps/overlay/src/memory/types.ts:17`) already carries it, and chunk-02 `render.ts` already prints it in the meta line (`:121`). So the read side is **already sufficient**; the badge is a pure overlay change (chunk brief Note item is moot — nothing to add on the read payload).
+
+**5. Overlay module split + additive slot-in points (code facts, `apps/overlay/src/memory/`):**
+- `types.ts` — `DistilledFactView` already has `authored_by` (`:17`). **No change.**
+- `memory-api.ts` — read fetch (`fetchThreads`/`fetchThread`) + `MemoryApiDeps {fetchFn, baseUrl, token, timeoutMs?}`. **No change** (reused).
+- `fact-view.ts` — pure display helpers (`parseProvenance`, `shouldShowExpiry`, …). **No change.**
+- `memory-write.ts` — token-gated POST → discriminated `WriteResult` (`204→ok / 401→unauthorized / 404→stale / 400→bad_request / 5xx+network→unreachable`), 4s `AbortController`, handles 204 no-body explicitly. Has `forgetFact(deps, factId)` and `editMessage(deps, messageId, replacement)`. → **ADD `editFact(deps, factId, replacement)`** (fact variant; `editMessage` untouched).
+- `actions.ts` — `buildEditControl(current, onSave)` is already message-agnostic (inline textarea, `textContent`/`createElement`, zero `innerHTML`). **Reuse as-is; no change.** `buildForgetControl` unchanged.
+- `render.ts` — `renderFacts(el, facts, onOpenThread, actions?)` with `FactActions { onForget? }` (`:21-24, 85-146`). → **ADD `onEditFact?` to `FactActions`**, an Edit control per fact row (`buildEditControl(f.fact, (t)=>onEditFact(f.id,t))`), and a **persistent human badge** rendered when `f.authored_by === "human"`. Only caller is `controller.ts`; `history.html` does NOT use `render.ts`.
+- `controller.ts` — wires `renderFacts(..., { onForget })` (`:96-98`) and `handleWriteResult` (re-fetch on ok/stale, honest `LOCKED`/`DOWN`/inline-error otherwise). → **ADD `editFactAction`** + wire `onEditFact`. Note: unlike the message `editedIds` session set (session-local optimistic tag), the fact badge is **data-driven** — after `ok`, `refreshCurrentView()` re-fetches and the fact returns `authored_by:"human"`, so the badge is durable with no session state.
+
+**6. Real-I/O proof tooling EXISTS (code facts):**
+- `packages/daemon/scripts/memory-demo-harness.ts` boots the **REAL daemon** (`startDaemon`, `:434/446`) over real HTTP+WS with a scripted `SmartDistillerProvider` client (stub) or real Haiku (`--mode=real`). STEP 5 already POSTs `/memory/forget {target_type:"fact", fact_id}`; CHANGE→ONE-FACT + DEDUP-AFTER-RECALL already assert the dedup/REPLACE interplay. **It does NOT exercise EDIT** — Step 2 adds a FACT-EDIT step.
+- `distiller-integration.daemon.test.ts` + `distiller-registration.test.ts` are the real-I/O `bun test` pattern (real SQLite + `WriteGate` + `registerDistiller`; the ONLY mock is a scripted `MemoryProvider.distill`). `distiller-registration.test.ts:339-390` is a working never-replace-human proof to model. **The 5e/dedup box MUST be proven by an EXECUTED run — the harness stub-mode hard-assert AND a new `bun test` integration case — not code-reading (§6.1 / Strike-5).**
+- **Behavioral facts requiring runtime demo to confirm** (never asserted from reading): (a) edited fact visible + human badge after a full app restart; (b) 5e survival + no-duplicate after a *real* distillation cycle; (c) daemon-down mid-edit → honest `unreachable`, no fake success. These are the DoD behavioral boxes — proven by the executed harness (`--mode=stub` hard-assert + `--mode=real` informational) and the integration test, and consolidated in the chunk-04 JOINT live demo.
+
+---
+
+## File Structure (chunk-05)
+
+- **Modify** `packages/daemon/src/memory/store.ts` — add `editFactById(id, newText, ctx)` (fact-correction primitive; stamps `authored_by='human'`, refreshes derived rows, records prior text).
+- **Modify** `packages/daemon/src/memory/store.test.ts` — append `editFactById` unit cases.
+- **Modify** `packages/daemon/src/memory/write-gate.ts` — add `editFact(factId, newText, ctx, reason?)` (delegates to `editFactById`; 5e machine-over-human seam mirroring `forgetFactById`).
+- **Modify** `packages/daemon/src/memory/write-gate.test.ts` — append `editFact` unit cases (human applies; machine-over-human refused).
+- **Modify** `packages/daemon/src/memory/hatch.ts` — add `editFact(factId, newText, ctx, reason?)` passthrough.
+- **Modify** `packages/daemon/src/memory/hatch.daemon.test.ts` — append a Hatch `editFact` case.
+- **Modify** `packages/daemon/src/memory/http-routes.ts` — `handleEdit` gains the `target_type:"fact"` branch (mirror forget's `fact_id`/uuid shape); message-edit path byte-preserved.
+- **Modify** `packages/daemon/src/memory/http-routes.daemon.test.ts` — append fact-edit route cases + a message-edit regression case.
+- **Create** `packages/daemon/src/memory/fact-edit-redistill.daemon.test.ts` — the deterministic 5e + dedup + forget integration proof (auto-covered by daemon tsconfig).
+- **Modify** `packages/daemon/scripts/memory-demo-harness.ts` — add the FACT-EDIT executed real-I/O step (+ one scripted-client branch).
+- **Modify** `apps/overlay/src/memory/memory-write.ts` — add `editFact(deps, factId, replacement)`.
+- **Modify** `apps/overlay/src/memory/memory-write.test.ts` — append fact-edit mapping cases (non-DOM; root tsconfig glob).
+- **Modify** `apps/overlay/src/memory/render.ts` — `FactActions.onEditFact?` + fact-row Edit control + persistent human badge.
+- **Modify** `apps/overlay/src/memory/render.test.ts` — append fact-edit affordance + badge DOM cases (DOM config).
+- **Modify** `apps/overlay/src/memory/controller.ts` — add `editFactAction` + wire `onEditFact`.
+- **Modify** `apps/overlay/src/memory/controller.test.ts` — append fact-edit outcome cases (DOM config).
+- **Modify** `apps/overlay/memory.html` — add `.human-badge` CSS (mirror `.edited-tag`).
+
+---
+
+## Steps
+
+### Step 1 — Daemon fact-correction primitive (store → WriteGate → Hatch) + unit tests
+
+**Files:** Modify `store.ts`, `store.test.ts`, `write-gate.ts`, `write-gate.test.ts`, `hatch.ts`, `hatch.daemon.test.ts`.
+
+**Interfaces:**
+- Consumes: `store.recordReplacedFact`, private `store.writeFactDerived`, `normalizeFactText` (already imported in `store.ts:7`); `WriteGate` ctor `(store, scanner)`; `Hatch` ctor `(store, gate)`; `WriteContext {actor, authored_by:"human"|"machine"}`.
+- Produces:
+  - `MemoryStore.editFactById(id: string, newText: string, ctx: { actor: string; reason?: string }): boolean`
+  - `WriteGate.editFact(factId: string, newText: string, ctx: WriteContext, reason?: string): boolean`
+  - `Hatch.editFact(factId: string, newText: string, ctx: WriteContext, reason?: string): boolean`
+
+- [ ] **Step 1.1 — Write the failing store test.** Append to `packages/daemon/src/memory/store.test.ts`:
+```ts
+test("editFactById: updates text + stamps authored_by='human' + records prior text + refreshes canonical", () => {
+  const store = new MemoryStore({ dataDir: mkdtempSync(join(tmpdir(), "fe-store-")) });
+  const id = store.insertFact({
+    fact: "favourite colour blue", canonical: "favourite colour blue",
+    provenance: "thread:seed", scope: "cross-thread", expiry: null,
+    confidence: 1, authored_by: "machine", topics: ["#preferences"],
+  }, "seed");
+
+  const ok = store.editFactById(id, "favourite colour green", { actor: "user", reason: "hatch-fact-edit" });
+  expect(ok).toBe(true);
+
+  const row = store.rawDb().query("SELECT fact, authored_by FROM distilled_facts WHERE id = ?").get(id) as { fact: string; authored_by: string };
+  expect(row.fact).toBe("favourite colour green");
+  expect(row.authored_by).toBe("human");
+  // prior text durably recorded (5c / m4 audit)
+  const replaced = store.readReplacedFacts(id);
+  expect(replaced.length).toBe(1);
+  expect(replaced[0]!.replaced_text).toBe("favourite colour blue");
+  // fact_fts canonical refreshed to the new text → dedup + candidate visible
+  const fts = store.rawDb().query("SELECT canonical FROM fact_fts WHERE fact_id = ?").get(id) as { canonical: string };
+  expect(fts.canonical).toBe(normalizeFactText("favourite colour green"));
+  store.close();
+});
+test("editFactById: unknown id → false, no throw", () => {
+  const store = new MemoryStore({ dataDir: mkdtempSync(join(tmpdir(), "fe-store2-")) });
+  expect(store.editFactById(crypto.randomUUID(), "x", { actor: "user" })).toBe(false);
+  store.close();
+});
+```
+(`normalizeFactText` is already imported in `store.test.ts` if not, add `import { normalizeFactText } from "./normalize-fact-text.js";`.)
+
+- [ ] **Step 1.2 — Run it, verify it fails.** `bun test packages/daemon/src/memory/store.test.ts` → FAIL (`editFactById` not a function).
+
+- [ ] **Step 1.3 — Implement `editFactById` in `store.ts`** (place near `updateFactById`, `:880`):
+```ts
+/**
+ * Human fact-correction (chunk-05 FACT-EDIT; ADR-0012 5a "correct what the agent remembers").
+ * REPLACE a fact's display text in place (id UNCHANGED — stability) AND stamp
+ * authored_by='human', refreshing fact_fts + fact_topics and DURABLY recording the prior text
+ * (recordReplacedFact) for audit (spec §3.2 m4 / ADR-0012 5c). All in one tx. Returns false if id absent.
+ *
+ * Distinct from updateFactById (the distiller's MACHINE replace): this stamps authored_by='human'
+ * so the fact becomes 5e-protected — the never-replace-human demote (distiller-registration Q5 step 3)
+ * makes every future machine REPLACE targeting it non-destructive, and factExistsByDedupKey suppresses
+ * a demoted re-insert. Derived rows follow the human-fact convention (rebuildDerivedForHumanFacts):
+ * canonical = normalizeFactText(newText), topics = [] (human facts carry no LLM tags).
+ * provenance/scope/expiry/confidence/distiller_version are LEFT UNCHANGED — a human edit is not a
+ * distiller output; provenance stays the read-affordance to the fact's origin.
+ */
+editFactById(id: string, newText: string, ctx: { actor: string; reason?: string }): boolean {
+  const tx = this.db.transaction((): boolean => {
+    const prior = this.db.query("SELECT fact FROM distilled_facts WHERE id = ?").get(id) as { fact: string } | null;
+    if (prior === null) return false;
+    this.recordReplacedFact(id, prior.fact, ctx);
+    this.db.query("UPDATE distilled_facts SET fact = ?, authored_by = 'human', derived_at = ? WHERE id = ?")
+      .run(newText, Date.now(), id);
+    this.db.query("DELETE FROM fact_fts WHERE fact_id = ?").run(id);
+    this.db.query("DELETE FROM fact_topics WHERE fact_id = ?").run(id);
+    this.writeFactDerived(id, normalizeFactText(newText), []);
+    return true;
+  });
+  return tx();
+}
+```
+
+- [ ] **Step 1.4 — Run store tests, verify pass.** `bun test packages/daemon/src/memory/store.test.ts` → PASS.
+
+- [ ] **Step 1.5 — Write the failing WriteGate + Hatch tests.** Append to `write-gate.test.ts`:
+```ts
+test("editFact (human): applies text + stamps human", () => {
+  const store = new MemoryStore({ dataDir: mkdtempSync(join(tmpdir(), "fe-wg-")) });
+  const gate = new WriteGate(store, new RuleBasedScanner());
+  const id = store.insertFact({ fact: "colour blue", canonical: "colour blue", provenance: "thread:t",
+    scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: [] }, "seed");
+  expect(gate.editFact(id, "colour green", { actor: "user", authored_by: "human" }, "hatch-fact-edit")).toBe(true);
+  const row = store.rawDb().query("SELECT fact, authored_by FROM distilled_facts WHERE id = ?").get(id) as { fact: string; authored_by: string };
+  expect(row.fact).toBe("colour green");
+  expect(row.authored_by).toBe("human");
+  store.close();
+});
+test("editFact (5e seam): machine ctx over a human fact → refused no-op", () => {
+  const store = new MemoryStore({ dataDir: mkdtempSync(join(tmpdir(), "fe-wg2-")) });
+  const gate = new WriteGate(store, new RuleBasedScanner());
+  const id = store.insertFact({ fact: "human pin", canonical: "human pin", provenance: "thread:t",
+    scope: "cross-thread", expiry: null, confidence: 1, authored_by: "human", topics: [] }, "seed");
+  expect(gate.editFact(id, "machine overwrite", { actor: "agent", authored_by: "machine" })).toBe(false);
+  const row = store.rawDb().query("SELECT fact FROM distilled_facts WHERE id = ?").get(id) as { fact: string };
+  expect(row.fact).toBe("human pin"); // untouched
+  store.close();
+});
+test("editFact: unknown id → false", () => {
+  const store = new MemoryStore({ dataDir: mkdtempSync(join(tmpdir(), "fe-wg3-")) });
+  const gate = new WriteGate(store, new RuleBasedScanner());
+  expect(gate.editFact(crypto.randomUUID(), "x", { actor: "user", authored_by: "human" })).toBe(false);
+  store.close();
+});
+```
+Append to `hatch.daemon.test.ts` a case constructing `new Hatch(store, gate)` and asserting `hatch.editFact(id, "new", {actor:"user",authored_by:"human"})` returns `true` and the row text/`authored_by` updated (mirror the existing `hatch.edit`/`hatch.forgetFactById` cases in that file).
+
+- [ ] **Step 1.6 — Run, verify fail.** `bun test packages/daemon/src/memory/write-gate.test.ts packages/daemon/src/memory/hatch.daemon.test.ts` → FAIL.
+
+- [ ] **Step 1.7 — Implement `WriteGate.editFact`** (place near `forgetFactById`, `write-gate.ts:150`):
+```ts
+/**
+ * editFact — human correction of a distilled fact's TEXT (chunk-05 FACT-EDIT; ADR-0012 5a).
+ *
+ * Delegates to store.editFactById: updates the text in place (id stable) + stamps
+ * authored_by='human' so the fact is 5e-protected against future machine re-derivation
+ * (distiller-registration Q5 step 3 never-replace-human demote + factExistsByDedupKey suppress).
+ * NEVER scrubs messages, NEVER writes a tombstone (B1 — the fact path never touches messages/mutations).
+ *
+ * 5e seam (mirrors forgetFactById): a MACHINE ctx must not overwrite a human-authored fact → no-op.
+ * The HTTP path is human-ctx (HTTP_CTX), so this refusal never fires there; it reserves the 2c
+ * (agent memory-action) seam. A human editing any fact (human OR machine) is always applied.
+ * Returns true iff applied (false = id absent OR a machine-over-human refusal → the route maps to 404).
+ */
+editFact(factId: string, newText: string, ctx: WriteContext, reason?: string): boolean {
+  const db = this.store.rawDb();
+  const row = db.query("SELECT authored_by FROM distilled_facts WHERE id = ?").get(factId) as { authored_by: string } | null;
+  if (!row) return false;
+  if (row.authored_by === "human" && ctx.authored_by === "machine") return false; // 5e seam (never fires on HTTP)
+  return this.store.editFactById(factId, newText, { actor: ctx.actor, reason });
+}
+```
+
+- [ ] **Step 1.8 — Implement `Hatch.editFact`** (place after `edit`, `hatch.ts:72`):
+```ts
+/**
+ * Edit a FACT's text (chunk-05 FACT-EDIT; ADR-0012 5a "edit what the agent remembers").
+ * Delegates to WriteGate.editFact — updates the text + stamps authored_by='human' (5e-protected),
+ * never scrubs messages (B1). Returns true iff applied (false → 404 at the route).
+ * Distinct from edit(messageId) above, which is the MESSAGE correction (blessed as-is, chunk-03).
+ */
+editFact(factId: string, newText: string, ctx: WriteContext, reason?: string): boolean {
+  return this.gate.editFact(factId, newText, ctx, reason);
+}
+```
+
+- [ ] **Step 1.9 — Run, verify pass.** `bun test packages/daemon/src/memory/write-gate.test.ts packages/daemon/src/memory/hatch.daemon.test.ts packages/daemon/src/memory/store.test.ts` → PASS.
+
+- [ ] **Step 1.10 — Commit.**
+```bash
+git add packages/daemon/src/memory/store.ts packages/daemon/src/memory/store.test.ts packages/daemon/src/memory/write-gate.ts packages/daemon/src/memory/write-gate.test.ts packages/daemon/src/memory/hatch.ts packages/daemon/src/memory/hatch.daemon.test.ts
+git commit -m "feat(memory-transparency-ui): fact-correction primitive — editFactById + WriteGate/Hatch.editFact (5e-protected human stamp)"
+```
+
+### Step 2 — Daemon route discriminator + route tests + executed 5e/dedup real-I/O proof
+
+**Files:** Modify `http-routes.ts`, `http-routes.daemon.test.ts`; Create `fact-edit-redistill.daemon.test.ts`; Modify `scripts/memory-demo-harness.ts`.
+
+**Interfaces:**
+- Consumes: `Hatch.editFact` (Step 1), `HTTP_CTX`, `parseBody`, `mapWriteError`, `deps.tokenStore.verify` (all in `http-routes.ts`); `MemoryProvider`, `registerDistiller`, `ConsolidationHook`, `RuleBasedScanner` (integration test).
+- Produces: `POST /memory/edit {target_type:"fact", fact_id:<uuid>, replacement:<string>, reason?:<string>}` → `204` on apply, `404 {error:"target_not_found"}` on unknown fact, `400 {error:"bad_body"}` on non-uuid/missing/empty, `401` on bad token. Message-edit body `{target, replacement, reason?}` (no `target_type`) unchanged.
+
+- [ ] **Step 2.1 — Write the failing route tests.** Append to `http-routes.daemon.test.ts`. In `beforeAll`, after seeding the message, seed a machine fact and capture its id (same `seedStore`, before daemon boot):
+```ts
+// chunk-05: seed a MACHINE distilled fact for the fact-edit route tests
+seededFactId = seedStore.insertFact({
+  fact: "favourite colour blue", canonical: "favourite colour blue",
+  provenance: `thread:${seededThreadId}`, scope: "cross-thread", expiry: null,
+  confidence: 1, authored_by: "machine", topics: ["#preferences"],
+}, "seed");
+```
+(declare `let seededFactId: string;` near `seededMessageId`). Then the cases:
+```ts
+const UUID = () => crypto.randomUUID();
+function editPost(body: unknown, withToken = true) {
+  return fetch(`http://127.0.0.1:${PORT}/memory/edit`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(withToken ? { Authorization: `Bearer ${readToken()}` } : {}) },
+    body: JSON.stringify(body),
+  });
+}
+
+test("fact-edit: valid → 204 + text updated + authored_by=human on disk", async () => {
+  const res = await editPost({ target_type: "fact", fact_id: seededFactId, replacement: "favourite colour green", reason: "t" });
+  expect(res.status).toBe(204);
+  const s = new MemoryStore({ dataDir: sharedDataDir });
+  const row = s.rawDb().query("SELECT fact, authored_by FROM distilled_facts WHERE id = ?").get(seededFactId) as { fact: string; authored_by: string };
+  s.close();
+  expect(row.fact).toBe("favourite colour green");
+  expect(row.authored_by).toBe("human");
+});
+test("fact-edit: missing fact_id → 400", async () => {
+  expect((await editPost({ target_type: "fact", replacement: "x" })).status).toBe(400);
+});
+test("fact-edit: non-uuid fact_id → 400", async () => {
+  expect((await editPost({ target_type: "fact", fact_id: "not-a-uuid", replacement: "x" })).status).toBe(400);
+});
+test("fact-edit: empty replacement → 400", async () => {
+  expect((await editPost({ target_type: "fact", fact_id: seededFactId, replacement: "" })).status).toBe(400);
+});
+test("fact-edit: unknown uuid fact_id → 404 target_not_found", async () => {
+  const res = await editPost({ target_type: "fact", fact_id: UUID(), replacement: "x" });
+  expect(res.status).toBe(404);
+  expect((await res.json() as { error: string }).error).toBe("target_not_found");
+});
+test("fact-edit: no token → 401", async () => {
+  expect((await editPost({ target_type: "fact", fact_id: seededFactId, replacement: "x" }, false)).status).toBe(401);
+});
+test("message-edit regression: {target,replacement} (no target_type) still → 204", async () => {
+  expect((await editPost({ target: seededMessageId, replacement: "corrected msg" })).status).toBe(204);
+});
+```
+
+- [ ] **Step 2.2 — Run, verify fail.** `bun test packages/daemon/src/memory/http-routes.daemon.test.ts` → the fact-edit cases FAIL (400/404 not returned as specced; today all bodies hit the message path).
+
+- [ ] **Step 2.3 — Implement the `handleEdit` fact branch** in `http-routes.ts` (replace the body of `handleEdit`, `:220-246`; token gate + `parseBody` lines unchanged):
+```ts
+const { target_type, target, replacement, reason, fact_id } = parsed.data;
+const reasonStr = typeof reason === "string" ? reason : undefined;
+
+// chunk-05 FACT-EDIT: target_type:"fact" edits a distilled_facts row's TEXT + stamps
+// authored_by='human' (ADR-0012 5a). Mirrors the forget route's uuid fact_id discriminator.
+// Security-adjacent: sits INSIDE the token gate above, reuses HTTP_CTX (fixed human).
+if (target_type === "fact") {
+  if (typeof replacement !== "string" || replacement === "") {
+    return Response.json({ error: "bad_body" }, { status: 400 });
+  }
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (typeof fact_id !== "string" || !fact_id || !UUID_RE.test(fact_id)) {
+    return Response.json({ error: "bad_body" }, { status: 400 });
+  }
+  try {
+    const applied = deps.hatch.editFact(fact_id, replacement, HTTP_CTX, reasonStr);
+    return applied
+      ? new Response(null, { status: 204 })
+      : Response.json({ error: "target_not_found" }, { status: 404 });
+  } catch (err: unknown) {
+    return mapWriteError(err);
+  }
+}
+
+// MESSAGE-edit (blessed as-is, chunk-03): target_type absent or "message". UNCHANGED.
+if (typeof target !== "string" || !target) {
+  return Response.json({ error: "bad_body" }, { status: 400 });
+}
+if (typeof replacement !== "string") {
+  return Response.json({ error: "bad_body" }, { status: 400 });
+}
+try {
+  deps.hatch.edit(target, replacement, HTTP_CTX, reasonStr);
+  return new Response(null, { status: 204 });
+} catch (err: unknown) {
+  return mapWriteError(err);
+}
+```
+Also update the `handleEdit`/module header comment (`:220`, `:10`) to note the additive `target_type:"fact"` path (docs, not behavior).
+
+- [ ] **Step 2.4 — Run, verify pass.** `bun test packages/daemon/src/memory/http-routes.daemon.test.ts` → PASS.
+
+- [ ] **Step 2.5 — Write the 5e + dedup + forget integration proof.** Create `packages/daemon/src/memory/fact-edit-redistill.daemon.test.ts` (real SQLite + WriteGate + Hatch + registerDistiller; models `distiller-registration.test.ts:339-390`):
+```ts
+/**
+ * chunk-05 FACT-EDIT — real-I/O 5e + dedup + forget interplay.
+ * A human-edited fact must NOT be overwritten, duplicated, or re-derived-over by the next
+ * distillation, and forget must still work on it. Real store/WriteGate/registerDistiller;
+ * the ONLY mock is a scripted MemoryProvider.distill (Strike-4: no real API call).
+ */
+import { test, expect } from "bun:test";
+import { tmpdir } from "node:os";
+import { mkdtempSync } from "node:fs";
+import { join } from "node:path";
+import { MemoryStore } from "./store.js";
+import { WriteGate } from "./write-gate.js";
+import { Hatch } from "./hatch.js";
+import { RuleBasedScanner } from "./scanner/memory-scanner.js";
+import { ConsolidationHook } from "./consolidation-hook.js";
+import { registerDistiller } from "./distiller-registration.js";
+import type { MemoryProvider } from "./memory-provider.js";
+
+test("human-edited fact survives re-distill: not overwritten, not duplicated; forget still works", async () => {
+  const store = new MemoryStore({ dataDir: mkdtempSync(join(tmpdir(), "fe-redistill-")) });
+  const gate = new WriteGate(store, new RuleBasedScanner());
+  const hatch = new Hatch(store, gate);
+  const hook = new ConsolidationHook(store);
+  const scanner = new RuleBasedScanner();
+
+  // 1. machine fact
+  const factId = store.insertFact({
+    fact: "favourite colour blue", canonical: "favourite colour blue",
+    provenance: "thread:seed", scope: "cross-thread", expiry: null,
+    confidence: 1, authored_by: "machine", topics: ["#preferences"],
+  }, "seed");
+
+  // 2. human edits it (via the production Hatch seam) → text + authored_by:human + canonical refreshed
+  expect(hatch.editFact(factId, "favourite colour green", { actor: "user", authored_by: "human" }, "hatch-fact-edit")).toBe(true);
+
+  // 3. re-distill: a new thread restates the colour; the scripted distiller emits a REPLACE
+  //    targeting the (now human) fact, with a canonical IDENTICAL to the edited display text so
+  //    the demote's dedup check deterministically suppresses the re-insert.
+  const t = store.createThread();
+  store.appendMessages(t, [{ role: "user", content: "my favourite colour is green" }], "s1");
+  const provider: MemoryProvider = {
+    id: "fact-edit-redistill",
+    distill: async (s, threadId) => ({
+      threadId,
+      ops: [{
+        op: "replace",
+        fact: "favourite colour green",
+        canonical: "favourite colour green",        // == the edited fact's stored canonical
+        topics: ["#preferences"],
+        targetOrdinal: 1,
+        expectedTargetText: "favourite colour green", // matches the human fact's current text
+      }],
+      candidateIds: [factId],
+      distilledThroughMarker: s.readThreadMarker(threadId),
+      distilledThroughTurn: s.maxTurnIndex(threadId),
+    }),
+    retrieve: async () => [],
+  };
+  registerDistiller(hook, store, provider, scanner);
+  await hook.dismiss([t]);
+
+  // 4a. never-overwritten / never-re-derived-over (5e demote): row byte-stable
+  const row = store.rawDb().query("SELECT id, fact, authored_by FROM distilled_facts WHERE id = ?").get(factId) as { id: string; fact: string; authored_by: string };
+  expect(row.fact).toBe("favourite colour green");
+  expect(row.authored_by).toBe("human");
+  // 4b. not duplicated (dedup-suppress on the demoted insert): exactly ONE colour fact
+  const colour = store.rawDb().query("SELECT id FROM distilled_facts WHERE fact LIKE '%colour%'").all() as { id: string }[];
+  expect(colour.length).toBe(1);
+  // 4c. no distiller REPLACE was recorded (only the human edit's own prior-text audit)
+  const replaced = store.readReplacedFacts(factId);
+  expect(replaced.length).toBe(1);
+  expect(replaced[0]!.replaced_text).toBe("favourite colour blue");
+
+  // 5. forget still works on the edited fact
+  hatch.forgetFactById(factId, { actor: "user", authored_by: "human" });
+  expect(store.rawDb().query("SELECT id FROM distilled_facts WHERE id = ?").get(factId)).toBeNull();
+
+  store.close();
+});
+```
+
+- [ ] **Step 2.6 — Run the integration proof, verify pass.** `bun test packages/daemon/src/memory/fact-edit-redistill.daemon.test.ts` → PASS (proves demote@`distiller-registration.ts:203-207` + dedup-suppress@`:277` protect the edited fact).
+
+- [ ] **Step 2.7 — Add the harness FACT-EDIT step (executed real-I/O over the REAL daemon HTTP+WS).** In `packages/daemon/scripts/memory-demo-harness.ts`:
+  1. In `buildScriptedClient`, add a branch inside the USER-line loop (after the `зелений` branch), keyed to a sentinel the step controls, emitting a REPLACE whose canonical equals the driven line content (so it matches the human-edited fact's canonical):
+```ts
+} else if (content.includes("бірюзовий")) {
+  // chunk-05 FACT-EDIT harness: re-distill of a human-edited colour fact. canonical = the
+  // line content itself so it equals normalizeFactText(edit text) → dedup deterministically
+  // suppresses the never-replace-human demote (proves 5e + no-duplicate over the real daemon).
+  if (colourCandidateIdx !== -1) {
+    const existing = candidateLines[colourCandidateIdx]?.match(/^\d+\.\s+(.+?)(?:\s+\[|$)/);
+    ops.push({ op: "replace", fact: content, canonical: content, topics: ["#preferences"],
+      targetOrdinal: colourCandidateIdx + 1, ...(existing?.[1] ? { expectedTargetText: existing[1].trim() } : {}) });
+  } else {
+    ops.push({ op: "new", fact: content, canonical: content, topics: ["#preferences"] });
+  }
+}
+```
+  2. Add the step AFTER the `CHANGE→ONE-FACT` block (~`:710`) and BEFORE STEP 5 (forget), so the colour fact is a known single row:
+```ts
+// ── FACT-EDIT: edit what the agent remembers (chunk-05) ──────────────────
+console.log("[demo-harness] FACT-EDIT: edit a distilled fact's TEXT via POST /memory/edit {target_type:fact}");
+const EDIT_COLOUR_TEXT = "мій улюблений колір бірюзовий"; // lowercase, no punctuation → canonical-stable
+const feRes = await fetch(`http://127.0.0.1:${PORT}/memory/thread/${encodeURIComponent(threadA)}`, { headers: { Authorization: `Bearer ${token}` } });
+const feFacts = (await feRes.json() as { distilledFacts: { fact: string; id: string; authored_by: string }[] }).distilledFacts;
+const colourFact = feFacts.find((f) => f.fact.includes("синій") || f.fact.includes("зелений") || f.fact.includes("колір") || f.fact.includes("Люблю"));
+if (!colourFact) { console.error("[demo-harness] FACT-EDIT: no colour fact to edit"); await cleanup(); process.exit(1); }
+const editRes = await fetch(`http://127.0.0.1:${PORT}/memory/edit`, {
+  method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+  body: JSON.stringify({ target_type: "fact", fact_id: colourFact.id, replacement: EDIT_COLOUR_TEXT, reason: "demo-harness-fact-edit" }),
+});
+console.log(`[demo-harness] FACT-EDIT: POST /memory/edit → ${editRes.status}`);
+// read back: text changed + authored_by human (durable)
+const afterEdit = (await (await fetch(`http://127.0.0.1:${PORT}/memory/thread/${encodeURIComponent(threadA)}`, { headers: { Authorization: `Bearer ${token}` } })).json() as { distilledFacts: { fact: string; id: string; authored_by: string }[] }).distilledFacts;
+const edited = afterEdit.find((f) => f.id === colourFact.id);
+const editApplied = editRes.status === 204 && edited?.fact === EDIT_COLOUR_TEXT && edited?.authored_by === "human";
+// re-distill: restate the same edited value in a new thread
+const feColourBefore = countColourFacts(tmpDir);
+const threadFE = crypto.randomUUID();
+await wsTurnAndSettle(PORT, token, { threadId: threadFE, text: EDIT_COLOUR_TEXT }, 200);
+const feColourAfter = countColourFacts(tmpDir);
+const afterRedistill = (await (await fetch(`http://127.0.0.1:${PORT}/memory/thread/${encodeURIComponent(threadA)}`, { headers: { Authorization: `Bearer ${token}` } })).json() as { distilledFacts: { fact: string; id: string; authored_by: string }[] }).distilledFacts;
+const stillOne = afterRedistill.filter((f) => f.id === colourFact.id && f.fact === EDIT_COLOUR_TEXT && f.authored_by === "human").length === 1;
+const noDup = feColourAfter === feColourBefore;
+console.log(`[demo-harness] FACT-EDIT: applied=${editApplied} colourCount before=${feColourBefore} after=${feColourAfter} human-stable=${stillOne}`);
+if (MODE === "stub") {
+  if (!editApplied) { console.error("[demo-harness] FACT-EDIT: RED — edit did not persist as human text (route/primitive not applied)."); await cleanup(); process.exit(1); }
+  if (!stillOne || !noDup) { console.error("[demo-harness] FACT-EDIT: RED — human fact overwritten or duplicated by re-distill (5e demote + dedup-suppress not holding)."); await cleanup(); process.exit(1); }
+  console.log("[demo-harness] FACT-EDIT: GREEN — edit persists as human text; re-distill neither overwrote nor duplicated it.");
+} else {
+  console.log(`[demo-harness] FACT-EDIT: informational (real mode, LLM-fuzzy) — applied=${editApplied} stillOne=${stillOne} noDup=${noDup}.`);
+}
+console.log("");
+```
+  (Update the harness banner/summary boxes to list FACT-EDIT.)
+
+- [ ] **Step 2.8 — RUN the harness (both modes) and capture stdout.** Execute — do NOT infer from reading (§6.1 / Strike-5):
+```bash
+bun run packages/daemon/scripts/memory-demo-harness.ts --mode=stub
+ANTHROPIC_API_KEY-in-Keychain: bun run packages/daemon/scripts/memory-demo-harness.ts --mode=real   # informational if key absent → SKIP is acceptable
+```
+Expected stub: `FACT-EDIT: GREEN — edit persists as human text; re-distill neither overwrote nor duplicated it.` Paste the full stub stdout (and real stdout if a key resolves) into the PR body = the executed 5e/dedup evidence.
+
+- [ ] **Step 2.9 — Full daemon suite + protocol freeze check.**
+```bash
+bun test packages/daemon
+git diff --stat packages/protocol/    # MUST be empty
+```
+
+- [ ] **Step 2.10 — Commit.**
+```bash
+git add packages/daemon/src/memory/http-routes.ts packages/daemon/src/memory/http-routes.daemon.test.ts packages/daemon/src/memory/fact-edit-redistill.daemon.test.ts packages/daemon/scripts/memory-demo-harness.ts
+git commit -m "feat(memory-transparency-ui): POST /memory/edit target_type:fact + executed 5e/dedup real-I/O proof"
+```
+
+### Step 3 — Overlay: fact-edit affordance + persistent human badge + honest states
+
+**Files:** Modify `memory-write.ts`, `memory-write.test.ts`, `render.ts`, `render.test.ts`, `controller.ts`, `controller.test.ts`, `memory.html`.
+
+**Interfaces:**
+- Consumes: `MemoryApiDeps {fetchFn, baseUrl, token, timeoutMs?}` + `post`/`WriteResult` (`memory-write.ts`); `buildEditControl(current, onSave)` (`actions.ts`, unchanged); `DistilledFactView {id, fact, authored_by, …}` (`types.ts`).
+- Produces: `editFact(deps: MemoryApiDeps, factId: string, replacement: string): Promise<WriteResult>`; `FactActions.onEditFact?: (factId: string, newText: string) => void`; controller `editFactAction(factId, newText)`.
+
+- [ ] **Step 3.1 — Write the failing `memory-write` test.** Append to `memory-write.test.ts`:
+```ts
+import { editFact } from "./memory-write.js";
+test("editFact 204 → ok; sends target_type:fact + fact_id + replacement (Bearer only)", async () => {
+  const calls: { url: string; init?: RequestInit }[] = [];
+  const r = await editFact(deps(fakeFetch(204, calls)), "F1", "new text");
+  expect(r.kind).toBe("ok");
+  const body = JSON.parse(calls[0]!.init!.body as string);
+  expect(body).toEqual({ target_type: "fact", fact_id: "F1", replacement: "new text", reason: "hatch-fact-edit" });
+  expect((calls[0]!.init!.headers as Record<string, string>).Authorization).toBe("Bearer TOK");
+});
+test("editFact status mapping: 401→unauthorized, 404→stale, 400→bad_request, 500→unreachable, net→unreachable", async () => {
+  expect((await editFact(deps(fakeFetch(401, [])), "F1", "x")).kind).toBe("unauthorized");
+  expect((await editFact(deps(fakeFetch(404, [])), "F1", "x")).kind).toBe("stale");
+  expect((await editFact(deps(fakeFetch(400, [])), "F1", "x")).kind).toBe("bad_request");
+  expect((await editFact(deps(fakeFetch(500, [])), "F1", "x")).kind).toBe("unreachable");
+  expect((await editFact(deps(fakeFetch(0, [])), "F1", "x")).kind).toBe("unreachable");
+});
+```
+
+- [ ] **Step 3.2 — Run, verify fail.** `bun test apps/overlay/src/memory/memory-write.test.ts` → FAIL (`editFact` not exported).
+
+- [ ] **Step 3.3 — Implement `editFact` in `memory-write.ts`** (append after `editMessage`; update the file header to note the fact variant):
+```ts
+/** Edit a FACT's text — "correct what the agent remembers" (ADR-0012 5a). Keys on the fact's
+ *  stable uuid (target_type:"fact" + fact_id); the daemon updates the distilled_facts row's text
+ *  and stamps authored_by:"human" server-side (5e-protected). A 404 → the fact is gone (stale). */
+export function editFact(deps: MemoryApiDeps, factId: string, replacement: string): Promise<WriteResult> {
+  return post(deps, "/memory/edit", { target_type: "fact", fact_id: factId, replacement, reason: "hatch-fact-edit" });
+}
+```
+
+- [ ] **Step 3.4 — Run, verify pass.** `bun test apps/overlay/src/memory/memory-write.test.ts` → PASS.
+
+- [ ] **Step 3.5 — Write the failing render tests.** Append to `render.test.ts` (DOM):
+```ts
+test("renderFacts: onEditFact attaches an Edit control that saves the fact id + new text", () => {
+  const el = document.createElement("div");
+  const saved: { id: string; text: string }[] = [];
+  renderFacts(el, [{ id: "F1", fact: "colour blue", provenance: "thread:t", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" }],
+    () => {}, { onEditFact: (id, text) => saved.push({ id, text }) });
+  (el.querySelector(".act-edit") as HTMLButtonElement).click();      // open inline editor
+  const ta = el.querySelector(".inline-editor textarea") as HTMLTextAreaElement;
+  expect(ta.value).toBe("colour blue");                              // prefilled with current text
+  ta.value = "colour green";
+  (el.querySelector(".act-save") as HTMLButtonElement).click();
+  expect(saved).toEqual([{ id: "F1", text: "colour green" }]);
+});
+test("renderFacts: persistent 'yours' badge iff authored_by==='human' (data-driven, not session)", () => {
+  const el = document.createElement("div");
+  renderFacts(el, [
+    { id: "H", fact: "human fact", provenance: "thread:t", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "human" },
+    { id: "M", fact: "machine fact", provenance: "thread:t", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
+  ], () => {});
+  const rows = el.querySelectorAll(".fact-row");
+  expect(rows[0]!.querySelector(".human-badge")).not.toBeNull();     // human → badge
+  expect(rows[1]!.querySelector(".human-badge")).toBeNull();          // machine → no badge
+});
+```
+
+- [ ] **Step 3.6 — Run, verify fail.** `bun test apps/overlay/src/memory/render.test.ts` → FAIL.
+
+- [ ] **Step 3.7 — Implement in `render.ts`.** Extend `FactActions` and `renderFacts`:
+```ts
+export interface FactActions {
+  onForget?: (factId: string) => void;
+  /** chunk-05: inline Edit on a fact row → POST /memory/edit {target_type:"fact"} (5a "correct what it remembers"). */
+  onEditFact?: (factId: string, newText: string) => void;
+}
+```
+In `renderFacts`, right after `row.appendChild(factEl);` (`:99`), add the persistent badge:
+```ts
+// chunk-05: persistent, DATA-DRIVEN "yours" badge (from the fact's own authored_by; survives
+// restart — unlike the session-local message "edited by you" tag).
+if (f.authored_by === "human") {
+  const badge = document.createElement("span");
+  badge.className = "human-badge";
+  badge.textContent = " yours";
+  row.appendChild(badge);
+}
+```
+And in the actions block near the forget control (`:139-143`), add the edit control:
+```ts
+if (actions?.onEditFact) {
+  const onEditFact = actions.onEditFact;
+  row.appendChild(buildEditControl(f.fact || "", (newText) => onEditFact(f.id, newText)));
+}
+```
+
+- [ ] **Step 3.8 — Run, verify pass.** `bun test apps/overlay/src/memory/render.test.ts` → PASS.
+
+- [ ] **Step 3.9 — Write the failing controller test.** Append to `controller.test.ts` (DOM) — mirror the existing forget-outcome case: a fake api whose POST returns 204, click a fact's Edit, save, assert `editFact` was POSTed to `/memory/edit` with `target_type:"fact"` and that the view re-fetched (loadThread called again). Assert an `unreachable` POST renders the `DOWN` state (no fake success).
+
+- [ ] **Step 3.10 — Implement in `controller.ts`.** Import `editFact`:
+```ts
+import { forgetFact, editMessage, editFact, type WriteResult } from "./memory-write.js";
+```
+Add the action + wire it in `loadThread`'s `renderFacts` call:
+```ts
+async function editFactAction(factId: string, newText: string): Promise<void> {
+  handleWriteResult(await editFact(deps.api, factId, newText));
+}
+```
+```ts
+renderFacts(els.factsEl, r.data.distilledFacts ?? [], openThread, {
+  onForget: (factId) => void forgetAction(factId),
+  onEditFact: (factId, newText) => void editFactAction(factId, newText), // chunk-05
+});
+```
+(No session set for the badge — it is data-driven: `ok` → `refreshCurrentView()` re-fetches and the fact returns `authored_by:"human"`, so the badge is durable.)
+
+- [ ] **Step 3.11 — Add `.human-badge` CSS in `memory.html`** (after the `.edited-tag` rule, `:38`):
+```css
+.human-badge { color: #2060b0; font-weight: 600; font-size: 12px; margin-left: 6px; }
+```
+
+- [ ] **Step 3.12 — Run overlay tests + both typechecks + lint.**
+```bash
+bun test apps/overlay/src/memory
+bunx tsc -p tsconfig.json --noEmit
+bunx tsc -p apps/overlay/tsconfig.memory-dom-tests.json --noEmit
+bun run lint:strict
+```
+All green. (No tsconfig `include`/`exclude` edit — cases appended to already-registered files.)
+
+- [ ] **Step 3.13 — Commit.**
+```bash
+git add apps/overlay/src/memory/memory-write.ts apps/overlay/src/memory/memory-write.test.ts apps/overlay/src/memory/render.ts apps/overlay/src/memory/render.test.ts apps/overlay/src/memory/controller.ts apps/overlay/src/memory/controller.test.ts apps/overlay/memory.html
+git commit -m "feat(memory-transparency-ui): overlay fact-edit affordance + persistent human badge (honest write states)"
+```
+
+---
+
+## Verification (chunk-05 DoD mapping)
+
+| DoD box (from `05-…-fact-edit.md`) | Kind | Evidence |
+|---|---|---|
+| Editing a FACT's text saves, re-renders with a **persistent human badge**, and **survives app restart** | behavioral | Route test 2.1 (text + `authored_by='human'` persisted on disk) + harness FACT-EDIT step 2.7/2.8 (`applied` via real HTTP) + render/controller tests 3.5/3.9 (badge + re-fetch). **Restart durability requires runtime demo to confirm** — structurally guaranteed by the persisted `authored_by`/`fact` columns (readback proves persistence); consolidated in the chunk-04 JOINT live demo. |
+| After a real distillation, the human-edited fact is **NOT overwritten / duplicated / re-derived-over** (5e + dedup) **and forget still works** | behavioral | **EXECUTED real-I/O:** integration test 2.5/2.6 (hard `bun test`; demote@`distiller-registration.ts:203-207` + dedup-suppress@`:277`; forget removes it) **and** harness FACT-EDIT step 2.7/2.8 `--mode=stub` hard-assert (GREEN) over the REAL daemon + `--mode=real` informational. Stdout pasted in PR (§6.1/Strike-5). |
+| Error paths honest: daemon down mid-edit → `unreachable`, no fake success | behavioral | `memory-write.test.ts` 3.1 (500/network → `unreachable`) + `controller.test.ts` 3.9 (`unreachable` → `DOWN`, no re-render as success). **Live daemon-kill requires runtime demo to confirm** — rides chunk-04 demo. |
+| `bun test` green (route + store + DOM), `lint:strict`, root+overlay typecheck green | mechanical | `bun test packages/daemon`; `bun test apps/overlay/src/memory`; `bun run lint:strict`; `bunx tsc -p tsconfig.json --noEmit`; `bunx tsc -p apps/overlay/tsconfig.memory-dom-tests.json --noEmit`. |
+| `git diff packages/protocol/` empty; daemon diff limited to the additive edit path | mechanical | `git diff --stat packages/protocol/` empty (2.9). Daemon diff = `store.ts`/`write-gate.ts`/`hatch.ts`/`http-routes.ts` + tests + harness only — flag the first four (security-adjacent) for reviewer attention. |
+
+---
+
+## ADR worthy: no
+
+**Reasoning.** This consumes already-decided, already-shipped contracts and introduces **no new boundary, protocol, dependency, or decision**:
+- **ADR-0012 5a** (view/edit/**correct**/forget hatch) — this delivers the "correct what the agent remembers" half that chunk-03 explicitly FLAGGED as unbuilt (message-only edit). **5e** (never auto-overwrite human) is *consumed*, not extended: stamping the fact `authored_by:"human"` routes it through the existing never-replace-human demote — the machinery already exists (`distiller-registration.ts:203-207`) and was verified to cover an edited-then-redistilled fact (integration test 2.5). The ADR-0012 amendment's REPLACE/dedup model governs unchanged.
+- **ADR-0015** — additive HTTP-body field only (`target_type:"fact"` on `/memory/edit`, mirroring the forget route); the separate-artifact B1 invariant is untouched (fact-edit touches only `distilled_facts`, never `messages`/`mutations`). `@agentic/protocol` byte-unchanged.
+- **ADR-0013** — reuses the token-gated write surface + fixed `HTTP_CTX`; no new route family, no auth change (no "rule of three" third-mutating-route trigger — this is the *same* `/memory/edit` route, additive branch).
+- **ADR-0005/0006** — overlay surfaces unchanged (closed-set DOM, tray-opened window).
+
+The ADR-0012 rider documenting **both** edit semantics (message-correction vs fact-correction) rides **chunk-04**, not this chunk, per the chunk brief.
+
+**Escalation clause (mirrors chunk-01/02/03):** the integration test (2.5) confirmed the human-precedence machinery *does* cover an edited-then-redistilled fact — so no new behavior was designed and no ADR is needed. **If, during build, the worker finds the machinery does NOT cover it** (e.g. the demote/dedup path does not fire for a human-stamped fact and new distiller logic is required), STOP — that is a new decision → escalate to `adr-curator` + freeze gate before proceeding.
+
+---
+
+## Risks & flags (chunk-05)
+
+- **SECURITY-ADJACENT (reviewer must eyeball) — the ADR-0013 poisoning-write surface.** `http-routes.ts` (new fact branch), `write-gate.ts`/`hatch.ts` (`editFact`), `store.ts` (`editFactById`). Reviewer checkpoints: (a) the fact branch is **inside** the existing token gate (`tokenStore.verify` first); (b) it uses the fixed `HTTP_CTX` (human) — no client-supplied ctx; (c) `editFactById` **never** touches `messages`/`mutations` (B1 — fact path is structurally isolated); (d) `fact_id` is uuid-validated (no arbitrary-string dispatch); (e) zero `innerHTML` in `render.ts`/`memory-write.ts` (XSS — user-entered edit text).
+- **MERGE-ORDER with chunk-04 (disjoint files, same daemon package).** Chunk-04 touches `history-page.ts`; this chunk does NOT. No file overlap → either order merges cleanly. If both land near-simultaneously, rebase-and-rerun `bun test packages/daemon` on the second to merge (the daemon suite is the shared surface). The behavioral live sign-off is **consolidated in the chunk-04 JOINT demo** unless the orchestrator finds a defect worth an early Lior pass (default: mechanical gates here).
+- **"Not duplicated" inherits the v2 dedup ceiling — pre-existing, NOT introduced here.** `factExistsByDedupKey` suppresses a demoted re-insert only when the machine re-derivation's canonical normalizes to the same key as the edited fact's canonical. A **cross-language / heavily-reworded** re-derivation could still slip a duplicate past dedup (the demo-3 root, mitigated by all-facts-below-cap + superseded by roadmap **2d/embeddings**). The **5e "not overwritten"** guarantee is *unconditional* (keys on `authored_by`, not text) — only the *dedup* half carries the ceiling. Documented honestly; not a blocker and not new to this chunk.
+- **Edit on a redacted/tombstoned concept N/A for facts** — facts are `distilled_facts` rows, not `messages`; there is no `[forgotten]` marker on a fact (forget durably deletes the row). So the chunk-03 "edit re-introduces redacted content" note does not apply to fact-edit.
+- **`distiller_version`/`provenance` deliberately unchanged on a human edit** (a human edit is not a distiller output). If a reviewer wants a "human-edited" provenance marker, that is a separate additive read-side decision — not in scope.
+- **Harness sentinel (`бірюзовий`) is dev-only stub scripting** — the `--mode=real` run is the language-agnostic behavioral check; the stub branch exists solely to make the executed real-daemon assertion deterministic. Not product code.
+
+## Status: Done
+
+---

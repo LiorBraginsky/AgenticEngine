@@ -2204,3 +2204,796 @@ coupling invariant to warrant recording, that is a **note/rider** on ADR-0012, n
 to `adr-curator` before merge. (Not expected.)
 
 ## Status: Done
+
+
+---
+
+## Chunk 03 — ACT (edit + forget)
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement task-by-task. Steps use checkbox (`- [ ]`) syntax. This is **chunk-03** of feature `memory-transparency-ui` (backlog Theme A). Scope is FROZEN by `orchestration/chunks-todo/memory-transparency-ui/03-memory-window-edit-forget.md` — you may FLAG problems, do not exceed or edit it. Builds on chunk-01 (tray+shell, shipped) and chunk-02 (READ view, shipped PR #76).
+
+**Goal:** Grow the shipped chunk-02 thread-detail view into the ACT surface — a "release the reference" forget on each distilled fact and an inline human-correction edit on each message — wired to the already-shipped token-gated `POST /memory/forget` + `POST /memory/edit`, with every outcome mapped to an honest UI state (no fake success), zero protocol/daemon change.
+
+**Architecture:** Pure overlay work. A new pure `memory-write.ts` (token-gated POST → discriminated `WriteResult`; treats the daemon's `204 No Content` success as success, so it does NOT reuse chunk-02's `getJson`, which parses JSON and would throw on an empty body). New DOM builders in `actions.ts` (forget-confirm + inline-edit; `textContent`/`createElement` only, zero `innerHTML`). Chunk-02's `render.ts` gains optional per-row action callbacks; the controller wires them to `memory-write` and re-fetches the current view on success / renders the chunk-02 honest states (`LOCKED`/`DOWN`) on failure.
+
+**Tech Stack:** TypeScript on Bun, Tauri webview, `fetch` + `AbortController`, `bun:test` + happy-dom (root `bunfig.toml` preload).
+
+### Global Constraints (chunk-03)
+
+- **`@agentic/protocol` frozen — byte-unchanged.** `git diff --stat packages/protocol/` MUST be empty. The forget/edit HTTP-body fields are NOT wire-envelope variants (ADR-0015: "additive to the HTTP body … `@agentic/protocol` and `mock-agent.ts` are untouched").
+- **`packages/daemon/**` byte-unchanged.** The routes, CORS seam, and error contract already exist (see `## Reality check`). No daemon edit. If the worker believes an unavoidable daemon change is needed → STOP and escalate (freeze gate); do not silently widen.
+- **ADR-0013 token discipline:** the per-install token rides `Authorization: Bearer <token>` ONLY — never a URL/query/body key, never logged. Reuse chunk-02's already-read token (`read_auth_token`, shared through `MemoryApiDeps`).
+- **XSS discipline (load-bearing, security not style):** all API-derived and user-entered strings via `textContent`/`createElement`. ZERO `innerHTML`. Mirrors `history.html` / `text-reply.ts` / chunk-02 `render.ts`.
+- **ADR-0015 forget semantics = "release the reference":** forgetting a fact durably deletes only that fact row; it NEVER scrubs the source messages/thread. No "also forget sources" checkbox, no source-message-count confirm (ADR-0015 decision 5 SUPERSEDED). No undo window — the confirm IS the safety.
+- **Escaped-test discipline (bit chunks 01/02):** every new test file must be type-checked exactly once. Non-DOM tests are auto-covered by root `tsconfig.json` (`apps/overlay/src/memory/**/*.test.ts`); DOM tests must be added to `apps/overlay/tsconfig.memory-dom-tests.json` `include` AND to root `tsconfig.json` `exclude`.
+
+---
+
+## Reality check
+
+Per PIPELINE §6.1: statements below are **code-path facts** (verified by reading source, lines cited) or **runtime inferences** marked *"requires runtime demo to confirm"* — never asserted as behavioral truth from reading.
+
+**1. Both write routes EXIST and are the contract (code facts):**
+- `POST /memory/forget` — `http-routes.ts:118-119` → `handleForget` (`:174-218`). Token-gated (`tokenStore.verify` first; 401 on miss). **Body shape it actually reads: `{ target_type, reason?, fact_id }`** (`:184`). The ONLY accepted path is `target_type === "fact"` with a **uuid-shaped `fact_id`** (`:199-207`, `UUID_RE`) → `deps.hatch.forgetFactById(fact_id, HTTP_CTX, reason)` (`hatch.ts:89-91` → `write-gate.ts:150-183`) → durable delete of exactly that stable-id row; **never scrubs messages** (B1 invariant; `write-gate.ts` comment `:117-119`). **Success = `204 No Content`, no JSON body** (`:206`).
+  - **Reconciliation of "keys on text vs id":** ADR-0015 decision 3 keys the *durable record* on normalized text, but the HTTP body v2-07 REQUIRES a uuid `fact_id` (`:200-210`); the text/provenance `forgetFact` fallback was REMOVED as the over-delete root (`:207-210`, `write-gate.ts:145-147`). **The UI must send `fact_id`** — the fact `id` is already on chunk-02's wire (`DistilledFactView.id`, plan `:1034`; from `store.readDistilledFacts` SELECT, `store.ts:287`). `fact_text`/`provenance` are IGNORED by the route (only `target_type`/`reason`/`fact_id` are destructured) — the UI need not send them.
+  - **`target_type:"message"` (Scope-OUT) returns 400** (`:211-213`, the `else` branch → `bad_body`) — the per-message user path is structurally rejected. Confirmed.
+- `POST /memory/edit` — `http-routes.ts:123-124` → `handleEdit` (`:220-246`). Token-gated. **Body shape it reads: `{ target, replacement, reason? }`** (`:230`); `target` and `replacement` must be strings (`:231-236`, else 400 `bad_body`). Calls `deps.hatch.edit(target, replacement, HTTP_CTX, reason)` (`hatch.ts:70-72` → `write-gate.ts:193-216`). **Success = `204 No Content`.**
+
+**2. ⚠️ THE CRUX — `/memory/edit` edits a MESSAGE, not a distilled fact (code fact + reconciliation):**
+- `hatch.edit(target, …)` → `WriteGate.edit(messageId, …)` (`write-gate.ts:193`). It calls `threadOf(messageId)` (`SELECT thread_id FROM messages WHERE id = ?`, `:240-244`; throws `not found` for a non-message id) and appends a `mutations` row of `kind='correction'` referencing that **`messages.id`** (`:205-207`). There is **NO HTTP route that edits a `distilled_facts` row, and NO route that sets a fact's `authored_by='human'`.** (Human facts are a designed-for concept — `store.ts` 5e guards everywhere, `reindexHumanFacts` `:942-951` — but nothing on the HTTP surface authors one.)
+- **The reference implementation confirms this:** `history-page.ts` puts the **Edit** button on MESSAGE rows (`:330-337`, `doEdit(m.id, m.content …)` → POST `{ target: msgId, replacement, reason }`, `:558-564`) and the **Forget fact** button on FACT rows (`:371-384`, POST `{ target_type:"fact", fact_id, … }`). Per-message forget was removed (`:328-329`).
+- **Reconciliation (proceeding, not blocking):** the chunk brief's phrasing "edit a fact" is loose shorthand. The SPEC itself defines edit as "the correction flow riding **MUTATION-AS-APPEND** (`authored_by:human` + 5e … enforced by the write-gate)" — that IS `WriteGate.edit` on a message. So the authoritative sources (spec + reference impl + frozen backend) all define edit as a **message correction**. This plan builds **Edit on message rows** (Option A). This is a reconciliation-to-an-existing-decision, flagged loudly — NOT new scope. **If Lior genuinely meant fact-level editing** (author/replace a `distilled_facts` row as human), that requires a NEW daemon path → **freeze gate + separate feature**, NOT this chunk (see `## Risks & flags`).
+- **The "human-authored marker" (DoD box 2), reconciled:**
+  - The edited message's **new text is persistent and visible on reload**: `hatch.view` reads `store.readThreadArchive` (`hatch.ts:55`, `store.ts:725-750`), whose `COALESCE` surfaces the latest **human** correction as the message `content` (`store.ts:730-737, 748`). *(requires runtime demo to confirm the end-to-end view refresh.)*
+  - The wire (`ThreadMessage {id,role,content}`, plan `:1032`; `hatch.ts:33`) carries **no persistent per-message "corrected" flag**. So a durable human-authored *badge* on a message would need an additive daemon field (out of scope). This plan shows the marker as a **session-local "edited by you" tag** (honest optimistic UI — marks what the user changed this session). On facts, `authored_by` is already on the wire and already displayed by chunk-02 (`render.ts:1419`) — but no route makes a fact human-authored, so it renders `machine` in practice.
+  - The 5e "never silently clobbered" guarantee is real at the message level: a human correction wins and cannot be machine-overwritten (`write-gate.ts:202-203` refuses machine-over-human; `store.ts:730-737` human-wins COALESCE); the distiller reads the corrected text (`readThreadMessagesForDistill`, same COALESCE, `store.ts:764-771`). *(5e survival across a re-distill requires runtime demo to confirm — via MEMORY_DEBUG / a real-daemon probe; see Step 3.)*
+
+**3. Error contract (code fact — `mapWriteError` `:283-293` + inline throws). The UI consumes these; do NOT add throw sites:**
+| Status | Body | Trigger | UI state |
+|---|---|---|---|
+| `401` | `{error:"Unauthorized"}` | missing/bad token (both routes check first, `:176`,`:222`) | `unauthorized` → 🔒 LOCKED |
+| `404` | `{error:"target_not_found"}` | `/not found/i` from `WriteGate.threadOf` — edit target message id not in `messages` (`:285-287`) | `stale` → refresh reconciles |
+| `400` | `{error:"bad_body"}` | non-object body; forget: `target_type!=="fact"` / missing / non-uuid `fact_id`; edit: `target`/`replacement` not a non-empty string (`:182,210,213,232,235`) | `bad_request` → honest inline error |
+| `400` | `{error:"bad_target_shape"}` | `/use forget\(\) to tombstone\+scrub a message/i` from `store.tombstoneFact` guard (`:288-289`) — defensive, unreachable on these paths | `bad_request` → honest inline error |
+| `500` | `{error:"internal"}` | anything else (`:291-292`) | `unreachable` → DOWN |
+| `204` | *(empty)* | success (`:206`,`:242`) | `ok` → re-fetch current view |
+
+**4. Verification tooling EXISTS (code fact):**
+- `packages/daemon/scripts/memory-demo-harness.ts` boots the **REAL daemon** (`startDaemon`, `:434/446`) and drives it over real HTTP+WS. **STEP 5** (`:712-780`) already POSTs `/memory/forget` with `{target_type:"fact", fact_id}` and asserts exactly-1-delete + target-gone + others-intact (C-fix). **STEP 6** (`:783-788`) does recall-after-forget in a NEW thread. Together these are the real-I/O proof for DoD box 1 (fact gone from view AND from a new thread's injected context; source intact). Run: `bun run packages/daemon/scripts/memory-demo-harness.ts --mode=stub` (deterministic, hard asserts) and `--mode=real` (real Haiku; needs `ANTHROPIC_API_KEY` in Keychain). *(A probe is evidence only when executed — the worker MUST run it, per Strike-4/5.)*
+- **The harness does NOT exercise EDIT.** DoD box 2 (edit → view shows new text / 5e survives re-distill) is verified by a **manual real-daemon probe + `MEMORY_DEBUG=1`** (Step 3.7), not the harness. `memDebug` (`write-gate.ts:127,176`) is env-gated and logs forget/retrieve traces.
+
+**5. `@agentic/protocol` untouched — confirmed.** Nothing in this chunk touches the WS wire envelope; the forget/edit fields are HTTP-body only (ADR-0015 relationship note). CORS already allows `POST`/`OPTIONS` + `authorization`/`content-type`, reflecting the overlay origin (`http-routes.ts:53-97`, chunk-01 seam) → no `http-routes.ts` touch. **Not a freeze gate.**
+
+---
+
+## File Structure (chunk-03)
+
+- **Create** `apps/overlay/src/memory/memory-write.ts` — pure token-gated POST → `WriteResult` (204/401/404/400/5xx/network mapping). Reuses chunk-02's `MemoryApiDeps`.
+- **Create** `apps/overlay/src/memory/memory-write.test.ts` — non-DOM; auto-covered by root `tsconfig.json` glob (no tsconfig edit).
+- **Create** `apps/overlay/src/memory/actions.ts` — DOM builders `buildForgetControl` (arm→confirm "release the reference") + `buildEditControl` (inline textarea).
+- **Create** `apps/overlay/src/memory/actions.test.ts` — DOM; add to `tsconfig.memory-dom-tests.json` include + root `tsconfig.json` exclude.
+- **Modify** `apps/overlay/src/memory/render.ts` — additive optional action params on `renderMessages`/`renderFacts` (existing 2-/3-arg callers unaffected).
+- **Modify** `apps/overlay/src/memory/render.test.ts` — append action-wiring cases (already in DOM config).
+- **Modify** `apps/overlay/src/memory/controller.ts` — wire `onEdit`/`onForget` → `memory-write` → `handleWriteResult` (re-fetch on ok/stale; honest states on failure; session `editedIds`).
+- **Modify** `apps/overlay/src/memory/controller.test.ts` — append action-outcome cases (already in DOM config).
+- **Modify** `apps/overlay/memory.html` — CSS for `.act-btn`/`.act-forget`/`.act-edit`/`.inline-editor`/`.edited-tag`.
+- **Modify** `apps/overlay/tsconfig.memory-dom-tests.json` + root `tsconfig.json` — register `actions.test.ts` (coverage discipline).
+
+---
+
+## Steps
+
+### Step 1 — Pure write module (`memory-write.ts`) + tests
+
+**Files:** Create `apps/overlay/src/memory/memory-write.ts`, `apps/overlay/src/memory/memory-write.test.ts`.
+
+**Interfaces:**
+- Consumes: `MemoryApiDeps` (`{ fetchFn, baseUrl, token, timeoutMs? }`) from `./memory-api.js` (chunk-02).
+- Produces: `type WriteResult = {kind:"ok"}|{kind:"unauthorized"}|{kind:"stale"}|{kind:"bad_request"}|{kind:"unreachable"}`; `forgetFact(deps, factId): Promise<WriteResult>`; `editMessage(deps, messageId, replacement): Promise<WriteResult>`.
+
+- [ ] **Step 1.1 — Write the failing tests.** `apps/overlay/src/memory/memory-write.test.ts`:
+```ts
+/**
+ * memory-write — token-gated POST mapping. ADR-0013: Bearer header ONLY, never URL/body.
+ * Daemon returns 204 (no JSON body) on success. Fake fetchFn records (url, init); no network.
+ * NON-DOM by construction (Response/RequestInit/AbortController only) → root tsconfig coverage.
+ */
+import { test, expect } from "bun:test";
+import { forgetFact, editMessage } from "./memory-write.js";
+import type { MemoryApiDeps } from "./memory-api.js";
+
+function fakeFetch(status: number, calls: { url: string; init?: RequestInit }[]) {
+  return (url: string, init?: RequestInit): Promise<Response> => {
+    calls.push({ url, init });
+    if (status === 0) return Promise.reject(new Error("network"));
+    // 204 carries NO body (matches the daemon); other statuses carry an error JSON.
+    return Promise.resolve(
+      status === 204 ? new Response(null, { status }) : new Response(JSON.stringify({ error: "x" }), { status }),
+    );
+  };
+}
+function deps(fetchFn: MemoryApiDeps["fetchFn"]): MemoryApiDeps {
+  return { fetchFn, baseUrl: "http://127.0.0.1:7777", token: "TOK", timeoutMs: 1000 };
+}
+
+test("forgetFact 204 → ok", async () => {
+  expect((await forgetFact(deps(fakeFetch(204, [])), "F1")).kind).toBe("ok");
+});
+test("status mapping: 401→unauthorized, 404→stale, 400→bad_request, 500→unreachable", async () => {
+  expect((await forgetFact(deps(fakeFetch(401, [])), "F1")).kind).toBe("unauthorized");
+  expect((await editMessage(deps(fakeFetch(404, [])), "M1", "x")).kind).toBe("stale");
+  expect((await forgetFact(deps(fakeFetch(400, [])), "F1")).kind).toBe("bad_request");
+  expect((await editMessage(deps(fakeFetch(500, [])), "M1", "x")).kind).toBe("unreachable");
+});
+test("network error → unreachable", async () => {
+  expect((await forgetFact(deps(fakeFetch(0, [])), "F1")).kind).toBe("unreachable");
+});
+test("forget POSTs target_type:fact + fact_id; token in Authorization header, never in URL/body", async () => {
+  const calls: { url: string; init?: RequestInit }[] = [];
+  await forgetFact(deps(fakeFetch(204, calls)), "FACT-UUID");
+  const { url, init } = calls[0]!;
+  expect(url).toBe("http://127.0.0.1:7777/memory/forget");
+  expect(url).not.toContain("TOK");
+  expect(init!.method).toBe("POST");
+  expect((init!.headers as Record<string, string>).Authorization).toBe("Bearer TOK");
+  expect(init!.body as string).not.toContain("TOK");
+  const body = JSON.parse(init!.body as string) as { target_type: string; fact_id: string };
+  expect(body.target_type).toBe("fact");
+  expect(body.fact_id).toBe("FACT-UUID");
+});
+test("edit POSTs target(messageId) + replacement", async () => {
+  const calls: { url: string; init?: RequestInit }[] = [];
+  await editMessage(deps(fakeFetch(204, calls)), "MSG-ID", "new text");
+  const body = JSON.parse(calls[0]!.init!.body as string) as { target: string; replacement: string };
+  expect(calls[0]!.url).toBe("http://127.0.0.1:7777/memory/edit");
+  expect(body.target).toBe("MSG-ID");
+  expect(body.replacement).toBe("new text");
+});
+```
+
+- [ ] **Step 1.2 — Run; verify they fail.** Run: `bun test apps/overlay/src/memory/memory-write.test.ts`. Expected: FAIL (module missing).
+
+- [ ] **Step 1.3 — Implement `apps/overlay/src/memory/memory-write.ts`:**
+```ts
+/**
+ * memory-write (chunk-03, memory-transparency-ui) — token-gated POST mutations.
+ * ADR-0013: token rides Authorization: Bearer ONLY — never logged, never in a URL/query/body-key.
+ * The daemon returns 204 No Content on success (NOT JSON), so this deliberately does NOT reuse
+ * memory-api's getJson (which parses JSON and would throw on the empty body). Every HTTP status
+ * maps to a discriminated WriteResult so the UI renders an honest state — never a fake success.
+ *
+ * ctx { actor:"user", authored_by:"human" } is FIXED server-side (http-routes.ts HTTP_CTX) — the
+ * client sends NO ctx. forget targets a FACT by its stable uuid (target_type:"fact" + fact_id);
+ * edit targets a MESSAGE by its id (MUTATION-AS-APPEND human correction — WriteGate.edit). See the
+ * plan's "## Reality check" §2 for why edit is message-scoped, not fact-scoped.
+ */
+import type { MemoryApiDeps } from "./memory-api.js";
+
+export type WriteResult =
+  | { kind: "ok" }            // 204 No Content — the mutation landed
+  | { kind: "unauthorized" }  // 401 — token rejected (locked)
+  | { kind: "stale" }         // 404 target_not_found — target gone; a refresh reconciles the view
+  | { kind: "bad_request" }   // 400 bad_body / bad_target_shape — client contract bug; never fake success
+  | { kind: "unreachable" };  // 5xx / network error / timeout — daemon down
+
+async function post(deps: MemoryApiDeps, path: string, body: unknown): Promise<WriteResult> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), deps.timeoutMs ?? 4000);
+  try {
+    const res = await deps.fetchFn(`${deps.baseUrl}${path}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${deps.token}`, // ADR-0013 — header only
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+    if (res.status === 204) return { kind: "ok" };
+    if (res.status === 401) return { kind: "unauthorized" };
+    if (res.status === 404) return { kind: "stale" };
+    if (res.status === 400) return { kind: "bad_request" };
+    return { kind: "unreachable" }; // 5xx or any other unexpected status
+  } catch {
+    return { kind: "unreachable" }; // network failure / abort
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Forget a distilled fact — durable "release the reference" (ADR-0015). Keys on the fact's
+ *  stable uuid; the daemon deletes exactly that row and never scrubs the source messages. */
+export function forgetFact(deps: MemoryApiDeps, factId: string): Promise<WriteResult> {
+  return post(deps, "/memory/forget", { target_type: "fact", fact_id: factId, reason: "hatch-forget" });
+}
+
+/** Edit a MESSAGE — MUTATION-AS-APPEND human correction (WriteGate.edit; ADR-0012 5e). The daemon
+ *  fixes authored_by:"human" server-side; the correction wins in the archive view and cannot be
+ *  machine-clobbered. `messageId` is a messages.id (a 404 means the message is gone → stale). */
+export function editMessage(deps: MemoryApiDeps, messageId: string, replacement: string): Promise<WriteResult> {
+  return post(deps, "/memory/edit", { target: messageId, replacement, reason: "hatch-edit" });
+}
+```
+
+- [ ] **Step 1.4 — Run; verify green.** Run: `bun test apps/overlay/src/memory/memory-write.test.ts`. Expected: PASS.
+
+- [ ] **Step 1.5 — Commit.**
+```bash
+git add apps/overlay/src/memory/memory-write.ts apps/overlay/src/memory/memory-write.test.ts
+git commit -m "feat(overlay): token-gated memory-write POST helper (forget-fact + edit-message → honest WriteResult)
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
+### Step 2 — Action DOM builders (`actions.ts`) + render.ts wiring + tests
+
+**Files:** Create `apps/overlay/src/memory/actions.ts`, `apps/overlay/src/memory/actions.test.ts`; Modify `apps/overlay/src/memory/render.ts`, `apps/overlay/src/memory/render.test.ts`, `apps/overlay/tsconfig.memory-dom-tests.json`, `tsconfig.json`.
+
+**Interfaces:**
+- Produces: `buildForgetControl(onConfirm: () => void): HTMLButtonElement`; `buildEditControl(current: string, onSave: (newText: string) => void): HTMLButtonElement`; `interface MessageActions { onEdit?: (messageId: string, newText: string) => void; editedIds?: ReadonlySet<string> }`; `interface FactActions { onForget?: (factId: string) => void }`; widened `renderMessages(el, messages, actions?: MessageActions)` and `renderFacts(el, facts, onOpenThread, actions?: FactActions)`.
+- Consumes: nothing new at runtime (pure DOM + callbacks).
+
+- [ ] **Step 2.1 — Write the failing `actions.test.ts`.** `apps/overlay/src/memory/actions.test.ts`:
+```ts
+/**
+ * actions — DOM builders for forget-confirm + inline-edit. happy-dom via the root bunfig.toml
+ * preload (same as render/controller tests). XSS: textContent/createElement only.
+ */
+import { test, expect } from "bun:test";
+import { buildForgetControl, buildEditControl } from "./actions.js";
+
+function host(child: HTMLElement): HTMLElement {
+  const d = document.createElement("div");
+  d.appendChild(child);
+  document.body.appendChild(d);
+  return d;
+}
+
+test("forget: first click ARMS (does not confirm), second click confirms exactly once", () => {
+  let confirmed = 0;
+  const btn = buildForgetControl(() => { confirmed += 1; });
+  host(btn);
+  btn.click();
+  expect(confirmed).toBe(0); // armed, not fired
+  expect(btn.textContent).toContain("Release the reference");
+  btn.click();
+  expect(confirmed).toBe(1); // fired on confirm
+  expect(btn.disabled).toBe(true); // locked after confirm — no double-fire
+});
+
+test("edit: opens a textarea seeded with current text; Save emits the edited text", () => {
+  let saved: string | null = null;
+  const btn = buildEditControl("old", (t) => { saved = t; });
+  const parent = host(btn);
+  btn.click();
+  const ta = parent.querySelector("textarea")!;
+  expect(ta.value).toBe("old");
+  ta.value = "corrected";
+  parent.querySelector<HTMLButtonElement>(".act-save")!.click();
+  expect(saved).toBe("corrected");
+});
+
+test("edit: Cancel closes the editor and re-enables the Edit button", () => {
+  const btn = buildEditControl("old", () => { /* noop */ });
+  const parent = host(btn);
+  btn.click();
+  expect(btn.disabled).toBe(true);
+  const cancel = Array.from(parent.querySelectorAll("button")).find((b) => b.textContent === "Cancel")!;
+  cancel.click();
+  expect(parent.querySelector(".inline-editor")).toBeNull();
+  expect(btn.disabled).toBe(false);
+});
+
+test("edit: does not open a second editor on repeated Edit clicks", () => {
+  const btn = buildEditControl("old", () => { /* noop */ });
+  const parent = host(btn);
+  btn.click();
+  btn.click(); // ignored — editor already open (and btn is disabled)
+  expect(parent.querySelectorAll(".inline-editor").length).toBe(1);
+});
+```
+
+- [ ] **Step 2.2 — Register `actions.test.ts` for type-checking (escaped-test discipline).**
+  In `apps/overlay/tsconfig.memory-dom-tests.json`, add to `include`:
+```json
+  "include": ["src/memory/render.test.ts", "src/memory/controller.test.ts", "src/memory/actions.test.ts"]
+```
+  In root `tsconfig.json`, add to `exclude`:
+```json
+  "exclude": ["apps/overlay/src/memory/render.test.ts", "apps/overlay/src/memory/controller.test.ts", "apps/overlay/src/memory/actions.test.ts"]
+```
+  (`memory-write.test.ts` is NON-DOM → intentionally left in the root glob, NOT added anywhere here.)
+
+- [ ] **Step 2.3 — Run; verify it fails.** Run: `bun test apps/overlay/src/memory/actions.test.ts`. Expected: FAIL (module missing).
+
+- [ ] **Step 2.4 — Implement `apps/overlay/src/memory/actions.ts`:**
+```ts
+/**
+ * actions (chunk-03, memory-transparency-ui) — DOM builders for the ACT affordances.
+ * XSS discipline (chunk-02 / history.html / text-reply.ts): textContent + createElement ONLY,
+ * NEVER innerHTML. No fetch here (memory-write.ts) — these builders only emit DOM + callbacks.
+ *
+ * Forget = "release the reference": a two-step confirm (arm → confirm). The copy frames it as the
+ * agent releasing its reference to the fact — the source conversation is UNTOUCHED (ADR-0015
+ * durable fact-delete; decision 5 "also forget sources" is SUPERSEDED — no such option here).
+ * Durable by design; no undo window — the confirm IS the safety.
+ * Edit = an inline textarea over a MESSAGE → Save/Cancel (MUTATION-AS-APPEND human correction).
+ */
+
+const RELEASE_LABEL = "Release the reference? (the agent forgets this — your conversation stays)";
+
+/** Two-step forget button. First click arms (danger style + release-the-reference copy); the
+ *  second click disables the button and calls onConfirm(). Returns the button element. */
+export function buildForgetControl(onConfirm: () => void): HTMLButtonElement {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "act-btn act-forget";
+  btn.textContent = "Forget fact";
+  btn.addEventListener("click", () => {
+    if (btn.dataset.armed !== "1") {
+      btn.dataset.armed = "1";
+      btn.classList.add("armed");
+      btn.textContent = RELEASE_LABEL;
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = "Releasing…";
+    onConfirm();
+  });
+  return btn;
+}
+
+/** Inline edit control for a message. The "Edit" button swaps in a textarea + Save/Cancel. Save
+ *  calls onSave(newText) (the caller re-fetches → the fresh render replaces the editor). Cancel
+ *  closes the editor. Returns the "Edit" button element. */
+export function buildEditControl(current: string, onSave: (newText: string) => void): HTMLButtonElement {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "act-btn act-edit";
+  btn.textContent = "Edit";
+  btn.addEventListener("click", () => {
+    const host = btn.parentElement;
+    if (host === null || host.querySelector(".inline-editor") !== null) return; // already open
+    btn.disabled = true;
+
+    const editor = document.createElement("div");
+    editor.className = "inline-editor";
+    const ta = document.createElement("textarea");
+    ta.value = current;
+    ta.rows = 3;
+    const save = document.createElement("button");
+    save.type = "button";
+    save.className = "act-btn act-save";
+    save.textContent = "Save";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "act-btn act-cancel";
+    cancel.textContent = "Cancel";
+
+    const close = (): void => { editor.remove(); btn.disabled = false; };
+    cancel.addEventListener("click", close);
+    save.addEventListener("click", () => {
+      save.disabled = true;
+      cancel.disabled = true;
+      save.textContent = "Saving…";
+      onSave(ta.value);
+    });
+
+    editor.appendChild(ta);
+    editor.appendChild(save);
+    editor.appendChild(cancel);
+    host.appendChild(editor);
+  });
+  return btn;
+}
+```
+
+- [ ] **Step 2.5 — Run; verify green.** Run: `bun test apps/overlay/src/memory/actions.test.ts`. Expected: PASS.
+
+- [ ] **Step 2.6 — Wire the controls into `render.ts` (additive optional params).** Add the imports + interfaces at the top of `apps/overlay/src/memory/render.ts` (after the existing imports):
+```ts
+import { buildForgetControl, buildEditControl } from "./actions.js";
+
+/** chunk-03 (ACT): optional per-row actions. Absent → chunk-02 read-only behavior (existing callers). */
+export interface MessageActions {
+  /** Attach an inline Edit control per message → POST /memory/edit (WriteGate.edit human correction). */
+  onEdit?: (messageId: string, newText: string) => void;
+  /** Message ids edited THIS session → shown with an "edited by you" tag. The wire carries no
+   *  persistent per-message correction flag (see plan "## Reality check" §2), so this is an honest
+   *  optimistic marker; the corrected TEXT itself is persistent via readThreadArchive COALESCE. */
+  editedIds?: ReadonlySet<string>;
+}
+export interface FactActions {
+  /** Attach a "release the reference" Forget control per fact → POST /memory/forget (durable delete). */
+  onForget?: (factId: string) => void;
+}
+```
+  Then REPLACE `renderMessages` and `renderFacts` with these (identical to chunk-02 except the appended action blocks):
+```ts
+export function renderMessages(el: HTMLElement, messages: ThreadMessage[], actions?: MessageActions): void {
+  clear(el);
+  if (messages.length === 0) { renderState(el, "No messages."); return; }
+  messages.forEach((m, i) => {
+    const row = document.createElement("div");
+    row.className = `message-row role-${m.role || "unknown"}`;
+    const role = document.createElement("div");
+    role.className = "message-role";
+    role.textContent = `${m.role || "?"} · turn ${i + 1}`;
+    if (actions?.editedIds?.has(m.id)) {
+      const tag = document.createElement("span");
+      tag.className = "edited-tag";
+      tag.textContent = " · edited by you";
+      role.appendChild(tag);
+    }
+    const content = document.createElement("div");
+    content.className = "message-content";
+    content.textContent = m.content || ""; // may be "[forgotten]" for a tombstoned message
+    row.appendChild(role);
+    row.appendChild(content);
+    if (actions?.onEdit) {
+      const onEdit = actions.onEdit;
+      row.appendChild(buildEditControl(m.content || "", (newText) => onEdit(m.id, newText)));
+    }
+    el.appendChild(row);
+  });
+}
+
+export function renderFacts(
+  el: HTMLElement,
+  facts: DistilledFactView[],
+  onOpenThread: (id: string) => void,
+  actions?: FactActions,
+): void {
+  clear(el);
+  if (facts.length === 0) { renderState(el, "No distilled facts."); return; }
+  for (const f of facts) {
+    const row = document.createElement("div");
+    row.className = "fact-row";
+
+    const factEl = document.createElement("div");
+    factEl.textContent = f.fact || "";
+    row.appendChild(factEl);
+
+    // Provenance (ADR-0012 5c) — thread:<id> is a jump-link; else plain text.
+    const prov = document.createElement("div");
+    prov.className = "fact-meta";
+    const label = document.createElement("span");
+    label.textContent = "from: ";
+    prov.appendChild(label);
+    const ref = parseProvenance(f.provenance || "");
+    if (ref.kind === "thread") {
+      const link = document.createElement("a");
+      link.className = "prov-link";
+      link.href = "#";
+      link.textContent = f.provenance;
+      link.addEventListener("click", (e) => { e.preventDefault(); onOpenThread(ref.threadId); });
+      prov.appendChild(link);
+    } else {
+      const txt = document.createElement("span");
+      txt.textContent = ref.raw || "(unknown)";
+      prov.appendChild(txt);
+    }
+    const extra = document.createElement("span");
+    extra.textContent = ` · scope: ${f.scope} · ${f.authored_by}`;
+    prov.appendChild(extra);
+    row.appendChild(prov);
+
+    // Expiry / confidence — SHOWN ONLY WHEN NON-DEFAULT (spec ruling 2026-07-02).
+    if (shouldShowExpiry(f)) {
+      const exp = document.createElement("div");
+      exp.className = "fact-meta fact-expiry";
+      exp.textContent = `expires: ${formatTs(f.expiry)}`;
+      row.appendChild(exp);
+    }
+    if (shouldShowConfidence(f)) {
+      const conf = document.createElement("div");
+      conf.className = "fact-meta fact-confidence";
+      conf.textContent = `confidence: ${f.confidence}`;
+      row.appendChild(conf);
+    }
+
+    // chunk-03 (ACT): "release the reference" forget control (ADR-0015 durable fact-delete).
+    if (actions?.onForget) {
+      const onForget = actions.onForget;
+      row.appendChild(buildForgetControl(() => onForget(f.id)));
+    }
+    el.appendChild(row);
+  }
+}
+```
+
+- [ ] **Step 2.7 — Append action-wiring cases to `render.test.ts`** (already in the DOM tsconfig):
+```ts
+import { renderMessages, renderFacts } from "./render.js"; // if not already imported at top
+
+test("chunk-03: renderFacts with onForget appends a forget control; arm→confirm passes the fact id", () => {
+  const el = document.createElement("div");
+  let forgot: string | null = null;
+  renderFacts(
+    el,
+    [{ id: "F1", fact: "x", provenance: "thread:t", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" }],
+    () => { /* onOpenThread */ },
+    { onForget: (id) => { forgot = id; } },
+  );
+  const btn = el.querySelector<HTMLButtonElement>(".act-forget")!;
+  btn.click(); // arm
+  expect(forgot).toBeNull();
+  btn.click(); // confirm
+  expect(forgot).toBe("F1");
+});
+
+test("chunk-03: renderMessages with onEdit appends an edit control; editedIds shows the tag", () => {
+  const el = document.createElement("div");
+  renderMessages(el, [{ id: "M1", role: "user", content: "hi" }], { onEdit: () => { /* noop */ }, editedIds: new Set(["M1"]) });
+  expect(el.querySelector(".act-edit")).not.toBeNull();
+  expect(el.textContent).toContain("edited by you");
+});
+
+test("chunk-03: no actions param → read-only rows (chunk-02 behavior preserved)", () => {
+  const el = document.createElement("div");
+  renderMessages(el, [{ id: "M1", role: "user", content: "hi" }]);
+  expect(el.querySelector(".act-edit")).toBeNull();
+});
+```
+
+- [ ] **Step 2.8 — Run; verify green.** Run: `bun test apps/overlay/src/memory/render.test.ts apps/overlay/src/memory/actions.test.ts`. Expected: PASS.
+
+- [ ] **Step 2.9 — Commit.**
+```bash
+git add apps/overlay/src/memory/actions.ts apps/overlay/src/memory/actions.test.ts apps/overlay/src/memory/render.ts apps/overlay/src/memory/render.test.ts apps/overlay/tsconfig.memory-dom-tests.json tsconfig.json
+git commit -m "feat(overlay): memory-window ACT DOM — release-the-reference forget + inline message edit controls
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
+### Step 3 — Controller wiring + honest states + CSS + verification
+
+**Files:** Modify `apps/overlay/src/memory/controller.ts`, `apps/overlay/src/memory/controller.test.ts`, `apps/overlay/memory.html`.
+
+**Interfaces:**
+- Consumes: `forgetFact`, `editMessage`, `type WriteResult` from `./memory-write.js`; the widened `renderMessages`/`renderFacts`.
+- Produces: no signature change to `MemoryController` (`{ start, onLivenessState }`); internal `handleWriteResult`, `forgetAction`, `editAction`, session `editedIds`.
+
+- [ ] **Step 3.1 — Wire actions into `controller.ts`.** Update `apps/overlay/src/memory/controller.ts`: extend the import, add the `editedIds` set + the action handlers, and pass the callbacks in `loadThread`. Change the import line and add to `createMemoryController`:
+```ts
+import { forgetFact, editMessage, type WriteResult } from "./memory-write.js";
+```
+  Inside `createMemoryController`, after `let lastLiveness: ShellState | undefined;`, add:
+```ts
+  // chunk-03 (ACT): messages the user edited THIS session → an "edited by you" tag on re-render.
+  // The wire has no persistent per-message correction flag (plan "## Reality check" §2); the
+  // corrected TEXT is persistent via the daemon's readThreadArchive COALESCE.
+  const editedIds = new Set<string>();
+```
+  REPLACE `loadThread` with the version that passes the action callbacks:
+```ts
+  async function loadThread(threadId: string): Promise<void> {
+    renderState(els.messagesEl, "Loading…");
+    renderState(els.factsEl, "Loading…");
+    renderState(els.eventsEl, "Loading…");
+    const r = await fetchThread(deps.api, threadId);
+    if (r.kind === "unauthorized") { renderState(els.messagesEl, LOCKED); renderState(els.factsEl, LOCKED); renderState(els.eventsEl, LOCKED); return; }
+    if (r.kind === "unreachable") { renderState(els.messagesEl, DOWN); renderState(els.factsEl, DOWN); renderState(els.eventsEl, DOWN); return; }
+    renderMessages(els.messagesEl, r.data.messages ?? [], {
+      onEdit: (messageId, newText) => void editAction(messageId, newText),
+      editedIds,
+    });
+    renderFacts(els.factsEl, r.data.distilledFacts ?? [], openThread, {
+      onForget: (factId) => void forgetAction(factId),
+    });
+    renderEvents(els.eventsEl, r.data.distillationEvents ?? []);
+  }
+```
+  Add these functions (after `applyDownState`, before `onLivenessState`):
+```ts
+  /** Map a write result to an honest state — NEVER a fake success (DoD box 3). */
+  function handleWriteResult(r: WriteResult): void {
+    switch (r.kind) {
+      case "ok":            // the mutation landed → re-fetch so the change is visible
+      case "stale":         // target already gone → a refresh reconciles the view honestly
+        refreshCurrentView(); return;
+      case "unauthorized":  applyDownState("unauthorized"); return; // 🔒 LOCKED
+      case "unreachable":   applyDownState("unreachable"); return;  // DOWN — no fake success
+      case "bad_request":   renderActionError(); return;            // client contract bug (unexpected)
+    }
+  }
+
+  /** Honest inline error for a 400 (should not happen with correct bodies) — never fake success. */
+  function renderActionError(): void {
+    const msg = "Action rejected by the engine — please refresh and retry.";
+    if (currentView.kind === "detail") {
+      renderState(els.messagesEl, msg);
+      renderState(els.factsEl, msg);
+      renderState(els.eventsEl, msg);
+    } else {
+      renderState(els.threadListEl, msg, "li");
+    }
+  }
+
+  async function forgetAction(factId: string): Promise<void> {
+    handleWriteResult(await forgetFact(deps.api, factId));
+  }
+
+  async function editAction(messageId: string, newText: string): Promise<void> {
+    const r = await editMessage(deps.api, messageId, newText);
+    if (r.kind === "ok") editedIds.add(messageId); // mark THIS session's edit for the tag
+    handleWriteResult(r);
+  }
+```
+  (`refreshCurrentView`, `applyDownState`, `currentView`, `LOCKED`, `DOWN` all already exist from the Demo-1 fix.)
+
+- [ ] **Step 3.2 — Append action-outcome cases to `controller.test.ts`** (already in the DOM tsconfig). Uses a POST-aware fake:
+```ts
+test("chunk-03 forget: 204 → re-fetch, fact gone; unreachable → DOWN (no fake success)", async () => {
+  let mode: "up" | "down" = "up";
+  const facts = [{ id: "F1", fact: "x", provenance: "thread:t", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" }];
+  const fetchFn = (url: string, init?: RequestInit): Promise<Response> => {
+    if (mode === "down") return Promise.reject(new Error("refused"));
+    if (init?.method === "POST") return Promise.resolve(new Response(null, { status: 204 }));
+    const body = url.includes("/memory/thread/")
+      ? { messages: [], distilledFacts: facts.slice(), distillationEvents: [] }
+      : { threads: [{ thread_id: "T1", title: "One", last_active_at: 1, status: "active" }] };
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+  };
+  const els = makeEls();
+  const c = createMemoryController({ api: { fetchFn, baseUrl: "http://127.0.0.1:7777", token: "TOK" }, els });
+  c.start(); await flush();
+  els.threadListEl.querySelector<HTMLElement>(".thread-list-item")!.click(); await flush();
+  expect(els.factsEl.querySelector(".fact-row")).not.toBeNull();
+
+  const forgetBtn = els.factsEl.querySelector<HTMLButtonElement>(".act-forget")!;
+  forgetBtn.click();          // arm
+  facts.length = 0;           // server now returns 0 facts on the re-fetch
+  forgetBtn.click(); await flush(); // confirm → POST 204 → re-fetch
+  expect(els.factsEl.textContent).toContain("No distilled facts"); // gone on reload — real, not faked
+
+  // now daemon-down while acting
+  mode = "up"; facts.push({ id: "F1", fact: "x", provenance: "thread:t", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" });
+  els.threadListEl.querySelector<HTMLElement>(".thread-list-item")?.click(); // no-op (in detail) — reopen path below
+});
+
+test("chunk-03 forget: POST rejected (daemon down) → DOWN, never a fake success", async () => {
+  let postMode: "ok" | "down" = "down";
+  const facts = [{ id: "F1", fact: "x", provenance: "thread:t", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" }];
+  const fetchFn = (url: string, init?: RequestInit): Promise<Response> => {
+    if (init?.method === "POST") {
+      if (postMode === "down") return Promise.reject(new Error("refused"));
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    const body = url.includes("/memory/thread/")
+      ? { messages: [], distilledFacts: facts.slice(), distillationEvents: [] }
+      : { threads: [{ thread_id: "T1", title: "One", last_active_at: 1, status: "active" }] };
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+  };
+  const els = makeEls();
+  const c = createMemoryController({ api: { fetchFn, baseUrl: "http://127.0.0.1:7777", token: "TOK" }, els });
+  c.start(); await flush();
+  els.threadListEl.querySelector<HTMLElement>(".thread-list-item")!.click(); await flush();
+  const btn = els.factsEl.querySelector<HTMLButtonElement>(".act-forget")!;
+  btn.click(); btn.click(); await flush(); // arm + confirm → POST rejected
+  expect(els.factsEl.textContent).toContain("Daemon unreachable"); // honest, no "gone"/success
+});
+
+test("chunk-03 edit: 204 → re-fetch, corrected text shown + 'edited by you' tag", async () => {
+  let content = "hi";
+  const fetchFn = (url: string, init?: RequestInit): Promise<Response> => {
+    if (init?.method === "POST") { content = "corrected"; return Promise.resolve(new Response(null, { status: 204 })); }
+    const body = url.includes("/memory/thread/")
+      ? { messages: [{ id: "M1", role: "user", content }], distilledFacts: [], distillationEvents: [] }
+      : { threads: [{ thread_id: "T1", title: "One", last_active_at: 1, status: "active" }] };
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+  };
+  const els = makeEls();
+  const c = createMemoryController({ api: { fetchFn, baseUrl: "http://127.0.0.1:7777", token: "TOK" }, els });
+  c.start(); await flush();
+  els.threadListEl.querySelector<HTMLElement>(".thread-list-item")!.click(); await flush();
+  els.messagesEl.querySelector<HTMLButtonElement>(".act-edit")!.click(); // open editor
+  const ta = els.messagesEl.querySelector("textarea")!;
+  ta.value = "corrected";
+  els.messagesEl.querySelector<HTMLButtonElement>(".act-save")!.click(); await flush(); // POST → re-fetch
+  expect(els.messagesEl.textContent).toContain("corrected"); // new text visible on reload
+  expect(els.messagesEl.textContent).toContain("edited by you"); // session marker
+});
+```
+
+- [ ] **Step 3.3 — Run; verify green.** Run: `bun test apps/overlay/src/memory/controller.test.ts`. Expected: PASS (chunk-02/Demo-1 cases + the new chunk-03 cases).
+
+- [ ] **Step 3.4 — Add CSS to `apps/overlay/memory.html`** (inside the existing `<style>`, after the `.event-date` rule):
+```css
+      .act-btn { font-size: 12px; margin-top: 6px; margin-right: 6px; padding: 2px 8px; border: 1px solid #c8c8c8; border-radius: 4px; background: #fff; cursor: pointer; color: #333; }
+      .act-btn:hover { background: #f0f0f0; }
+      .act-btn[disabled] { color: #aaa; border-color: #e0e0e0; cursor: default; background: #fff; }
+      .act-forget { border-color: #e0a0a0; color: #b04040; }
+      .act-forget.armed { background: #b02020; border-color: #b02020; color: #fff; }
+      .act-edit { border-color: #a0b8e0; color: #2060b0; }
+      .inline-editor { margin-top: 6px; }
+      .inline-editor textarea { width: 100%; font: inherit; padding: 6px; border: 1px solid #c8c8c8; border-radius: 4px; resize: vertical; }
+      .edited-tag { color: #2060b0; font-weight: 600; }
+```
+
+- [ ] **Step 3.5 — Verify all mechanical gates + coverage discipline + frozen surfaces.** Run:
+  - `bun test` (whole suite — Expected: all green).
+  - `bun run lint:strict` (`--max-warnings=0`).
+  - `bun run typecheck` (root) AND `cd apps/overlay && bun run typecheck` (runs `tsconfig.json` + `tsconfig.memory-dom-tests.json`).
+  - **Escaped-test probe (each new test type-checked EXACTLY once):**
+    `tsc --noEmit -p tsconfig.json --listFiles | grep -c 'memory-write.test.ts'` → `1`;
+    `tsc --noEmit -p tsconfig.json --listFiles | grep -c 'actions.test.ts'` → `0` (excluded from root);
+    `cd apps/overlay && tsc --noEmit -p tsconfig.memory-dom-tests.json --listFiles | grep -c 'actions.test.ts'` → `1`.
+  - **Frozen surfaces:** `git diff --stat packages/protocol/` → no output; `git diff --stat packages/daemon/ apps/overlay/src/memory-liveness.ts apps/overlay/src/ws/ apps/overlay/src-tauri/` → **no output** (daemon, liveness poll, agent connection, and Rust shell all byte-unchanged).
+
+- [ ] **Step 3.6 — Behavioral: forget durability (real-I/O, MUST be executed).** Run the demo harness against the REAL daemon:
+  `bun run packages/daemon/scripts/memory-demo-harness.ts --mode=stub` → expect STEP 5 `C: GREEN — exactly 1 fact deleted (targeted only), others intact` and STEP 6 recall-after-forget. Then, if a key is available: `bun run packages/daemon/scripts/memory-demo-harness.ts --mode=real`. Paste the STEP 5/6 stdout into the PR body (Strike-5: evidence only when executed). This proves the `/memory/forget` route + durability that the UI's forget button calls; *the UI end-to-end forget still `requires runtime demo to confirm`.*
+
+- [ ] **Step 3.7 — Behavioral: edit 5e probe (real-daemon, MUST be executed).** The harness does NOT cover edit. Run this against a running daemon (`MEMORY_DEBUG=1`):
+```bash
+# 1) token + a thread with a user message id (from the running daemon)
+TOKEN=$(cat "$HOME/.agentic-engine/auth-token")
+TID=$(curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7777/memory/threads | bun -e 'const j=JSON.parse(await Bun.stdin.text()); console.log(j.threads[0].thread_id)')
+MID=$(curl -s -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:7777/memory/thread/$TID" | bun -e 'const j=JSON.parse(await Bun.stdin.text()); console.log(j.messages.find(m=>m.role==="user").id)')
+# 2) edit the message (human correction)
+curl -s -o /dev/null -w "%{http_code}\n" -X POST http://127.0.0.1:7777/memory/edit \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d "{\"target\":\"$MID\",\"replacement\":\"CORRECTED BY HUMAN\",\"reason\":\"edit-5e-probe\"}"   # expect 204
+# 3) view → the corrected text surfaces (readThreadArchive COALESCE — human wins)
+curl -s -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:7777/memory/thread/$TID" | grep -q "CORRECTED BY HUMAN" && echo "5e: corrected text in view ✓"
+# 4) drive a re-distill on that thread (a WS turn + close) with MEMORY_DEBUG=1 and confirm the
+#    distiller READS the corrected text and does NOT clobber the human correction.
+```
+  Mark the outcome *"requires runtime demo to confirm"* — it is Lior's live §6.1 sign-off, not a code-reading claim.
+
+- [ ] **Step 3.8 — Commit.**
+```bash
+git add apps/overlay/src/memory/controller.ts apps/overlay/src/memory/controller.test.ts apps/overlay/memory.html
+git commit -m "feat(overlay): wire memory-window ACT — forget/edit actions → honest WriteResult states, session edited-tag
+
+Forget = release-the-reference (durable fact-delete, sources untouched, ADR-0015); edit =
+MUTATION-AS-APPEND human correction on a message (ADR-0012 5e). ok/stale → re-fetch the current
+view; unauthorized → LOCKED; unreachable → DOWN (no fake success); protocol + daemon byte-unchanged.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
+## Verification (chunk-03 DoD mapping)
+
+The chunk's five DoD boxes (`03-memory-window-edit-forget.md` §Done criteria):
+
+**Mechanical (provable by the worker now):**
+- **DoD box 4 — `bun test` / `lint:strict` / typecheck green:** Steps 1.4, 2.5, 2.8, 3.3, 3.5. New coverage: status→WriteResult mapping + token/body discipline (`memory-write.test.ts`), forget-confirm + inline-edit DOM (`actions.test.ts`), render action wiring + edited-tag + read-only-default (`render.test.ts`), controller write-outcome handling incl. no-fake-success on down (`controller.test.ts`). Escaped-test probe in Step 3.5.
+- **DoD box 5 — `git diff packages/protocol/` empty:** Step 3.5 (`git diff --stat packages/protocol/` → no output). No protocol touch anywhere.
+
+**Behavioral — ALL "requires runtime demo to confirm" (PIPELINE §6.1; a probe is evidence only when executed). This chunk owns spec demo-checklist items 3+4; final joint sign-off rides chunk-04:**
+- **[requires runtime demo to confirm] DoD box 1 (forget):** From the memory window, forget a fact → the "release the reference" confirm copy shows → on confirm the fact is durably removed (gone from the view AND from a NEW thread's injected context) → the source thread's messages remain intact and viewable. *Real-I/O route+durability proof = the demo harness STEP 5/6 (Step 3.6, executed); UI end-to-end = Lior's live macOS demo.*
+- **[requires runtime demo to confirm] DoD box 2 (edit):** Edit a message → the correction lands (`authored_by:"human"`, fixed server-side) → the view shows the new text (readThreadArchive COALESCE) with the session "edited by you" tag → a subsequent distillation does not overwrite it (5e). *Verified via the Step 3.7 real-daemon probe + MEMORY_DEBUG; UI end-to-end = Lior's live demo.*
+- **[requires runtime demo to confirm] DoD box 3 (honest degrade):** Kill the daemon mid-session → a forget/edit degrades to the honest unreachable state (DOWN), no action reports fake success. *Mapping unit-tested in `controller.test.ts` (Step 3.2); end-to-end = Lior's live demo.*
+
+Intermediate gates use real I/O across the daemon boundary (the harness, Step 3.6; the real-daemon edit probe, Step 3.7), per the standing Strike-4/5 rule — no mocks across the daemon boundary for the behavioral proof.
+
+---
+
+## ADR worthy: no
+
+Rationale:
+- **No new boundary, no new decision.** This consumes already-decided, already-shipped contracts: token-gated writes (ADR-0013 Option B + read-token rider), intent-based fact-forget as durable delete (ADR-0015 — the v2 model, decision 5 SUPERSEDED, sources untouched), view/edit/forget hatch + 5e never-clobber-human (ADR-0012 5a/5e), engine-owned native surface (ADR-0005), tray-opened window (ADR-0006). No new route, no new dependency, no auth change.
+- **`@agentic/protocol` + `packages/daemon/**` byte-unchanged** — the forget/edit fields are HTTP-body only (ADR-0015 relationship note), not wire-envelope variants. Not a freeze gate.
+
+**Reviewer escalation clause (mirrors chunk-01/-02):** if the reviewer judges the message-scoped-edit reconciliation (Reality check §2) or the session-local edited-tag to warrant recording, that is a **note/rider on ADR-0012**, not a new ADR — escalate to `adr-curator` before merge. (Not expected.)
+
+---
+
+## Risks & flags (chunk-03)
+
+- **FLAG (loud) — `/memory/edit` edits a MESSAGE, not a distilled fact.** The chunk brief and spec say "edit a fact"; the frozen backend (`hatch.edit → WriteGate.edit(messageId)`) and the reference impl (`history.html` Edit-on-messages) both edit a MESSAGE via a MUTATION-AS-APPEND human correction — there is NO route to edit a `distilled_facts` row or author a human fact. This plan builds Edit on message rows (the spec's own MUTATION-AS-APPEND wording). **If Lior actually meant fact-level editing, that is a NEW daemon path → freeze gate → separate feature, NOT this chunk** — stop and escalate before building it.
+- **FLAG — "human-authored marker" on an edited message is session-local, not persistent.** The `ThreadMessage` wire (`{id,role,content}`) carries no per-message correction flag. The corrected *text* is persistent (COALESCE), but the "edited by you" badge is a this-session optimistic marker. A persistent badge would need an additive daemon read field (like chunk-02's `status`) — deliberately NOT added (keeps "NO daemon changes"). If Lior wants a durable "human-edited" badge, that is a small additive daemon read-gap to weigh separately.
+- **Facts render `authored_by` (chunk-02 already shows it), but no route makes a fact human-authored** — so facts show `machine` in practice; editing a message does not flip any fact to `human`. This is expected given the frozen surface.
+- **Success is `204 No Content` (no body) — do NOT reuse chunk-02's `getJson`** (it calls `res.json()` and would throw on an empty body). `memory-write.ts` handles 204 explicitly.
+- **Edit control attaches to every message row (history.html parity), including tombstoned `[forgotten]` rows.** Editing a redacted message would append a human correction re-introducing content — an intentional human action, but note it; if undesired, gate `onEdit` off rows whose content equals the redaction marker (a follow-up, not required for parity).
+- **XSS discipline is load-bearing** — all user-entered edit text + API strings via `textContent`/`createElement`; ZERO `innerHTML`. A regression here is a security defect. Reviewer must confirm no `innerHTML` in `actions.ts`/`render.ts`.
+- **NOT a freeze gate:** nothing touches `packages/protocol/**` or `packages/daemon/**`; verified in Step 3.5.
+
+## Status: Done

@@ -184,3 +184,108 @@ test("unauthorized branch: applyDownState renders the LOCKED message and unautho
   await flush();
   expect(els.threadListEl.querySelector(".thread-list-item")).not.toBeNull();
 });
+
+test("chunk-03 forget: 204 → re-fetch, fact gone; unreachable → DOWN (no fake success)", async () => {
+  const facts = [{ id: "F1", fact: "x", provenance: "thread:t", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" }];
+  const fetchFn = (url: string, init?: RequestInit): Promise<Response> => {
+    if (init?.method === "POST") return Promise.resolve(new Response(null, { status: 204 }));
+    const body = url.includes("/memory/thread/")
+      ? { messages: [], distilledFacts: facts.slice(), distillationEvents: [] }
+      : { threads: [{ thread_id: "T1", title: "One", last_active_at: 1, status: "active" }] };
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+  };
+  const els = makeEls();
+  const c = createMemoryController({ api: { fetchFn, baseUrl: "http://127.0.0.1:7777", token: "TOK" }, els });
+  c.start(); await flush();
+  els.threadListEl.querySelector<HTMLElement>(".thread-list-item")!.click(); await flush();
+  expect(els.factsEl.querySelector(".fact-row")).not.toBeNull();
+
+  const forgetBtn = els.factsEl.querySelector<HTMLButtonElement>(".act-forget")!;
+  forgetBtn.click();          // arm
+  facts.length = 0;           // server now returns 0 facts on the re-fetch
+  forgetBtn.click(); await flush(); // confirm → POST 204 → re-fetch
+  expect(els.factsEl.textContent).toContain("No distilled facts"); // gone on reload — real, not faked
+});
+
+test("chunk-03 forget: POST rejected (daemon down) → DOWN, never a fake success", async () => {
+  const postMode: "ok" | "down" = "down";
+  const facts = [{ id: "F1", fact: "x", provenance: "thread:t", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" }];
+  const fetchFn = (url: string, init?: RequestInit): Promise<Response> => {
+    if (init?.method === "POST") {
+      if (postMode === "down") return Promise.reject(new Error("refused"));
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    const body = url.includes("/memory/thread/")
+      ? { messages: [], distilledFacts: facts.slice(), distillationEvents: [] }
+      : { threads: [{ thread_id: "T1", title: "One", last_active_at: 1, status: "active" }] };
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+  };
+  const els = makeEls();
+  const c = createMemoryController({ api: { fetchFn, baseUrl: "http://127.0.0.1:7777", token: "TOK" }, els });
+  c.start(); await flush();
+  els.threadListEl.querySelector<HTMLElement>(".thread-list-item")!.click(); await flush();
+  const btn = els.factsEl.querySelector<HTMLButtonElement>(".act-forget")!;
+  btn.click(); btn.click(); await flush(); // arm + confirm → POST rejected
+  expect(els.factsEl.textContent).toContain("Daemon unreachable"); // honest, no "gone"/success
+});
+
+// Reviewer minor: a write-triggered applyDownState (POST unreachable/unauthorized) did NOT update
+// lastLiveness, desyncing it from the liveness poll. Repro: liveness last reported "connected", a
+// write fails -> content goes DOWN, then the NEXT "connected" poll sees prev===state==="connected"
+// -> de-duped as a repeat -> never calls refreshCurrentView() -> content is stuck on DOWN forever
+// even though the daemon is back up (exact banner/content contradiction Demo-1 fixed, now via the
+// write path instead of the liveness path). Fix: applyDownState sets lastLiveness = state too, so
+// a write-triggered down state re-arms the NEXT same-value "connected" poll as a real transition.
+test("chunk-03 write-path down-state re-couples liveness: a POST-triggered DOWN recovers on the next 'connected' poll (not stuck)", async () => {
+  let postShouldFail = true;
+  const facts = [{ id: "F1", fact: "x", provenance: "thread:t", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" }];
+  const fetchFn = (url: string, init?: RequestInit): Promise<Response> => {
+    if (init?.method === "POST") {
+      if (postShouldFail) return Promise.reject(new Error("refused"));
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    const body = url.includes("/memory/thread/")
+      ? { messages: [], distilledFacts: facts.slice(), distillationEvents: [] }
+      : { threads: [{ thread_id: "T1", title: "One", last_active_at: 1, status: "active" }] };
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+  };
+  const els = makeEls();
+  const c = createMemoryController({ api: { fetchFn, baseUrl: "http://127.0.0.1:7777", token: "TOK" }, els });
+  c.start(); await flush();
+  c.onLivenessState("connected"); // liveness baseline: banner says connected
+  els.threadListEl.querySelector<HTMLElement>(".thread-list-item")!.click(); await flush();
+  expect(els.factsEl.querySelector(".fact-row")).not.toBeNull();
+
+  const forgetBtn = els.factsEl.querySelector<HTMLButtonElement>(".act-forget")!;
+  forgetBtn.click(); forgetBtn.click(); await flush(); // arm + confirm → POST rejected → content DOWN
+  expect(els.factsEl.textContent).toContain("Daemon unreachable");
+
+  // Daemon is actually fine again; the NEXT poll reports the SAME "connected" value the banner
+  // already had before the write failure. Without the fix this is de-duped (prev === state) and
+  // the view stays stuck on "Daemon unreachable" forever. With the fix it is a real transition.
+  postShouldFail = false;
+  c.onLivenessState("connected");
+  await flush();
+  expect(els.factsEl.querySelector(".fact-row")).not.toBeNull(); // recovered — not stuck on DOWN
+});
+
+test("chunk-03 edit: 204 → re-fetch, corrected text shown + 'edited by you' tag", async () => {
+  let content = "hi";
+  const fetchFn = (url: string, init?: RequestInit): Promise<Response> => {
+    if (init?.method === "POST") { content = "corrected"; return Promise.resolve(new Response(null, { status: 204 })); }
+    const body = url.includes("/memory/thread/")
+      ? { messages: [{ id: "M1", role: "user", content }], distilledFacts: [], distillationEvents: [] }
+      : { threads: [{ thread_id: "T1", title: "One", last_active_at: 1, status: "active" }] };
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+  };
+  const els = makeEls();
+  const c = createMemoryController({ api: { fetchFn, baseUrl: "http://127.0.0.1:7777", token: "TOK" }, els });
+  c.start(); await flush();
+  els.threadListEl.querySelector<HTMLElement>(".thread-list-item")!.click(); await flush();
+  els.messagesEl.querySelector<HTMLButtonElement>(".act-edit")!.click(); // open editor
+  const ta = els.messagesEl.querySelector("textarea")!;
+  ta.value = "corrected";
+  els.messagesEl.querySelector<HTMLButtonElement>(".act-save")!.click(); await flush(); // POST → re-fetch
+  expect(els.messagesEl.textContent).toContain("corrected"); // new text visible on reload
+  expect(els.messagesEl.textContent).toContain("edited by you"); // session marker
+});

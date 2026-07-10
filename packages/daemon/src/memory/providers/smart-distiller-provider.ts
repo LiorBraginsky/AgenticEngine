@@ -574,7 +574,17 @@ export class SmartDistillerProvider implements MemoryProvider {
     // Phase 6: ONE LLM call (outside any tx — grill #6 seam)
     const client = this.getClient();
 
-    const userContent = `NEW TAIL:\n${tailText}${poolSection}`;
+    // D6c soft layer (spec §3.6, 2c chunk-01): nudge the LLM not to re-emit facts the user
+    // asked to forget. Honestly ranked a nudge, not defense (the D6b consult is the real
+    // suppression). Gated STRICTLY on non-empty so the common-case prompt (no forgets yet)
+    // stays byte-unchanged and every existing prompt/userContent test stays green.
+    const forgotten = store.readForgottenFacts();
+    const forgottenSection =
+      forgotten.length > 0
+        ? `\n\nDo NOT re-emit facts the user asked to forget: ${forgotten.map((f) => f.raw_text).join("; ")}.`
+        : "";
+
+    const userContent = `NEW TAIL:\n${tailText}${poolSection}${forgottenSection}`;
 
     const response = await client.messages.create({
       model: SMART_MODEL,

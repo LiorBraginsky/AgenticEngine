@@ -977,3 +977,43 @@ test("editFactById: unknown id → false, no throw", () => {
   expect(store.editFactById(crypto.randomUUID(), "x", { actor: "user" })).toBe(false);
   store.close();
 });
+
+// ── 2c chunk-01 (2B): memory_action_events audit storage ────────────────────────────────
+
+test("recordMemoryActionEvent + readMemoryActionEvents: round-trip, thread-scoped, insert order (created_at ASC)", () => {
+  const { store } = freshStore();
+  const t1 = store.createThread();
+  const t2 = store.createThread();
+
+  store.recordMemoryActionEvent({ thread_id: t1, action: "forget", outcome: "applied", fact_text: "fact A", actor: "agent" });
+  store.recordMemoryActionEvent({ thread_id: t1, action: "remember", outcome: "applied", fact_text: "fact B", actor: "agent" });
+  store.recordMemoryActionEvent({ thread_id: t2, action: "forget", outcome: "refused-not_in_view", fact_text: "fact C", actor: "agent" });
+
+  const t1Events = store.readMemoryActionEvents(t1);
+  expect(t1Events.length).toBe(2);
+  expect(t1Events[0]!.fact_text).toBe("fact A"); // insert order
+  expect(t1Events[0]!.action).toBe("forget");
+  expect(t1Events[0]!.outcome).toBe("applied");
+  expect(t1Events[0]!.actor).toBe("agent");
+  expect(t1Events[1]!.fact_text).toBe("fact B");
+
+  const t2Events = store.readMemoryActionEvents(t2);
+  expect(t2Events.length).toBe(1); // thread-scoped
+  expect(t2Events[0]!.outcome).toBe("refused-not_in_view");
+
+  store.close();
+});
+
+test("readFactById: returns the row for a known id, null for unknown", () => {
+  const { store } = freshStore();
+  const id = store.insertFact({
+    fact: "favourite colour blue", canonical: "favourite colour blue", provenance: "thread:t",
+    scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: [],
+  }, "seed");
+  const row = store.readFactById(id);
+  expect(row).not.toBeNull();
+  expect(row!.fact).toBe("favourite colour blue");
+  expect(row!.authored_by).toBe("machine");
+  expect(store.readFactById(crypto.randomUUID())).toBeNull();
+  store.close();
+});

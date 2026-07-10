@@ -319,3 +319,20 @@ test("Hatch.editFact: applies the new text, stamps authored_by='human', returns 
   expect(row.fact).toBe("colour green");
   expect(row.authored_by).toBe("human");
 });
+
+// ─── 2c chunk-01 (2B): Hatch.view() additive memoryActionEvents field ───────────────────
+
+test("2B: Hatch.view returns memoryActionEvents populated from the store, thread-scoped", async () => {
+  const hatch = new Hatch(store, gate);
+  const threadId = store.createThread();
+  const otherThreadId = store.createThread();
+
+  store.recordMemoryActionEvent({ thread_id: threadId, action: "forget", outcome: "applied", fact_text: "fact X", actor: "agent" });
+  store.recordMemoryActionEvent({ thread_id: otherThreadId, action: "remember", outcome: "applied", fact_text: "fact Y", actor: "agent" });
+
+  const result = await hatch.view(threadId);
+  expect(Array.isArray(result.memoryActionEvents)).toBe(true);
+  expect(result.memoryActionEvents.length).toBe(1);
+  expect(result.memoryActionEvents[0]!.fact_text).toBe("fact X");
+  expect(result.memoryActionEvents[0]!.action).toBe("forget");
+});

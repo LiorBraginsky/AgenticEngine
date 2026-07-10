@@ -186,6 +186,16 @@ async function distillOneThread(
           targetId = delta.candidateIds[op.targetOrdinal - 1];
         }
 
+        // D6b consult (spec §3.6, 2c chunk-01): suppress re-derivation of a tool-forgotten
+        // fact — MACHINE candidates only, honoring precedence: human fact ▷ human un-forget
+        // ▷ forget record ▷ machine re-derivation. `continue` drops new/append candidates and
+        // skips a replace non-destructively (the target is left as-is — no applyFactOp call).
+        const norm = normalizeFactText(op.fact);
+        if (store.isForgottenNormalizedText(norm) && !store.hasHumanFactWithNormalizedText(norm)) {
+          memDebug("distill", { threadId, forgottenSuppressed: previewStr(op.fact) });
+          continue;
+        }
+
         // Q5 steps 2-4 (optimistic-concurrency + never-replace-human demote +
         // replace/append/new apply + dedup) now live in the shared applyFactOp
         // primitive (D7a-bis) — extracted so both the distiller and the chunk-01

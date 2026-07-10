@@ -85,6 +85,24 @@ export interface ForgottenFactRow {
   provenance: string | null;
 }
 
+/** Input to record one memory_action_events row (2c chunk-01, spec §3.9 D9a). */
+export interface MemoryActionEventInput {
+  thread_id: string;
+  action: "forget" | "remember" | "reassert";
+  outcome: string;      // "applied" | `refused-${code}`
+  fact_text: string;    // raw fact text (forgotten / remembered / attempted)
+  actor: string;        // "agent"
+}
+
+/** Row returned by readMemoryActionEvents. */
+export interface MemoryActionEventRow {
+  action: string;
+  outcome: string;
+  fact_text: string;
+  actor: string;
+  created_at: number;
+}
+
 interface TailRow {
   id: string;
   role: "user" | "assistant";
@@ -955,6 +973,30 @@ export class MemoryStore {
     return this.db.query(
       "SELECT replaced_text, actor, reason, created_at FROM replaced_facts WHERE fact_id = ? ORDER BY created_at ASC",
     ).all(factId) as ReplacedFactRow[];
+  }
+
+  // ── 2c chunk-01: memory_action_events audit trail (spec §3.9 D9a/D9b) ──────────────────
+
+  /** Record one durable memory-action audit event (applied OR refused — refusals are signal). */
+  recordMemoryActionEvent(e: MemoryActionEventInput): void {
+    this.db.query(
+      "INSERT INTO memory_action_events (id, thread_id, action, outcome, fact_text, actor, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    ).run(crypto.randomUUID(), e.thread_id, e.action, e.outcome, e.fact_text, e.actor, Date.now());
+  }
+
+  /** Read all memory-action audit events for a thread, ordered by created_at ASC. */
+  readMemoryActionEvents(threadId: string): MemoryActionEventRow[] {
+    return this.db.query(
+      "SELECT action, outcome, fact_text, actor, created_at FROM memory_action_events WHERE thread_id = ? ORDER BY created_at ASC",
+    ).all(threadId) as MemoryActionEventRow[];
+  }
+
+  /** Pre-resolve a distilled_facts row by id (D2c — the port derives typed results itself,
+   *  never from a void return). Returns null if the id does not exist. */
+  readFactById(id: string): DistilledFactRow | null {
+    return this.db.query(
+      "SELECT id, fact, provenance, scope, expiry, confidence, authored_by FROM distilled_facts WHERE id = ?",
+    ).get(id) as DistilledFactRow | null;
   }
 
   /**

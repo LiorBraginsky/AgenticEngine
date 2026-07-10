@@ -25,7 +25,7 @@
  * per-thread filtering here without a Tranche-2 scope agreement.
  */
 export const HATCH_VIEW_FACT_CAP = 1000;
-import type { MemoryStore, DistilledFactRow, DistillationEventRow } from "./store.js";
+import type { MemoryStore, DistilledFactRow, DistillationEventRow, MemoryActionEventRow } from "./store.js";
 import type { WriteGate, WriteContext } from "./write-gate.js";
 
 export interface HatchViewResult {
@@ -35,6 +35,8 @@ export interface HatchViewResult {
   distilledFacts: DistilledFactRow[];
   /** Distillation events for this thread — verbatim including zero-count rows (5b). */
   distillationEvents: DistillationEventRow[];
+  /** 2c chunk-01 (spec §3.9 D9b): durable audit trail of agent memory actions for this thread. */
+  memoryActionEvents: MemoryActionEventRow[];
 }
 
 export class Hatch {
@@ -60,7 +62,9 @@ export class Hatch {
     // A row with facts_produced===0 is the observable proof of "deliberately retained nothing"
     // vs "silently lost the thread" (spec §3.4, ADR-0012 5b).
     const distillationEvents = this.store.readDistillationEvents(threadId);
-    return { messages, distilledFacts, distillationEvents };
+    // 2c chunk-01 (spec §3.9 D9b): additive read of the memory-action audit trail.
+    const memoryActionEvents = this.store.readMemoryActionEvents(threadId);
+    return { messages, distilledFacts, distillationEvents, memoryActionEvents };
   }
 
   /**

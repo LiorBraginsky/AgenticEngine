@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { MemoryStore } from "./store.js";
 import { WriteGate, REDACTION_MARKER } from "./write-gate.js";
 import { RuleBasedScanner } from "./scanner/memory-scanner.js";
+import { normalizeFactText } from "./normalize-fact-text.js";
 
 function fresh() {
   const dir = mkdtempSync(join(tmpdir(), "mf01-wg-"));
@@ -455,5 +456,61 @@ test("editFact: unknown id → false", () => {
   const store = new MemoryStore({ dataDir: mkdtempSync(join(tmpdir(), "fe-wg3-")) });
   const gate = new WriteGate(store, new RuleBasedScanner());
   expect(gate.editFact(crypto.randomUUID(), "x", { actor: "user", authored_by: "human" })).toBe(false);
+  store.close();
+});
+
+// ── 2c chunk-01 (2A): editFact machine-ctx hardening (defense-in-depth, spec §3.2 D2d) ──
+// A machine ctx must NEVER reach editFactById — it unconditionally stamps authored_by='human',
+// so a machine-over-MACHINE ctx would otherwise promote a machine fact to 5e-protected
+// human-owned, inverting never-replace-human (the "5e jackpot").
+
+test("2A: machine-ctx editFact on a MACHINE fact → false, row unchanged (authored_by stays machine, text unchanged)", () => {
+  const store = new MemoryStore({ dataDir: mkdtempSync(join(tmpdir(), "fe-wg4-")) });
+  const gate = new WriteGate(store, new RuleBasedScanner());
+  const id = store.insertFact({ fact: "colour blue", canonical: "colour blue", provenance: "thread:t",
+    scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: [] }, "seed");
+  expect(gate.editFact(id, "machine-promoted", { actor: "agent", authored_by: "machine" })).toBe(false);
+  const row = store.rawDb().query("SELECT fact, authored_by FROM distilled_facts WHERE id = ?").get(id) as { fact: string; authored_by: string };
+  expect(row.authored_by).toBe("machine"); // no promote-to-human
+  expect(row.fact).toBe("colour blue");    // no text change
+  store.close();
+});
+
+test("2A: machine-ctx editFact on a HUMAN fact → still false (5e, unchanged behavior)", () => {
+  const store = new MemoryStore({ dataDir: mkdtempSync(join(tmpdir(), "fe-wg5-")) });
+  const gate = new WriteGate(store, new RuleBasedScanner());
+  const id = store.insertFact({ fact: "human pin", canonical: "human pin", provenance: "thread:t",
+    scope: "cross-thread", expiry: null, confidence: 1, authored_by: "human", topics: [] }, "seed");
+  expect(gate.editFact(id, "machine overwrite", { actor: "agent", authored_by: "machine" })).toBe(false);
+  const row = store.rawDb().query("SELECT fact, authored_by FROM distilled_facts WHERE id = ?").get(id) as { fact: string; authored_by: string };
+  expect(row.authored_by).toBe("human");
+  expect(row.fact).toBe("human pin");
+  store.close();
+});
+
+test("2A: human-ctx editFact path unchanged — still applies", () => {
+  const store = new MemoryStore({ dataDir: mkdtempSync(join(tmpdir(), "fe-wg6-")) });
+  const gate = new WriteGate(store, new RuleBasedScanner());
+  const id = store.insertFact({ fact: "colour blue", canonical: "colour blue", provenance: "thread:t",
+    scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: [] }, "seed");
+  expect(gate.editFact(id, "colour green", { actor: "user", authored_by: "human" })).toBe(true);
+  const row = store.rawDb().query("SELECT fact, authored_by FROM distilled_facts WHERE id = ?").get(id) as { fact: string; authored_by: string };
+  expect(row.fact).toBe("colour green");
+  expect(row.authored_by).toBe("human");
+  store.close();
+});
+
+// ── 2c chunk-01 (2C.4): D6c human un-forget clear on editFact ──────────────────────────
+test("2C: human editFact to text X clears a matching forgotten_facts row (D6c un-forget)", () => {
+  const store = new MemoryStore({ dataDir: mkdtempSync(join(tmpdir(), "fe-wg7-")) });
+  const gate = new WriteGate(store, new RuleBasedScanner());
+  const id = store.insertFact({ fact: "old text", canonical: "old text", provenance: "thread:t",
+    scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: [] }, "seed");
+  store.recordForgottenFact({ raw_text: "the new text", provenance: "thread:t", actor: "agent", authored_by: "machine" });
+  expect(store.isForgottenNormalizedText(normalizeFactText("the new text"))).toBe(true);
+
+  expect(gate.editFact(id, "the new text", { actor: "user", authored_by: "human" })).toBe(true);
+
+  expect(store.isForgottenNormalizedText(normalizeFactText("the new text"))).toBe(false);
   store.close();
 });

@@ -199,12 +199,18 @@ export class WriteGate {
     const db = this.store.rawDb();
     const row = db.query("SELECT authored_by FROM distilled_facts WHERE id = ?").get(factId) as { authored_by: string } | null;
     if (!row) return false;
-    // This guard only refuses machine-over-HUMAN today. store.editFactById's stamp is
-    // unconditionally 'human', so a machine-over-MACHINE ctx would still promote a machine
-    // fact to 5e-protected human-owned (inverting never-replace-human) — a machine ctx MUST
-    // be rejected here (not just when row is human) before 2c is wired (see store.editFactById).
-    if (row.authored_by === "human" && ctx.authored_by === "machine") return false; // 5e seam (never fires on HTTP)
-    return this.store.editFactById(factId, newText, { actor: ctx.actor, reason });
+    // Defense-in-depth (spec §3.2 D2d, 2c chunk-01): reject ANY machine ctx outright, before
+    // delegating. store.editFactById's stamp is unconditionally 'human' — a machine-over-MACHINE
+    // ctx would otherwise promote a machine fact to 5e-protected human-owned (inverting
+    // never-replace-human), the 5e jackpot. This never fires on the HTTP path (human-ctx only);
+    // it closes the seam ahead of the agent memory-action port being wired through this method.
+    if (ctx.authored_by === "machine") return false;
+    const applied = this.store.editFactById(factId, newText, { actor: ctx.actor, reason });
+    // D6c (human un-forget leg, spec §3.6): a human authoring/editing a fact whose normalized
+    // text matches a forgotten_facts row clears that row — the explicit human re-assertion
+    // beats a stale forget-suppression record (precedence: human ▷ un-forget ▷ forget-record).
+    if (applied) this.store.clearForgottenByNormalizedText(normalizeFactText(newText));
+    return applied;
   }
 
   /**

@@ -149,4 +149,16 @@ CREATE TABLE IF NOT EXISTS replaced_facts (
   created_at    INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_replaced_facts_fact ON replaced_facts(fact_id);
+
+-- 2c chunk-01: durable audit of agent memory actions (spec §3.9 D9a). Additive, CREATE-only, no ALTER.
+CREATE TABLE IF NOT EXISTS memory_action_events (
+  id          TEXT PRIMARY KEY,
+  thread_id   TEXT NOT NULL,
+  action      TEXT NOT NULL,   -- 'forget' | 'remember' | 'reassert'
+  outcome     TEXT NOT NULL,   -- 'applied' | 'refused-<code>'
+  fact_text   TEXT NOT NULL,   -- raw fact text
+  actor       TEXT NOT NULL,   -- 'agent'
+  created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memory_action_events_thread ON memory_action_events(thread_id);
 `;

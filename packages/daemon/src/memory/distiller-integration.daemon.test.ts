@@ -160,7 +160,7 @@ test("forget-survives-re-derive: tombstoned fact absent from rebuilt slice and r
 
   // 5. Assert: retrieve() also returns empty slice (defense-in-depth)
   const slice = await dumbTail.retrieve(store, store.createThread());
-  expect(slice.some((m) => m.content.includes("secret fact"))).toBe(false);
+  expect(slice.messages.some((m) => m.content.includes("secret fact"))).toBe(false);
 
   store.close();
 });
@@ -253,15 +253,15 @@ test("5f isolation: thread-local does NOT cross into B; cross-thread + global DO
 
   // DoD #1: thread-local fact does NOT cross into B
   const sliceB = await dumbTail.retrieve(store, threadB);
-  expect(sliceB.some((m) => m.content.includes("local-only fact"))).toBe(false);
+  expect(sliceB.messages.some((m) => m.content.includes("local-only fact"))).toBe(false);
 
   // DoD #2: cross-thread + global DO cross into B
-  expect(sliceB.some((m) => m.content.includes("deploy is yeet.sh"))).toBe(true);
-  expect(sliceB.some((m) => m.content.includes("global note"))).toBe(true);
+  expect(sliceB.messages.some((m) => m.content.includes("deploy is yeet.sh"))).toBe(true);
+  expect(sliceB.messages.some((m) => m.content.includes("global note"))).toBe(true);
 
   // Own-thread completeness: retrieve for A DOES include the thread-local fact
   const sliceA = await dumbTail.retrieve(store, threadA);
-  expect(sliceA.some((m) => m.content.includes("local-only fact"))).toBe(true);
+  expect(sliceA.messages.some((m) => m.content.includes("local-only fact"))).toBe(true);
 
   store.close();
 });
@@ -278,7 +278,8 @@ test("5f boundary: no raw messages cross — only the distilled+tagged path carr
   const threadB = store.createThread();
   const sliceB = await dumbTail.retrieve(store, threadB);
   // The only cross-thread carrier is the distilled_facts projection, never raw messages
-  expect(sliceB).toEqual([]);
+  expect(sliceB.messages).toEqual([]);
+  expect(sliceB.injectedFactIds).toEqual([]);
 
   store.close();
 });
@@ -604,7 +605,7 @@ test("M1.1: DumbTail — forgotten fact stays GONE from both injection slice and
 
   // Confirm fact is initially present in BOTH surfaces
   const sliceBefore = await dumb.retrieve(store, tId);
-  expect(sliceBefore.some((m) => m.content.includes("favourite colour: blue"))).toBe(true);
+  expect(sliceBefore.messages.some((m) => m.content.includes("favourite colour: blue"))).toBe(true);
   const viewBefore = await hatch.view(tId);
   expect(viewBefore.distilledFacts.some((f) => f.fact === "favourite colour: blue")).toBe(true);
 
@@ -613,7 +614,7 @@ test("M1.1: DumbTail — forgotten fact stays GONE from both injection slice and
 
   // 4. Assert: fact GONE from injection slice (readDistilledFactsForThread)
   const sliceAfter = await dumb.retrieve(store, tId);
-  expect(sliceAfter.some((m) => m.content.includes("favourite colour: blue"))).toBe(false);
+  expect(sliceAfter.messages.some((m) => m.content.includes("favourite colour: blue"))).toBe(false);
 
   // 5. Assert: fact GONE from hatch view (readDistilledFacts)
   const viewAfter = await hatch.view(tId);
@@ -669,7 +670,7 @@ test("thread-level provenance fact is durably deleted after forget (FixedMarker 
   // 4. Assert: fact GONE from injection slice (readDistilledFactsForThread)
   const dumb = new DumbTailProvider();
   const sliceAfter = await dumb.retrieve(store, tId);
-  expect(sliceAfter.some((m) => m.content.includes("live message"))).toBe(false);
+  expect(sliceAfter.messages.some((m) => m.content.includes("live message"))).toBe(false);
 
   // 5. Source message BYTE-INTACT
   const rawRow = store.rawDb().query<{ content: string }, string>("SELECT content FROM messages WHERE id = ?").get(mid);

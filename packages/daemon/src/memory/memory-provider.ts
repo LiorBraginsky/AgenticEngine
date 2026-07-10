@@ -22,6 +22,18 @@ export interface DistillResult {
   facts: DistilledFact[]; // may be [] — "deliberately retained nothing"
 }
 
+/**
+ * The `retrieve` return shape (chunk 2c-02, spec §4 item 1; architect option A1).
+ * `injectedFactIds[i]` is the `distilled_facts.id` rendered at `messages[i]` —
+ * BOTH come from ONE read of the exact post-filter `live` list, so the "exact
+ * injected slice" invariant (spec §3.3 D3b) is structurally guaranteed, never a
+ * second read that could diverge (e.g. a fact tombstoned between two reads).
+ */
+export interface RetrievedSlice {
+  messages: SessionMessage[]; // the [remembered] <fact> messages (UNINDEXED here)
+  injectedFactIds: string[];  // parallel: injectedFactIds[i] is the id rendered at messages[i]
+}
+
 /** ONE targeted change to the stable-id fact store, proposed by the distiller (spec §3.1). */
 export interface FactOp {
   op: "new" | "append" | "replace";
@@ -70,9 +82,10 @@ export interface MemoryProvider {
    * Compose the bounded distilled slice to inject at the start of a turn.
    * Called on the new-thread first turn AND on every known-thread turn (v2-08).
    * Reads distilled_facts (the projection). MUST honor tombstones (F1).
-   * Returns the slice as SessionMessage[] ready to prepend to messages[].
+   * Returns `{messages, injectedFactIds}` (chunk 2c-02, spec §4 item 1) ready to
+   * prepend `messages` to messages[]; `injectedFactIds` rides the ordinal slice.
    * MF-04 (5f): now enforces scope isolation — thread-local facts of OTHER threads
    * are excluded; cross-thread/global facts cross. Uses readDistilledFactsForThread.
    */
-  retrieve(store: MemoryStore, forThreadId: string): Promise<SessionMessage[]>;
+  retrieve(store: MemoryStore, forThreadId: string): Promise<RetrievedSlice>;
 }

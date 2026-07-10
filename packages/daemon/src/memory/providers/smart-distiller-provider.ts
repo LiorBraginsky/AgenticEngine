@@ -20,9 +20,8 @@
  */
 
 import Anthropic from "@anthropic-ai/sdk";
-import type { MemoryProvider, DistilledFact, DistillDelta, FactOp } from "../memory-provider.js";
+import type { MemoryProvider, DistilledFact, DistillDelta, FactOp, RetrievedSlice } from "../memory-provider.js";
 import type { MemoryStore } from "../store.js";
-import type { SessionMessage } from "../../providers/provider.js";
 import { REDACTION_MARKER } from "../schema.js";
 import { REMEMBERED_LABEL } from "../../providers/system-prompt.js";
 import { resolveAnthropicKey, type ResolveOpts } from "../../secrets/cloud-secrets.js";
@@ -647,7 +646,7 @@ export class SmartDistillerProvider implements MemoryProvider {
    * and the D6b consult in distiller-registration.ts are the real defenses against re-derivation.
    * Retains: isFactTombstoned (MF-05 T1.2 — mutations tombstone backstop).
    */
-  async retrieve(store: MemoryStore, forThreadId: string): Promise<SessionMessage[]> {
+  async retrieve(store: MemoryStore, forThreadId: string): Promise<RetrievedSlice> {
     // MF-04 (5f): scope-filtered read — thread-local facts of OTHER threads excluded.
     const rows = store.readDistilledFactsForThread(forThreadId, RETRIEVE_SLICE_N);
     // Backstop: isFactTombstoned (MF-05 T1.2 — mutations tombstone)
@@ -655,17 +654,18 @@ export class SmartDistillerProvider implements MemoryProvider {
       (f) => !store.isFactTombstoned(f.provenance),
     );
     // ── D1 retrieve log (env-gated, zero-cost when OFF) ──────────────────────
-    // NOTE: rows currently lack `id` (Step 3 adds it); log factPreview + order for now.
     memDebug("retrieve", {
       forThreadId,
       injected: live.map((f, i) => ({
+        id: f.id,
         factPreview: previewStr(f.fact),
         order: i,
       })),
     });
-    return Promise.resolve(
-      live.map((f) => ({ role: "user" as const, content: `${REMEMBERED_LABEL}${f.fact}` })),
-    );
+    return Promise.resolve({
+      messages: live.map((f) => ({ role: "user" as const, content: `${REMEMBERED_LABEL}${f.fact}` })),
+      injectedFactIds: live.map((f) => f.id),
+    });
   }
 }
 

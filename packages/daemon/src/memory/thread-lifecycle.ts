@@ -67,7 +67,7 @@ export class ThreadLifecycle {
     this.whenIdleTimeoutMs = whenIdleTimeoutMs ?? WHEN_IDLE_TIMEOUT_MS_DEFAULT;
   }
 
-  async beginTurn(inbound: SessionStart): Promise<{ threadId: string; priorMessages: SessionMessage[] }> {
+  async beginTurn(inbound: SessionStart): Promise<{ threadId: string; priorMessages: SessionMessage[]; injectedFactIds: string[] }> {
     const requested = inbound.thread_id;
     if (requested && this.store.threadExists(requested)) {
       // v2-08 fix A: a known-thread turn ALSO re-injects the cross-thread distilled
@@ -76,11 +76,11 @@ export class ThreadLifecycle {
       // whenIdle is NEW-THREAD-ONLY: the facts are already committed on a known-thread
       // turn, and awaiting per turn would re-add latency + a per-turn block (the
       // new-thread read-after-write race the whenIdle wait closes does NOT apply here).
-      const facts = this.memoryProvider
+      const slice = this.memoryProvider
         ? await this.memoryProvider.retrieve(this.store, requested)
-        : [];
+        : { messages: [], injectedFactIds: [] };
       const tail = this.store.readThreadTail(requested, TAIL_LIMIT);
-      return { threadId: requested, priorMessages: [...facts, ...tail] };
+      return { threadId: requested, priorMessages: [...slice.messages, ...tail], injectedFactIds: slice.injectedFactIds };
     }
     // No / unknown thread_id ⇒ mint a NEW thread (MF-01 §3.1).
     // CM-01 adoption (spec §3.3): an unknown-but-UUID-shaped thread_id is adopted
@@ -115,10 +115,10 @@ export class ThreadLifecycle {
     }
     // Cross-thread distilled-slice injection (MF-02 injection-point) — fires on
     // the adopted id identically, because it keys off the returned newThreadId.
-    const priorMessages = this.memoryProvider
+    const slice = this.memoryProvider
       ? await this.memoryProvider.retrieve(this.store, newThreadId)
-      : [];
-    return { threadId: newThreadId, priorMessages };
+      : { messages: [], injectedFactIds: [] };
+    return { threadId: newThreadId, priorMessages: slice.messages, injectedFactIds: slice.injectedFactIds };
   }
 
   /**

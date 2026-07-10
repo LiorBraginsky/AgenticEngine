@@ -372,7 +372,7 @@ test("T2.3a-E: known-thread turn with EMPTY memory → NOT stamped (tail-only hy
   // is replaced — this is the explicit testability seam startDaemon exposes (3rd param).
   const noopMemoryProvider: import("./memory-provider.js").MemoryProvider = {
     id: "noop-for-E",
-    retrieve: async () => [],
+    retrieve: async () => ({ messages: [], injectedFactIds: [] }),
     distill: async (_store, threadId) => ({
       threadId,
       ops: [],

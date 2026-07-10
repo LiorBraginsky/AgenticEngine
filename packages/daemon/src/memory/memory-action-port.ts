@@ -236,7 +236,10 @@ export class MemoryActionPort {
 }
 
 /** D3c: strip a leading ordinal prefix defensively ("3. ") before normalizing, so the
- *  match tolerates the LLM echoing the injected index alongside the fact text. */
+ *  match tolerates the LLM echoing the injected index alongside the fact text.
+ *  The trailing `\s+` (not `\s*`) is load-bearing: it requires at least one space
+ *  after the digits+dot, so a digit-LEADING fact text itself (e.g. "3.14 is pi",
+ *  with no space after "3.") is never mistaken for an ordinal prefix and stripped. */
 function normalizeExpectedText(text: string): string {
-  return normalizeFactText(text.replace(/^\s*\d+\.\s*/, ""));
+  return normalizeFactText(text.replace(/^\s*\d+\.\s+/, ""));
 }

@@ -11,12 +11,24 @@ export interface SessionMessage {
 }
 
 /**
+ * The per-turn memory-action-tool slice (2c chunk-02, ADR-0016 decision 3):
+ * the ordinal map derives from the EXACT post-filter `live` list injected THIS
+ * turn (spec §3.3 D3b) — never raw DB rows, never LLM-echoed ids (D3a).
+ */
+export interface MemoryTurnSlice {
+  threadId: string;
+  ordinalMap: Map<number, string>; // ordinal (1..N) → distilled_facts.id
+}
+
+/**
  * Per-session state the provider reads/writes. Additive superset of the
  * mock's existing phase machine: phase fields stay; messages[] is new.
+ * `memoryActionSlice?` is ONE additive OPTIONAL field (2c chunk-02) — the mock
+ * ignores it (byte-unchanged, verified by the frozen mock-provider.ts diff).
  */
 export type ProviderSessionState =
-  | { phase: "awaiting_pick"; session_id: string; call_id: string; messages: SessionMessage[] }
-  | { phase: "done"; session_id: string; messages: SessionMessage[] };
+  | { phase: "awaiting_pick"; session_id: string; call_id: string; messages: SessionMessage[]; memoryActionSlice?: MemoryTurnSlice }
+  | { phase: "done"; session_id: string; messages: SessionMessage[]; memoryActionSlice?: MemoryTurnSlice };
 
 /** The three inbound envelopes a provider consumes (= existing MockAgentInput). */
 export type ProviderInput =

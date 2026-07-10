@@ -24,6 +24,13 @@ import type {
 import { resolveAnthropicKey } from "../secrets/cloud-secrets.js";
 import type { ResolveOpts } from "../secrets/cloud-secrets.js";
 import { COMPOSED_SYSTEM_PROMPT } from "./system-prompt.js";
+import type {
+  MemoryActionPort,
+  MemoryActionTurnContext,
+  MemoryActionResult,
+} from "../memory/memory-action-port.js";
+import { MEMORY_ACTIONS_MAX_PER_TURN } from "../memory/memory-action-port.js";
+import { MEMORY_ACTION_TOOLS_PARAM, serializeToolResult } from "./memory-action-tools.js";
 
 // ── Pure formatters (functional core) ─────────────────────────────────────
 
@@ -131,6 +138,62 @@ export function classifyAnthropicError(err: unknown): string {
   return "provider unavailable";
 }
 
+// ── memory-action tool dispatch (chunk 2c-02, ADR-0016 decision 3) ────────
+
+/**
+ * Validates a scripted `tool_use` block's parsed `input` BEFORE calling the port
+ * (gotcha #9 / cross-chunk fold: the loop must never throw across advance()).
+ * Malformed args map to EXISTING typed result codes (no new code — the set is
+ * spec-frozen): a malformed forget target → `not_in_view`; missing/bad
+ * `expected_text` → `stale_target`; missing/bad `fact` → `rejected_by_scan`.
+ * The try/catch is a defensive backstop — the port itself never throws, but a
+ * malformed-input path here must not either.
+ */
+function dispatchTool(
+  name: string,
+  input: unknown,
+  port: MemoryActionPort,
+  ctx: MemoryActionTurnContext,
+): MemoryActionResult {
+  const i = (input ?? {}) as Record<string, unknown>;
+  try {
+    if (name === "memory_forget") {
+      if (typeof i["ordinal"] !== "number" || !Number.isInteger(i["ordinal"])) {
+        return { ok: false, code: "not_in_view", message: "I couldn't tell which listed item to forget — give me its number." };
+      }
+      if (typeof i["expected_text"] !== "string") {
+        return { ok: false, code: "stale_target", message: "I need the exact current text of that fact to safely forget it." };
+      }
+      const reason = typeof i["reason"] === "string" ? i["reason"] : undefined;
+      return port.forget(ctx, { ordinal: i["ordinal"], expected_text: i["expected_text"], reason });
+    }
+    if (name === "memory_remember") {
+      if (typeof i["fact"] !== "string") {
+        return { ok: false, code: "rejected_by_scan", message: "I couldn't read the note text to remember." };
+      }
+      if (i["replaces_ordinal"] !== undefined && (typeof i["replaces_ordinal"] !== "number" || !Number.isInteger(i["replaces_ordinal"]))) {
+        return { ok: false, code: "not_in_view", message: "I couldn't tell which listed item to replace." };
+      }
+      if (i["expected_text"] !== undefined && typeof i["expected_text"] !== "string") {
+        return { ok: false, code: "stale_target", message: "I need the exact current text of the fact I'm replacing." };
+      }
+      return port.remember(ctx, {
+        fact: i["fact"],
+        replaces_ordinal: i["replaces_ordinal"] as number | undefined,
+        expected_text: i["expected_text"] as string | undefined,
+      });
+    }
+    // Closed set (ADR-0016 decision 2) ⇒ unreachable via the declared tools[]; defensive only.
+    return { ok: false, code: "not_in_view", message: "Unknown memory tool." };
+  } catch (err) {
+    console.error(
+      "[anthropic-provider] memory tool threw (should not happen):",
+      err instanceof Error ? err.message : err,
+    );
+    return { ok: false, code: "stale_target", message: "That memory action couldn't be completed." };
+  }
+}
+
 // ── Injectable factory ─────────────────────────────────────────────────────
 
 /**
@@ -153,6 +216,10 @@ export interface AnthropicProviderOptions {
   clientFactory?: (apiKey: string) => Anthropic;
   /** Injected resolver options for unit tests (e.g. fake Keychain getter). */
   resolverOpts?: ResolveOpts;
+  /** ADR-0016 decision 3 DI seam (the clientFactory posture). Present ⇒ `tools[]`
+   *  is declared and the bounded tool loop runs. Absent ⇒ byte-identical to today
+   *  (no tools key on the request, no loop). */
+  memoryActionPort?: MemoryActionPort;
 }
 
 /**
@@ -265,38 +332,88 @@ export function createAnthropicApiProvider(
         };
       }
 
-      // ── Imperative shell: network call ──────────────────────────────────
+      // ── Imperative shell: network call (bounded memory-action tool loop) ──
+      //
+      // ADR-0016 decision 3: the loop is adapter-INTERNAL (AgentProvider port
+      // unchanged). It runs iff opts.memoryActionPort is present; otherwise the
+      // request carries NO `tools` key and behavior is byte-identical to today.
       try {
         const client = getClient(resolvedKey);
+
+        const port = opts.memoryActionPort;
+        const useTools = port !== undefined;
+        const slice = state?.memoryActionSlice;
+        // Constructed ONCE per turn (spec §7 CLOSED): the SAME object is handed
+        // to every port call this turn, so the shared cap counter (actionsUsed)
+        // is enforced across the whole turn, not per-call. "" is a defensive
+        // floor — production always populates the slice when useTools (index.ts).
+        const turnCtx: MemoryActionTurnContext | undefined = useTools
+          ? { threadId: slice?.threadId ?? "", ordinalMap: slice?.ordinalMap ?? new Map(), actionsUsed: 0 }
+          : undefined;
+
+        const convo: Anthropic.MessageParam[] = messages.map((m) => ({
+          role: m.role,
+          content: m.content,
+        }));
+        let replyText = "";
+        let rounds = 0;
+        let requestTools = useTools;
 
         // Prompt caching: add cache_control on the system block per the
         // skill's convention. NOTE: the tiny system prompt is below Sonnet's
         // 2048-token cache minimum → cache_creation_input_tokens will be 0.
         // This is a documented no-op, not a bug (plan C3-1 Design note).
-        const response = await client.messages.create({
-          model: "claude-sonnet-4-6",
-          max_tokens: 512,
-          thinking: { type: "disabled" },
-          system: [
-            {
-              type: "text",
-              text: COMPOSED_SYSTEM_PROMPT,
-              cache_control: { type: "ephemeral" },
-            },
-          ],
-          messages: messages.map((m) => ({
-            role: m.role,
-            content: m.content,
-          })),
-        });
+        //
+        // #42/#43 latency note (no timers added — deferral honored): worst case
+        // is MEMORY_ACTIONS_MAX_PER_TURN + 1 = 4 sequential model calls (each
+        // typically 1-3s) + up to 3 sub-ms SQLite port ops — well under the 30s
+        // handshake window.
+        for (;;) {
+          const response = await client.messages.create({
+            model: "claude-sonnet-4-6",
+            max_tokens: 512,
+            thinking: { type: "disabled" },
+            system: [
+              {
+                type: "text",
+                text: COMPOSED_SYSTEM_PROMPT,
+                cache_control: { type: "ephemeral" },
+              },
+            ],
+            messages: convo,
+            ...(requestTools ? { tools: MEMORY_ACTION_TOOLS_PARAM } : {}),
+          });
 
-        // Extract text from first text block (else empty string)
-        let replyText = "";
-        for (const block of response.content) {
-          if (block.type === "text") {
-            replyText = block.text;
+          let text = "";
+          const toolUses: Anthropic.ToolUseBlock[] = [];
+          for (const block of response.content) {
+            if (block.type === "text" && text === "") {
+              text = block.text;
+            } else if (block.type === "tool_use") {
+              toolUses.push(block);
+            }
+          }
+
+          if (!requestTools || response.stop_reason !== "tool_use" || toolUses.length === 0) {
+            replyText = text;
             break;
           }
+
+          convo.push({ role: "assistant", content: response.content });
+          const results: Anthropic.ToolResultBlockParam[] = toolUses.map((tu) => ({
+            type: "tool_result",
+            tool_use_id: tu.id,
+            content: serializeToolResult(dispatchTool(tu.name, tu.input, port!, turnCtx!)),
+          }));
+          convo.push({ role: "user", content: results });
+
+          rounds++;
+          // C1 hard backstop: bound loop-executing rounds at the SAME constant
+          // that bounds the per-turn action cap — at most cap+1 model calls
+          // total. The port's cap_exceeded is the natural terminator for a
+          // single response with multiple tool_use blocks; this round bound
+          // guards a misbehaving LLM that keeps calling tools one-per-round.
+          if (rounds >= MEMORY_ACTIONS_MAX_PER_TURN) requestTools = false;
         }
 
         // Build outbound — formatShowTextEnvelopes self-validates with safeParse

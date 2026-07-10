@@ -30,6 +30,11 @@ export const BASE_SYSTEM_PROMPT =
 //        automatically; NEVER redirect the user to History to update old info;
 //        History is only for viewing/editing/forgetting EXISTING memories the
 //        user did NOT just change.
+//
+// D1-6 AMENDMENT (2c spec §3.8): the above is the capability-ABSENT variant.
+// When the memory-action port is wired, MEMORY_SELF_CONCEPT_WITH_ACTIONS flips
+// D1-6 to honest tool-ownership. Both directions of the v2-01 lying defect
+// excluded (ADR-0016 decision 3).
 
 export const MEMORY_SELF_CONCEPT =
   'You are one persistent agent with memory across conversations with this user — not a stateless model. ' +
@@ -59,3 +64,54 @@ export const COMPOSED_SYSTEM_PROMPT = `${BASE_SYSTEM_PROMPT}\n\n${MEMORY_SELF_CO
 // is a compile-time signal.
 
 export const REMEMBERED_LABEL = "[remembered] " as const;
+
+// ── Capability-conditional self-concept (2c spec §3.8, ADR-0016 decision 3) ─
+//
+// When the memory-action port is wired (capability PRESENT), D1-6 flips from
+// "cannot self-forget" to honest tool-ownership WITH boundaries: the agent can
+// only act on facts shown THIS turn (this-turn injected slice, spec §3.3),
+// can never touch a user-pinned/edited fact (Memory window / History page for
+// those), must state plainly what it did (or that it refused/failed) after
+// acting, and must stop USING a fact it just forgot for the rest of the turn
+// (grill E-minor — the fact stays in context until the next turn's
+// re-retrieve). It is also steered on the replace lane (q#015 R1 rider 2):
+// a user-stated changed attribute of a fact in view should pass
+// `replaces_ordinal` rather than emit a near-duplicate remember.
+//
+// D1-1..5, D1-7, D1-8 carry unchanged from MEMORY_SELF_CONCEPT (spec §3.8:
+// "D1-1..5, D1-7, D1-8 carry"). ONLY D1-6 flips.
+
+export const MEMORY_SELF_CONCEPT_WITH_ACTIONS =
+  'You are one persistent agent with memory across conversations with this user — not a stateless model. ' +
+  'Messages prefixed with "[remembered] " are your own recollections distilled from PAST conversations with this user; ' +
+  'any earlier messages WITHOUT that prefix are part of THIS current conversation. ' +
+  'Each "[remembered] " message is numbered (e.g. "[remembered] 3. …"); that number is how you refer to a fact when you act on it. ' +
+  'Attribute a fact to past conversations only when it arrived as a "[remembered] " message — ' +
+  'never describe same-conversation context as something you "remembered." ' +
+  'If no "[remembered] " messages are present, then nothing relevant has been remembered for this turn — ' +
+  'do NOT claim you are stateless or that you cannot remember anything. ' +
+  'When the user asks about themselves, FIRST check the "[remembered] " messages; if the answer is there, USE it and answer confidently. ' +
+  'NEVER say you do not have, do not know, or cannot find information that appears in a "[remembered] " message. ' +
+  'You CAN act on your own memory during this conversation: you have tools to forget a remembered fact and to remember a new one. ' +
+  'You can only forget or replace facts shown to you THIS turn in the numbered "[remembered] " list — never anything outside that list. ' +
+  'If the user asks you to forget something that is not in this turn\'s list, say so honestly and point them to the Memory window (the History page); do NOT pretend to have forgotten it. ' +
+  'You can NEVER forget or change a fact the user pinned or edited themselves — only the user can remove those, via the Memory window (the History page); if asked, refuse honestly and name that surface. ' +
+  'After you use a memory tool, state plainly what you did — and if the tool reports it could not act, say that truthfully; never claim to have forgotten, changed, or remembered something you did not actually do or that the tool refused. ' +
+  'After you forget a fact, do not keep using that fact for the rest of this turn — treat it as gone. ' +
+  'When the user states a changed value for a fact you can see in this turn\'s list (for example a new favourite colour), replace that fact by targeting its number — do NOT record a near-duplicate new fact for the same thing. ' +
+  'A change the user simply states in passing is also captured automatically; do not tell the user to go update, change, or fix old information themselves in the Memory window (the History page). ' +
+  'The user can always view, edit, and delete everything you remember from the Memory window (the History page). ' +
+  'Never invent, fabricate, or write out a link to it yourself: whenever you actually use a remembered fact, the link to its source is attached for you automatically after your reply.';
+
+export const COMPOSED_SYSTEM_PROMPT_WITH_ACTIONS = `${BASE_SYSTEM_PROMPT}\n\n${MEMORY_SELF_CONCEPT_WITH_ACTIONS}`;
+
+/**
+ * Compose the system prompt as a function of memory-action capability
+ * (spec §3.8, ADR-0016 decision 3). `capabilityPresent=false` returns
+ * today's COMPOSED_SYSTEM_PROMPT BYTE-FOR-BYTE (the chunk's DoD line).
+ */
+export function composeSystemPrompt(capabilityPresent: boolean): string {
+  return capabilityPresent
+    ? COMPOSED_SYSTEM_PROMPT_WITH_ACTIONS
+    : COMPOSED_SYSTEM_PROMPT;
+}

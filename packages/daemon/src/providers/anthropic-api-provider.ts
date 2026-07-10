@@ -23,7 +23,7 @@ import type {
 } from "./provider.js";
 import { resolveAnthropicKey } from "../secrets/cloud-secrets.js";
 import type { ResolveOpts } from "../secrets/cloud-secrets.js";
-import { COMPOSED_SYSTEM_PROMPT } from "./system-prompt.js";
+import { composeSystemPrompt } from "./system-prompt.js";
 import type {
   MemoryActionPort,
   MemoryActionTurnContext,
@@ -354,6 +354,7 @@ export function createAnthropicApiProvider(
 
         const port = opts.memoryActionPort;
         const useTools = port !== undefined;
+        const systemPromptText = composeSystemPrompt(useTools);
         const slice = state?.memoryActionSlice;
         // Constructed ONCE per turn (spec §7 CLOSED): the SAME object is handed
         // to every port call this turn, so the shared cap counter (actionsUsed)
@@ -393,7 +394,7 @@ export function createAnthropicApiProvider(
             system: [
               {
                 type: "text",
-                text: COMPOSED_SYSTEM_PROMPT,
+                text: systemPromptText,
                 cache_control: { type: "ephemeral" },
               },
             ],

@@ -112,7 +112,9 @@ const { createAnthropicApiProvider } = await import(
   "./anthropic-api-provider.js"
 );
 const { _resetMemo } = await import("../secrets/cloud-secrets.js");
-const { COMPOSED_SYSTEM_PROMPT } = await import("./system-prompt.js");
+const { COMPOSED_SYSTEM_PROMPT, COMPOSED_SYSTEM_PROMPT_WITH_ACTIONS } = await import(
+  "./system-prompt.js"
+);
 
 const SESSION_START_INBOUND: Extract<ProviderInput, { type: "session_start" }> =
   {
@@ -452,6 +454,56 @@ test("tool_result on anthropic provider: ok:false, unexpected_message, no throw"
     expect(result!.error.kind).toBe("unexpected_message");
   }
   expect(result!.outbound).toHaveLength(0);
+});
+
+// ── capability-conditional system prompt (chunk 2c-03, spec §3.8) ─────────
+//
+// The no-port assertion at line ~173 above (`=== COMPOSED_SYSTEM_PROMPT`) stays
+// green, unmodified — that IS the byte-identical capability-ABSENT DoD line.
+// This describe adds the capability-PRESENT counterpart.
+
+describe("capability-conditional system prompt (chunk 2c-03, spec §3.8)", () => {
+  test("port wired -> system block equals COMPOSED_SYSTEM_PROMPT_WITH_ACTIONS (owns the capability, drops the cannot-forget clause)", async () => {
+    const { store, port } = freshMemoryHarness();
+    const t = store.createThread();
+
+    const { client, capturedParams } = makeScriptedClient([
+      { stop_reason: "end_turn", content: [{ type: "text", text: "hi" }] },
+    ]);
+
+    const provider = createAnthropicApiProvider({
+      apiKey: "sk-ant-test",
+      client: client as never,
+      memoryActionPort: port,
+    });
+
+    const priorState: ProviderSessionState = {
+      phase: "done",
+      session_id: "",
+      messages: [],
+      memoryActionSlice: { threadId: t, ordinalMap: new Map() },
+    };
+
+    await provider.advance(priorState, {
+      type: "session_start",
+      trigger: "user",
+      text: "hi",
+      client_session_id: "c-2c03-present",
+    });
+
+    const params = capturedParams()[0] as {
+      system: Array<{ type: string; text: string }>;
+    };
+    const sysText = params.system[0]!.text;
+
+    expect(sysText).toBe(COMPOSED_SYSTEM_PROMPT_WITH_ACTIONS);
+    expect(sysText.toLowerCase()).toContain("this turn");
+    expect(sysText).not.toContain(
+      "You cannot modify, delete, or forget your own memory.",
+    );
+
+    store.close();
+  });
 });
 
 // ── memory-action tool loop (chunk 2c-02) ──────────────────────────────────

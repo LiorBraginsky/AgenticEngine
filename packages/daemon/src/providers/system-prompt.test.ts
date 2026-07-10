@@ -1,13 +1,15 @@
 /**
  * Unit tests for system-prompt.ts — prompt-composition (TDD: test-first).
  *
- * D1 frozen requirements (spec §3.1):
+ * D1 frozen requirements (spec §3.1) — these target the capability-ABSENT variant
+ * (spec §3.8 amendment: the capability-PRESENT variant flips D1-6; see the
+ * "capability-conditional composition (2c §3.8)" describe block below):
  *   (1) truthful + unconditional "one persistent agent with memory across conversations with this user"
  *   (2) [remembered]=PAST-conversations vs unlabelled=THIS-conversation discriminator (unambiguous)
  *   (3) never-claim-stateless / "nothing relevant" framing when no [remembered] messages
  *   (4) user can view/edit/delete via the History page
  *   (5) no-fabricated-links rule (link attached automatically post-reply)
- *   (6) cannot-self-forget (spec §3.6 D-V6d)
+ *   (6) cannot-self-forget (spec §3.6 D-V6d) — capability-ABSENT variant ONLY
  */
 import { test, expect, describe } from "bun:test";
 import {
@@ -15,6 +17,9 @@ import {
   MEMORY_SELF_CONCEPT,
   COMPOSED_SYSTEM_PROMPT,
   REMEMBERED_LABEL,
+  MEMORY_SELF_CONCEPT_WITH_ACTIONS,
+  COMPOSED_SYSTEM_PROMPT_WITH_ACTIONS,
+  composeSystemPrompt,
 } from "./system-prompt.js";
 
 // ── Module shape ───────────────────────────────────────────────────────────
@@ -154,7 +159,7 @@ describe("D1 requirement 5 — never invent or write out a History link", () => 
 
 // ── D1 requirement (6): cannot self-forget (spec §3.6 D-V6d) ─────────────
 
-describe("D-V6d — self-concept cannot self-forget", () => {
+describe("D-V6d — self-concept cannot self-forget (capability-ABSENT variant; spec §3.8 amendment: the capability-PRESENT variant flips D1-6)", () => {
   test('MEMORY_SELF_CONCEPT contains "You cannot modify, delete, or forget your own memory."', () => {
     expect(MEMORY_SELF_CONCEPT).toContain(
       "You cannot modify, delete, or forget your own memory.",
@@ -234,4 +239,58 @@ test("v2-09: over-correction clause re-tightened — never redirect to History f
   expect(MEMORY_SELF_CONCEPT).toContain("FIRST check");            // D1-7 (A′)
   expect(MEMORY_SELF_CONCEPT).toContain("cannot modify, delete, or forget your own memory"); // D1-6
   expect(MEMORY_SELF_CONCEPT).toContain("attached for you automatically"); // D1-5
+});
+
+// ── capability-conditional composition (2c §3.8) ──────────────────────────
+//
+// D8: system-prompt composition becomes a function of memory-action-port
+// capability. Capability-ABSENT stays byte-identical to today's
+// COMPOSED_SYSTEM_PROMPT (asserted mechanically below — the chunk's DoD
+// line). Capability-PRESENT flips D1-6 to honest tool-ownership with
+// boundaries (ADR-0016 decision 3).
+
+describe("capability-conditional composition (2c §3.8)", () => {
+  test("composeSystemPrompt(false) is byte-identical to today's COMPOSED_SYSTEM_PROMPT", () => {
+    expect(composeSystemPrompt(false)).toBe(COMPOSED_SYSTEM_PROMPT);
+  });
+
+  test("composeSystemPrompt(true) equals COMPOSED_SYSTEM_PROMPT_WITH_ACTIONS", () => {
+    expect(composeSystemPrompt(true)).toBe(COMPOSED_SYSTEM_PROMPT_WITH_ACTIONS);
+  });
+
+  test("COMPOSED_SYSTEM_PROMPT_WITH_ACTIONS === BASE_SYSTEM_PROMPT + double-newline + MEMORY_SELF_CONCEPT_WITH_ACTIONS", () => {
+    expect(COMPOSED_SYSTEM_PROMPT_WITH_ACTIONS).toBe(
+      BASE_SYSTEM_PROMPT + "\n\n" + MEMORY_SELF_CONCEPT_WITH_ACTIONS,
+    );
+  });
+
+  test("present-variant FLIPS D1-6: does NOT contain the cannot-self-forget clauses", () => {
+    expect(MEMORY_SELF_CONCEPT_WITH_ACTIONS).not.toContain(
+      "You cannot modify, delete, or forget your own memory.",
+    );
+    expect(MEMORY_SELF_CONCEPT_WITH_ACTIONS).not.toContain(
+      "Never claim to have forgotten, changed, or deleted something you remember",
+    );
+  });
+
+  test("present-variant owns the capability + boundaries (robust substrings)", () => {
+    const lower = MEMORY_SELF_CONCEPT_WITH_ACTIONS.toLowerCase();
+    expect(lower).toContain("forget");
+    expect(lower).toContain("remember");
+    expect(lower).toContain("this turn");
+    expect(lower).toContain("memory window");
+    expect(lower).toContain("history page");
+    expect(lower).toContain("pinned");
+    expect(lower).toContain("do not keep using");
+    expect(lower).toContain("near-duplicate");
+    expect(lower).toContain("never claim");
+  });
+
+  test("present-variant KEEPS the still-true clauses (D1-1..5, D1-7, D1-8 carry — spec §3.8)", () => {
+    expect(MEMORY_SELF_CONCEPT_WITH_ACTIONS.toLowerCase()).toContain("one persistent agent");
+    expect(MEMORY_SELF_CONCEPT_WITH_ACTIONS).toContain("[remembered] ");
+    expect(MEMORY_SELF_CONCEPT_WITH_ACTIONS).toContain("FIRST check");
+    expect(MEMORY_SELF_CONCEPT_WITH_ACTIONS).toContain("attached");
+    expect(MEMORY_SELF_CONCEPT_WITH_ACTIONS).toContain("automatically");
+  });
 });

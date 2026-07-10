@@ -78,6 +78,56 @@ test("forget: durably deletes the row, cleans fact_fts/fact_topics, records forg
   store.close();
 });
 
+// ─── nit-fold: normalizeExpectedText must not strip a digit-leading fact ───
+
+test("nit-fold: forget a digit-LEADING fact ('3.14 is pi') with its exact text → ok:true, row gone", () => {
+  const { store, port } = freshHarness();
+  const t = store.createThread();
+
+  const id = store.insertFact({
+    fact: "3.14 is pi",
+    canonical: "3.14 is pi",
+    topics: [],
+    provenance: `thread:${t}`,
+    scope: "cross-thread",
+    expiry: null,
+    confidence: 1,
+    authored_by: "machine",
+  }, "seed");
+
+  const ctx = freshCtx(t, new Map([[1, id]]));
+  const result = port.forget(ctx, { ordinal: 1, expected_text: "3.14 is pi" });
+
+  expect(result).toMatchObject({ ok: true, action: "forget", factId: id });
+  expect(store.readFactById(id)).toBeNull();
+
+  store.close();
+});
+
+test("nit-fold companion: an ORDINAL-prefixed echo ('3. favorite colour') still matches the unprefixed fact", () => {
+  const { store, port } = freshHarness();
+  const t = store.createThread();
+
+  const id = store.insertFact({
+    fact: "favorite colour",
+    canonical: "favorite colour",
+    topics: [],
+    provenance: `thread:${t}`,
+    scope: "cross-thread",
+    expiry: null,
+    confidence: 1,
+    authored_by: "machine",
+  }, "seed");
+
+  const ctx = freshCtx(t, new Map([[3, id]]));
+  const result = port.forget(ctx, { ordinal: 3, expected_text: "3. favorite colour" });
+
+  expect(result).toMatchObject({ ok: true, action: "forget", factId: id });
+  expect(store.readFactById(id)).toBeNull();
+
+  store.close();
+});
+
 // ─── remember → REPLACE (explicit target, machine) ─────────────────────────
 
 test("remember: explicit machine target with changed attribute → REPLACE (id stable, replaced_facts records old text)", () => {

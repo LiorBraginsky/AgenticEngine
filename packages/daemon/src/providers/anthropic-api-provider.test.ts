@@ -814,6 +814,347 @@ describe("memory-action tool loop (chunk 2c-02)", () => {
     store.close();
   });
 
+  // ── review FIX 1 (BLOCKER): the forced-final call must NOT omit `tools` ────
+  //
+  // The Anthropic Messages API 400s ANY request whose `messages` already contain
+  // tool_use/tool_result blocks but whose `tools` param is ABSENT. The forced-final
+  // call's `convo` always already contains the prior rounds' tool blocks, so
+  // omitting `tools` there is a guaranteed real-API 400 (guardrail d1 — every
+  // action must still be acknowledged). Fix: keep `tools` declared throughout and
+  // add `tool_choice:{type:"none"}` ONLY on the forced-final round.
+  test("FIX 1: forced-final call keeps `tools` declared + adds tool_choice:none; no call omits tools while useTools", async () => {
+    const { store, port } = freshMemoryHarness();
+    const t = store.createThread();
+    const factId = store.insertFact({
+      fact: "some fact",
+      canonical: "some fact",
+      topics: [],
+      provenance: `thread:${t}`,
+      scope: "cross-thread",
+      expiry: null,
+      confidence: 1,
+      authored_by: "machine",
+    }, "seed");
+
+    // Always returns tool_use — forces the loop to hit the round cap and issue
+    // the forced-final call (call #cap+1 = the 4th sequential model call).
+    const { client, capturedParams, callCount } = makeScriptedClient([
+      {
+        stop_reason: "tool_use",
+        content: [
+          { type: "tool_use", id: "tu-x", name: "memory_forget", input: { ordinal: 1, expected_text: "some fact" } },
+        ],
+      },
+    ]);
+
+    const provider = createAnthropicApiProvider({
+      apiKey: "sk-ant-test",
+      client: client as never,
+      memoryActionPort: port,
+    });
+
+    const priorState: ProviderSessionState = {
+      phase: "done",
+      session_id: "",
+      messages: [],
+      memoryActionSlice: { threadId: t, ordinalMap: new Map([[1, factId]]) },
+    };
+
+    const result = await provider.advance(priorState, {
+      type: "session_start",
+      trigger: "user",
+      text: "forget it forever",
+      client_session_id: "c-fix1",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(callCount()).toBe(4); // 3 tool-executing rounds (the cap) + 1 forced-final
+
+    const params = capturedParams() as Array<{ tools?: unknown; tool_choice?: { type: string } }>;
+    expect(params).toHaveLength(4);
+
+    // NO call may omit `tools` while useTools — every round's convo may already
+    // carry tool_use/tool_result blocks from a prior round.
+    for (const p of params) {
+      expect("tools" in p).toBe(true);
+    }
+
+    // The forced-final (LAST) call ALSO carries tool_choice:{type:"none"} — the
+    // model is not permitted to call tools, but `tools` stays declared so the
+    // real API's tool-blocks-in-history constraint is satisfied.
+    const forcedFinal = params[params.length - 1]!;
+    expect(forcedFinal.tool_choice).toEqual({ type: "none" });
+
+    // Earlier (non-forced) rounds must NOT set tool_choice:none (default "auto").
+    for (const p of params.slice(0, -1)) {
+      expect(p.tool_choice).toBeUndefined();
+    }
+
+    store.close();
+  });
+
+  // ── review FIX 3: dispatchTool never-throw branches, exercised through advance() ──
+
+  test("FIX 3: memory_forget with non-string expected_text -> stale_target tool_result, port never called (no audit row)", async () => {
+    const { store, port } = freshMemoryHarness();
+    const t = store.createThread();
+
+    const { client, capturedParams } = makeScriptedClient([
+      {
+        stop_reason: "tool_use",
+        content: [
+          { type: "tool_use", id: "tu-1", name: "memory_forget", input: { ordinal: 1, expected_text: 42 } },
+        ],
+      },
+      { stop_reason: "end_turn", content: [{ type: "text", text: "OK." }] },
+    ]);
+
+    const provider = createAnthropicApiProvider({
+      apiKey: "sk-ant-test",
+      client: client as never,
+      memoryActionPort: port,
+    });
+
+    const priorState: ProviderSessionState = {
+      phase: "done",
+      session_id: "",
+      messages: [],
+      memoryActionSlice: { threadId: t, ordinalMap: new Map([[1, "some-fact-id"]]) },
+    };
+
+    let threw = false;
+    let result: Awaited<ReturnType<typeof provider.advance>> | undefined;
+    try {
+      result = await provider.advance(priorState, {
+        type: "session_start",
+        trigger: "user",
+        text: "forget it with a bad expected_text",
+        client_session_id: "c-fix3-a",
+      });
+    } catch {
+      threw = true;
+    }
+
+    expect(threw).toBe(false);
+    expect(result!.ok).toBe(true);
+
+    const toolResult = lastToolResultJSON(capturedParams()[1]) as { ok: boolean; code?: string };
+    expect(toolResult.ok).toBe(false);
+    expect(toolResult.code).toBe("stale_target");
+
+    // Port never called: no audit row written for this thread.
+    expect(store.readMemoryActionEvents(t).length).toBe(0);
+
+    store.close();
+  });
+
+  test("FIX 3: memory_remember with missing/non-string fact -> rejected_by_scan tool_result, port never called (no audit row)", async () => {
+    const { store, port } = freshMemoryHarness();
+    const t = store.createThread();
+
+    const { client, capturedParams } = makeScriptedClient([
+      {
+        stop_reason: "tool_use",
+        content: [
+          { type: "tool_use", id: "tu-1", name: "memory_remember", input: { fact: 123 } },
+        ],
+      },
+      { stop_reason: "end_turn", content: [{ type: "text", text: "OK." }] },
+    ]);
+
+    const provider = createAnthropicApiProvider({
+      apiKey: "sk-ant-test",
+      client: client as never,
+      memoryActionPort: port,
+    });
+
+    const priorState: ProviderSessionState = {
+      phase: "done",
+      session_id: "",
+      messages: [],
+      memoryActionSlice: { threadId: t, ordinalMap: new Map() },
+    };
+
+    let threw = false;
+    let result: Awaited<ReturnType<typeof provider.advance>> | undefined;
+    try {
+      result = await provider.advance(priorState, {
+        type: "session_start",
+        trigger: "user",
+        text: "remember something with a bad fact type",
+        client_session_id: "c-fix3-b",
+      });
+    } catch {
+      threw = true;
+    }
+
+    expect(threw).toBe(false);
+    expect(result!.ok).toBe(true);
+
+    const toolResult = lastToolResultJSON(capturedParams()[1]) as { ok: boolean; code?: string };
+    expect(toolResult.ok).toBe(false);
+    expect(toolResult.code).toBe("rejected_by_scan");
+
+    expect(store.readMemoryActionEvents(t).length).toBe(0);
+
+    store.close();
+  });
+
+  // ── review FIX 4: max_tokens budget for tool-capable turns + empty finalText guard ──
+
+  test("FIX 4: tool-capable turns get a larger max_tokens budget (1024) now that tool_use JSON shares it", async () => {
+    const { store, port } = freshMemoryHarness();
+    const t = store.createThread();
+
+    const { client, capturedParams } = makeScriptedClient([
+      { stop_reason: "end_turn", content: [{ type: "text", text: "hi" }] },
+    ]);
+
+    const provider = createAnthropicApiProvider({
+      apiKey: "sk-ant-test",
+      client: client as never,
+      memoryActionPort: port,
+    });
+
+    const priorState: ProviderSessionState = {
+      phase: "done",
+      session_id: "",
+      messages: [],
+      memoryActionSlice: { threadId: t, ordinalMap: new Map() },
+    };
+
+    await provider.advance(priorState, {
+      type: "session_start",
+      trigger: "user",
+      text: "hi",
+      client_session_id: "c-fix4-a",
+    });
+
+    const params = capturedParams()[0] as { max_tokens: number };
+    expect(params.max_tokens).toBe(1024);
+
+    store.close();
+  });
+
+  test("FIX 4: empty finalText after the loop is never shipped verbatim -- an honest fallback is substituted", async () => {
+    // No text block and a non-tool_use stop_reason -> the loop breaks immediately
+    // with text="" (e.g. a max_tokens truncation before any text was emitted).
+    const { client } = makeScriptedClient([
+      { stop_reason: "max_tokens", content: [] },
+    ]);
+
+    const provider = createAnthropicApiProvider({
+      apiKey: "sk-ant-test",
+      client: client as never,
+      // deliberately NO memoryActionPort — the guard must fire regardless of
+      // tool-capability (this class of empty-reply bug pre-dates the tool loop).
+    });
+
+    const result = await provider.advance(undefined, SESSION_START_INBOUND);
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.finalText).not.toBe("");
+      expect(result.finalText?.length ?? 0).toBeGreaterThan(0);
+    }
+    const call = result.outbound[1]!;
+    expect(call.type).toBe("tool_call");
+    if (call.type === "tool_call" && call.payload.tool === "show_text") {
+      expect(call.payload.args.text.content).not.toBe("");
+    }
+  });
+
+  // ── review FIX 5: dispatchTool's defensive catch must not mislabel memory_remember ──
+  // as a forget-flavored code. Uses a fake port whose forget/remember THROW, to reach
+  // the (should-not-happen) catch branch deterministically.
+
+  describe("FIX 5: dispatchTool catch fallback code branches on tool name", () => {
+    function makeThrowingPort(): MemoryActionPort {
+      return {
+        forget: () => {
+          throw new Error("boom");
+        },
+        remember: () => {
+          throw new Error("boom");
+        },
+      } as unknown as MemoryActionPort;
+    }
+
+    test("memory_forget throwing -> caught, code stale_target", async () => {
+      const { client, capturedParams } = makeScriptedClient([
+        {
+          stop_reason: "tool_use",
+          content: [
+            { type: "tool_use", id: "tu-1", name: "memory_forget", input: { ordinal: 1, expected_text: "x" } },
+          ],
+        },
+        { stop_reason: "end_turn", content: [{ type: "text", text: "OK." }] },
+      ]);
+
+      const provider = createAnthropicApiProvider({
+        apiKey: "sk-ant-test",
+        client: client as never,
+        memoryActionPort: makeThrowingPort(),
+      });
+
+      const priorState: ProviderSessionState = {
+        phase: "done",
+        session_id: "",
+        messages: [],
+        memoryActionSlice: { threadId: "t-fix5", ordinalMap: new Map([[1, "f-1"]]) },
+      };
+
+      const result = await provider.advance(priorState, {
+        type: "session_start",
+        trigger: "user",
+        text: "forget",
+        client_session_id: "c-fix5-a",
+      });
+
+      expect(result.ok).toBe(true);
+      const toolResult = lastToolResultJSON(capturedParams()[1]) as { ok: boolean; code?: string };
+      expect(toolResult.ok).toBe(false);
+      expect(toolResult.code).toBe("stale_target");
+    });
+
+    test("memory_remember throwing -> caught, code rejected_by_scan (NOT the forget-flavored stale_target)", async () => {
+      const { client, capturedParams } = makeScriptedClient([
+        {
+          stop_reason: "tool_use",
+          content: [
+            { type: "tool_use", id: "tu-1", name: "memory_remember", input: { fact: "x" } },
+          ],
+        },
+        { stop_reason: "end_turn", content: [{ type: "text", text: "OK." }] },
+      ]);
+
+      const provider = createAnthropicApiProvider({
+        apiKey: "sk-ant-test",
+        client: client as never,
+        memoryActionPort: makeThrowingPort(),
+      });
+
+      const priorState: ProviderSessionState = {
+        phase: "done",
+        session_id: "",
+        messages: [],
+        memoryActionSlice: { threadId: "t-fix5", ordinalMap: new Map() },
+      };
+
+      const result = await provider.advance(priorState, {
+        type: "session_start",
+        trigger: "user",
+        text: "remember",
+        client_session_id: "c-fix5-b",
+      });
+
+      expect(result.ok).toBe(true);
+      const toolResult = lastToolResultJSON(capturedParams()[1]) as { ok: boolean; code?: string };
+      expect(toolResult.ok).toBe(false);
+      expect(toolResult.code).toBe("rejected_by_scan");
+    });
+  });
+
   test("capability-absent regression: no memoryActionPort -> request payload has NO tools key; behavior byte-identical to today", async () => {
     let capturedParams: unknown = null;
     const client: FakeClient = {

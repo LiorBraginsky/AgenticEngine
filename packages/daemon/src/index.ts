@@ -210,7 +210,15 @@ export function startDaemon(port: number = DAEMON_PORT, provider?: AgentProvider
           // phase:"done"/session_id:"" are don't-cares on start — every provider
           // reads only `.messages`; the mock adapter maps a session_start to a
           // fresh reducer call regardless of this phase.
-          priorState = priorMessages.length
+          // review FIX 2: attach the slice whenever it exists, even with EMPTY
+          // priorMessages (a brand-new thread's first "remember X" — no injected
+          // facts, no tail). Before this fix, `priorMessages.length === 0` dropped
+          // the whole `priorState` (and with it `memoryActionSlice`, carrying the
+          // REAL threadId) → the provider's `turnCtx.threadId` fell to the ""
+          // defensive floor → provenance `"thread:"` + an invisible audit row
+          // (ADR-0016 dec-4(e) audit-visibility guardrail + spec §3.9). Passing an
+          // empty-`messages` state with the slice is behavior-neutral otherwise.
+          priorState = (priorMessages.length || memoryActionSlice)
             ? { phase: "done", session_id: "", messages: priorMessages, ...(memoryActionSlice ? { memoryActionSlice } : {}) }
             : undefined;
         } else {

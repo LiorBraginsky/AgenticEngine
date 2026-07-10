@@ -141,6 +141,14 @@ export function classifyAnthropicError(err: unknown): string {
 // ── memory-action tool dispatch (chunk 2c-02, ADR-0016 decision 3) ────────
 
 /**
+ * review FIX 4: honest fallback shipped instead of an empty show_text bubble
+ * when the loop's `replyText` is empty after the network call(s) complete
+ * (e.g. a `stop_reason:"max_tokens"` truncation before any text was emitted).
+ */
+const EMPTY_REPLY_FALLBACK_TEXT =
+  "I didn't get a reply together for that — could you try again?";
+
+/**
  * Validates a scripted `tool_use` block's parsed `input` BEFORE calling the port
  * (gotcha #9 / cross-chunk fold: the loop must never throw across advance()).
  * Malformed args map to EXISTING typed result codes (no new code — the set is
@@ -190,7 +198,11 @@ function dispatchTool(
       "[anthropic-provider] memory tool threw (should not happen):",
       err instanceof Error ? err.message : err,
     );
-    return { ok: false, code: "stale_target", message: "That memory action couldn't be completed." };
+    // review FIX 5: branch the fallback code on the tool name — `stale_target`
+    // reads as forget-flavored ("that fact no longer exists / changed"), which
+    // is a misleading label to hand back for a thrown memory_remember.
+    const code = name === "memory_remember" ? "rejected_by_scan" : "stale_target";
+    return { ok: false, code, message: "That memory action couldn't be completed." };
   }
 }
 
@@ -368,10 +380,15 @@ export function createAnthropicApiProvider(
         // is MEMORY_ACTIONS_MAX_PER_TURN + 1 = 4 sequential model calls (each
         // typically 1-3s) + up to 3 sub-ms SQLite port ops — well under the 30s
         // handshake window.
+        //
+        // review FIX 4: tool-capable turns get a larger budget (1024 vs 512) now
+        // that tool_use JSON shares it with the reply text — shrinks the
+        // truncation window opened by the chunk. Capability-absent path (no
+        // memoryActionPort) stays at 512 — byte-identical to pre-chunk.
         for (;;) {
           const response = await client.messages.create({
             model: "claude-sonnet-4-6",
-            max_tokens: 512,
+            max_tokens: useTools ? 1024 : 512,
             thinking: { type: "disabled" },
             system: [
               {
@@ -381,7 +398,16 @@ export function createAnthropicApiProvider(
               },
             ],
             messages: convo,
-            ...(requestTools ? { tools: MEMORY_ACTION_TOOLS_PARAM } : {}),
+            // review FIX 1 (BLOCKER): the Anthropic API 400s ANY request whose
+            // `messages` already contain tool_use/tool_result blocks (which the
+            // convo does from round 2 on) but whose `tools` param is ABSENT.
+            // `tools` must therefore stay declared for the ENTIRE turn once
+            // useTools is true — never conditioned on requestTools. On the
+            // forced-final round (requestTools flipped false by the cap
+            // backstop below), `tool_choice:{type:"none"}` is what forces clean
+            // final text instead — omitting `tools` is NOT a valid way to do it.
+            ...(useTools ? { tools: MEMORY_ACTION_TOOLS_PARAM } : {}),
+            ...(useTools && !requestTools ? { tool_choice: { type: "none" as const } } : {}),
           });
 
           let text = "";
@@ -395,6 +421,11 @@ export function createAnthropicApiProvider(
           }
 
           if (!requestTools || response.stop_reason !== "tool_use" || toolUses.length === 0) {
+            // review FIX 4 (residual, not fixed here): a response truncated by
+            // `stop_reason:"max_tokens"` mid-tool-generation can land here with
+            // `text` empty or a bare preamble — deeper truncation-honesty
+            // detection is deferred (backlog); the empty-guard below is the
+            // minimal hardening for THIS turn's reply, not a full fix.
             replyText = text;
             break;
           }
@@ -413,7 +444,16 @@ export function createAnthropicApiProvider(
           // total. The port's cap_exceeded is the natural terminator for a
           // single response with multiple tool_use blocks; this round bound
           // guards a misbehaving LLM that keeps calling tools one-per-round.
+          // review FIX 1: this ONLY flips requestTools (which now controls
+          // tool_choice:none, not `tools` presence — see the create() call above).
           if (rounds >= MEMORY_ACTIONS_MAX_PER_TURN) requestTools = false;
+        }
+
+        // review FIX 4: never ship an empty show_text bubble — substitute an
+        // honest short fallback rather than silently sending "" (which would
+        // read to the user as a blank/broken reply with no signal either way).
+        if (!replyText) {
+          replyText = EMPTY_REPLY_FALLBACK_TEXT;
         }
 
         // Build outbound — formatShowTextEnvelopes self-validates with safeParse

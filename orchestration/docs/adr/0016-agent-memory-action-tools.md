@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-07-10
 deciders: [lior]
 tags: [adr, memory, tools, agent-actions, tool-use, security, poisoning, 5d]
@@ -9,10 +9,14 @@ tags: [adr, memory, tools, agent-actions, tool-use, security, poisoning, 5d]
 
 ## Status
 
-`proposed` — **agent-authored during work** (the memory-action-tools frontier decompose pass,
-PIPELINE §11, 2026-07-10; conductor rulings in bus q#014). **Hard-to-reverse tier** (new capability
-class + a security surface on the just-hardened memory-write path) → per PIPELINE §5.2 / Finding #5
-this ADR **escalates to Lior BEFORE the decompose PR merges** — no async shortcut, no auto-merge.
+`accepted` — **by Lior 2026-07-10 at the decompose-PR gate** (full §5.2 acceptance, hard-to-reverse
+tier honored: escalated before merge, no async shortcut). Spec §0 sign-off points 1–3 confirmed as
+written; one acceptance rider recorded in the spec (D7a-bis rider: the extracted apply-core is
+simple-but-extensible — future topic-consolidation ops land as new handlers; backlog §E).
+*History: agent-authored during work (the memory-action-tools frontier decompose pass, PIPELINE §11,
+2026-07-10; conductor rulings in bus q#014/q#015). Hard-to-reverse tier (new capability class + a
+security surface on the just-hardened memory-write path) → escalated to Lior before merge per
+PIPELINE §5.2 / Finding #5.*
 
 ## Context
 

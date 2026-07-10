@@ -1,6 +1,6 @@
 ---
 title: Memory action tools (2c) — conversational forget/remember via a daemon-internal agent tool plane
-status: draft
+status: accepted
 date: 2026-07-10
 deciders: [lior]
 feeds: memory-action-tools
@@ -24,6 +24,12 @@ tags: [spec, memory, tools, agent-actions, forget, remember, poisoning, 5d, tool
 > (engine-reviewer design-critic) ran on this draft; its findings are folded inline and tagged
 > `[grill …]`. The §5.2 gates (this spec's sign-off + ADR-0016 acceptance) are **Lior's** — the
 > decompose PR does NOT merge before them.
+>
+> **ACCEPTED 2026-07-10 by Lior** (§0 points 1–3 confirmed as written) **with ONE rider**: the
+> extracted apply-core (§3.7a-bis) is built **simple but EXTENSIBLE** — replace is a lane that will
+> outlive 2c; Lior anticipates future **topic-based fact consolidation** needing the same mechanism
+> plus a distinct op («append-механізм»). Ruled non-blocking: recorded as the D7a-bis design rider
+> below + backlog §E; no spec redesign.
 
 ---
 
@@ -323,6 +329,14 @@ extracts it into a shared unit (`applyFactOp`-shaped: callable WITHOUT a `Distil
 **no watermark/distill-event side-effects**), invoked by BOTH the distiller and the port. This is a
 named §4 coupling and a chunk-01 deliverable — without it a worker either duplicates the destructive
 path or wrongly advances watermarks mid-turn.
+
+**D7a-bis rider (Lior, 2026-07-10 sign-off): simple but EXTENSIBLE.** `applyFactOp` is designed as
+the ONE shared fact-mutation primitive with a **growable closed set of per-op handlers** (today:
+`new | append | replace` + the port's delete): each handler carries its own 5e-precedence /
+suppression / audit rules, and adding a future op means adding a handler, NOT re-plumbing callers.
+Anticipated consumer: **topic-based fact consolidation** (grouping/merging facts by topic) — expected
+to reuse the replace lane plus a distinct consolidation/append-style op. Design for that seam now;
+build nothing of it in 2c (recorded in backlog §E).
 
 **D7b. Mid-turn provenance constraint (found this pass):** at tool-execution time the current turn's
 messages are NOT yet in the archive (`endTurn` flushes at phase-done) — there is no `messages.id` to

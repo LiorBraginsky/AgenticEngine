@@ -127,6 +127,12 @@ The structure is sound for single-user dogfood. Everything below is **deferred /
   likely had in mind — capture it before designing E.** *Lives:* nowhere yet — recorded here.
 - **Kind-typed / structured fact fields** (entity / preference / count with typed values) — **RULED OUT**
   for now (see Ruled-out below), but explicitly "additive-later if a semantic query engine lands."
+- **Topic-based fact consolidation («append-механізм») — anticipated, NOT designed (Lior 2026-07-10,
+  at the 2c spec sign-off).** When facts get grouped/merged by topic, the mutation machinery is the
+  2c-extracted `applyFactOp` core (spec 2026-07-10 D7a-bis rider): the replace lane is expected to be
+  reused, plus a DISTINCT consolidation/append-style op added as a new handler. The 2c build keeps the
+  core simple-but-extensible for exactly this; design the op itself when topic-grouping work starts.
+  *Lives:* spec 2026-07-10-memory-action-tools D7a-bis rider + chunk-01 design note; here.
 
 ### F. Injection architecture — variant B
 - **Variant B — render facts into the SYSTEM prompt** instead of `[remembered]` user-messages.

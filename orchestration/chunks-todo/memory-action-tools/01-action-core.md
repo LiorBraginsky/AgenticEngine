@@ -102,6 +102,9 @@ Files to touch (expected):
 - packages/daemon/src/memory/distiller-registration.ts — extract the rule-gated applyFactOp unit
   (spec §3.7a-bis) + the D6b forgotten_facts consult across new/append/replace-result (machine
   candidates only, 5e precedence chain) + D6c un-forget clear + prompt-nudge plumbing;
+  DESIGN NOTE (Lior sign-off rider 2026-07-10, spec D7a-bis rider): applyFactOp = the one shared
+  mutation primitive with a growable per-op handler set — simple but extensible; future
+  topic-consolidation/append-style ops land as new handlers (backlog §E), build none of them here;
 - packages/daemon/src/memory/hatch.ts + http-routes.ts — additive audit read (spec §3.9 D9b;
   render is chunk-04's);
 - tests colocated per repo convention.

@@ -31,6 +31,7 @@ import type {
 } from "../memory/memory-action-port.js";
 import { MEMORY_ACTIONS_MAX_PER_TURN } from "../memory/memory-action-port.js";
 import { MEMORY_ACTION_TOOLS_PARAM, serializeToolResult } from "./memory-action-tools.js";
+import { memDebug, previewStr } from "../memory/debug-log.js";
 
 // ── Pure formatters (functional core) ─────────────────────────────────────
 
@@ -204,6 +205,17 @@ function dispatchTool(
     const code = name === "memory_remember" ? "rejected_by_scan" : "stale_target";
     return { ok: false, code, message: "That memory action couldn't be completed." };
   }
+}
+
+/**
+ * Best-effort preview of a tool call's user-supplied fact/target text, for the
+ * MEMORY_DEBUG `action` glass-box channel (chunk 2c-03, spec §3.9). Never
+ * throws — carries only content the tool call already holds, no secret.
+ */
+function actionInputPreview(name: string, input: unknown): string {
+  const i = (input ?? {}) as Record<string, unknown>;
+  const src = name === "memory_remember" ? i["fact"] : i["expected_text"];
+  return typeof src === "string" ? src : "";
 }
 
 // ── Injectable factory ─────────────────────────────────────────────────────
@@ -432,11 +444,23 @@ export function createAnthropicApiProvider(
           }
 
           convo.push({ role: "assistant", content: response.content });
-          const results: Anthropic.ToolResultBlockParam[] = toolUses.map((tu) => ({
-            type: "tool_result",
-            tool_use_id: tu.id,
-            content: serializeToolResult(dispatchTool(tu.name, tu.input, port!, turnCtx!)),
-          }));
+          const results: Anthropic.ToolResultBlockParam[] = toolUses.map((tu) => {
+            const result = dispatchTool(tu.name, tu.input, port!, turnCtx!);
+            // MEMORY_DEBUG `action` channel (chunk 2c-03, spec §3.9): one line per
+            // dispatchTool result, applied AND refused alike — off by default.
+            memDebug("action", {
+              threadId: turnCtx!.threadId,
+              tool: tu.name,
+              outcome: result.ok ? "applied" : `refused-${result.code}`,
+              ...(result.ok && result.factId !== undefined ? { factId: result.factId } : {}),
+              factPreview: previewStr(actionInputPreview(tu.name, tu.input)),
+            });
+            return {
+              type: "tool_result",
+              tool_use_id: tu.id,
+              content: serializeToolResult(result),
+            };
+          });
           convo.push({ role: "user", content: results });
 
           rounds++;

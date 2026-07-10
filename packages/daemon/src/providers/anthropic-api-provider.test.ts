@@ -4,7 +4,7 @@
  * Uses a mocked Anthropic client — NEVER hits the network.
  * Covers the five required cases from the plan (C3-1 §1c).
  */
-import { test, expect, describe } from "bun:test";
+import { test, expect, describe, spyOn } from "bun:test";
 import { parseEnvelope } from "@agentic/protocol";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1231,5 +1231,139 @@ describe("memory-action tool loop (chunk 2c-02)", () => {
 
     expect(capturedParams).not.toBeNull();
     expect("tools" in (capturedParams as Record<string, unknown>)).toBe(false);
+  });
+
+  // ── MEMORY_DEBUG "action" channel (chunk 2c-03, spec §3.9) ────────────────
+
+  test("MEMORY_DEBUG=1 -> one [memory-debug] action line per dispatchTool result (applied AND refused); unset -> zero lines", async () => {
+    const savedDebug = process.env["MEMORY_DEBUG"];
+    try {
+      const { store, port } = freshMemoryHarness();
+      const t = store.createThread();
+      const machineFactId = store.insertFact({
+        fact: "favorite color blue",
+        canonical: "favorite color blue",
+        topics: [],
+        provenance: `thread:${t}`,
+        scope: "cross-thread",
+        expiry: null,
+        confidence: 1,
+        authored_by: "machine",
+      }, "seed");
+      const humanFactId = store.insertFact({
+        fact: "user's name is Lior",
+        canonical: "user's name is lior",
+        topics: [],
+        provenance: `thread:${t}`,
+        scope: "cross-thread",
+        expiry: null,
+        confidence: 1,
+        authored_by: "human",
+      }, "seed");
+
+      const ordinalMap = new Map<number, string>([[1, machineFactId], [2, humanFactId]]);
+
+      // ── ON: MEMORY_DEBUG=1 -> both an applied and a refused action line ──
+      process.env["MEMORY_DEBUG"] = "1";
+      const { client: onClient } = makeScriptedClient([
+        {
+          stop_reason: "tool_use",
+          content: [
+            { type: "tool_use", id: "tu-1", name: "memory_forget", input: { ordinal: 1, expected_text: "favorite color blue" } },
+            { type: "tool_use", id: "tu-2", name: "memory_forget", input: { ordinal: 2, expected_text: "user's name is Lior" } },
+          ],
+        },
+        { stop_reason: "end_turn", content: [{ type: "text", text: "Done." }] },
+      ]);
+      const onProvider = createAnthropicApiProvider({
+        apiKey: "sk-ant-test",
+        client: onClient as never,
+        memoryActionPort: port,
+      });
+      const onPriorState: ProviderSessionState = {
+        phase: "done",
+        session_id: "",
+        messages: [],
+        memoryActionSlice: { threadId: t, ordinalMap },
+      };
+
+      const onCaptured: string[] = [];
+      const onSpy = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+        onCaptured.push(args.join(" "));
+      });
+      try {
+        await onProvider.advance(onPriorState, {
+          type: "session_start",
+          trigger: "user",
+          text: "forget my colour and my name",
+          client_session_id: "c-debug-on",
+        });
+      } finally {
+        onSpy.mockRestore();
+      }
+
+      const actionLines = onCaptured.filter((l) => l.includes("[memory-debug] action"));
+      expect(actionLines.some((l) => l.includes('"outcome":"applied"'))).toBe(true);
+      expect(actionLines.some((l) => l.includes('"outcome":"refused-refused_human_fact"'))).toBe(true);
+
+      // ── OFF: MEMORY_DEBUG unset -> zero action lines ──────────────────────
+      delete process.env["MEMORY_DEBUG"];
+      const { store: store2, port: port2 } = freshMemoryHarness();
+      const t2 = store2.createThread();
+      const factId2 = store2.insertFact({
+        fact: "favorite food pizza",
+        canonical: "favorite food pizza",
+        topics: [],
+        provenance: `thread:${t2}`,
+        scope: "cross-thread",
+        expiry: null,
+        confidence: 1,
+        authored_by: "machine",
+      }, "seed");
+
+      const { client: offClient } = makeScriptedClient([
+        {
+          stop_reason: "tool_use",
+          content: [
+            { type: "tool_use", id: "tu-3", name: "memory_forget", input: { ordinal: 1, expected_text: "favorite food pizza" } },
+          ],
+        },
+        { stop_reason: "end_turn", content: [{ type: "text", text: "Done." }] },
+      ]);
+      const offProvider = createAnthropicApiProvider({
+        apiKey: "sk-ant-test",
+        client: offClient as never,
+        memoryActionPort: port2,
+      });
+      const offPriorState: ProviderSessionState = {
+        phase: "done",
+        session_id: "",
+        messages: [],
+        memoryActionSlice: { threadId: t2, ordinalMap: new Map([[1, factId2]]) },
+      };
+
+      const offCaptured: string[] = [];
+      const offSpy = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+        offCaptured.push(args.join(" "));
+      });
+      try {
+        await offProvider.advance(offPriorState, {
+          type: "session_start",
+          trigger: "user",
+          text: "forget my food",
+          client_session_id: "c-debug-off",
+        });
+      } finally {
+        offSpy.mockRestore();
+      }
+
+      expect(offCaptured.filter((l) => l.includes("[memory-debug] action")).length).toBe(0);
+
+      store.close();
+      store2.close();
+    } finally {
+      if (savedDebug === undefined) delete process.env["MEMORY_DEBUG"];
+      else process.env["MEMORY_DEBUG"] = savedDebug;
+    }
   });
 });

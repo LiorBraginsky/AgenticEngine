@@ -30,22 +30,54 @@
  * forget:
  *   { stage:"forget", route:"forgetFactById"|"forgetFact", target:{factId?,provenance?,normalizedText?}, deletedIds, deletedCount }
  *
+ * action (chunk 2c-03, spec §3.9 — the memory-action tool glass-box, emitted once
+ * per dispatchTool result inside the bounded loop, applied AND refused alike):
+ *   { stage:"action", threadId, tool:"memory_forget"|"memory_remember", outcome:"applied"|`refused-<code>`, factId?, factPreview }
+ *
  * Secret discipline:
  *   - Content previews are capped at 80 chars — the user's own memory content
  *     (acceptable under MEMORY_DEBUG, but kept short for greppability).
  *   - The API key and auth token MUST NEVER appear in any payload. callers must
  *     not pass them — and this module provides no pathway to do so.
+ *
+ * Channel gate (chunk 2c-03, backward-compatible comma-channel selector —
+ * Orchestrator decision, FLAG 4 resolved): `MEMORY_DEBUG` is read as follows:
+ *   - unset / empty        -> ALL channels OFF (zero-cost default).
+ *   - "1"                  -> ALL channels ON (backward-compat; every prior
+ *                             debug-log test stays green).
+ *   - "action,distill,…"   -> ONLY the listed stages (comma-separated,
+ *                             trimmed) are ON; everything else is OFF.
+ * This makes spec §5's demo-env line (`MEMORY_DEBUG=action,distill,retrieve,forget`)
+ * literally correct without breaking the pre-existing boolean "=1" convention.
  */
 
 /**
  * Returns true if MEMORY_DEBUG=1 in the current process environment.
  * A function (not a constant) so tests can toggle the env var between calls.
+ * NOTE: this checks the legacy all-on literal only — per-stage gating (incl.
+ * the comma-channel selector) lives in `stageEnabled` below, consulted by
+ * `memDebug` directly.
  */
 export const MEMORY_DEBUG = (): boolean => process.env["MEMORY_DEBUG"] === "1";
 
 /**
+ * Backward-compatible comma-channel gate: is `stage` enabled by the current
+ * `MEMORY_DEBUG` env value? unset/empty -> false; "1" -> true for every stage;
+ * otherwise -> true iff the comma-split, trimmed list includes `stage`.
+ */
+function stageEnabled(stage: string): boolean {
+  const raw = process.env["MEMORY_DEBUG"];
+  if (raw === undefined || raw === "") return false;
+  if (raw === "1") return true;
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .includes(stage);
+}
+
+/**
  * Log one structured greppable line to stderr for the given memory pipeline stage.
- * No-op (zero overhead) when MEMORY_DEBUG() is false.
+ * No-op (zero overhead) when the stage's channel is off (see `stageEnabled`).
  *
  * The `payload` is spread into `{stage}` and JSON-serialised.
  * `stage` is prepended explicitly so it always appears at the top of the JSON.
@@ -54,10 +86,10 @@ export const MEMORY_DEBUG = (): boolean => process.env["MEMORY_DEBUG"] === "1";
  * NEVER pass the API key, auth token, or any credential.
  */
 export function memDebug(
-  stage: "distill" | "retrieve" | "forget" | "inject",
+  stage: "distill" | "retrieve" | "forget" | "inject" | "action",
   payload: Record<string, unknown>,
 ): void {
-  if (!MEMORY_DEBUG()) return;
+  if (!stageEnabled(stage)) return;
   // Merge stage into the payload so the JSON line is self-describing.
   const line = JSON.stringify({ stage, ...payload });
   console.error(`[memory-debug] ${stage} ${line}`);

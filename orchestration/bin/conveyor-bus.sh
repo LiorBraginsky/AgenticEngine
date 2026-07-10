@@ -8,7 +8,10 @@
 #   conveyor-bus.sh list                       # show unanswered questions
 #   conveyor-bus.sh answer <id> <decided_by>   # answer body on STDIN; by = jimmy | jimmy-provisional | lior
 #   conveyor-bus.sh stats                       # the experiment metric: how often workers ask
-#   conveyor-bus.sh wait [secs]                 # block until new-q / worker-ledger-report / worker-menu
+#   conveyor-bus.sh wait [poll-secs] [max-secs] [ledger-match]
+#                                               # block until new-q / worker-ledger-report / worker-menu;
+#                                               # ledger-match MUST be chunk-specific (e.g. "my-feature 01")
+#                                               # or ledger reports are NEVER matched (default = no-match sentinel)
 #                                               #   (run with run_in_background; exits on the first event)
 # bash-3.2 / BSD-safe. TSV parsed with awk -F'\t' (no fragile literal-tab greps).
 set -uo pipefail
@@ -75,5 +78,5 @@ case "${1:-list}" in
       sleep "$secs"; elapsed=$((elapsed+secs))
     done
     ;;
-  *) echo "usage: conveyor-bus.sh list | answer <id> <by> | stats | wait [secs]" >&2; exit 2 ;;
+  *) echo "usage: conveyor-bus.sh list | answer <id> <by> | stats | wait [poll-secs] [max-secs] [ledger-match]" >&2; exit 2 ;;
 esac

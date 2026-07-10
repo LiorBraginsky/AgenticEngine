@@ -12,6 +12,22 @@
  *   - History/memory slice ONLY — NOT an SPA, NO settings/plugins/devtools.
  */
 
+/**
+ * Paste-path token sanitizer (chunk-04 tail B). Single source of truth:
+ * inlined verbatim into the served <script> below AND compiled in the unit test.
+ * Tolerates the zsh no-newline "%" marker + surrounding whitespace/quotes that
+ * ride along when a token is copied from a terminal. Format-agnostic (does NOT
+ * assume hex) so a future token format is unaffected; the real gate stays the
+ * server-side constant-time compare (token-store.ts).
+ */
+export const SANITIZE_TOKEN_FN = `function sanitizeToken(raw) {
+  if (typeof raw !== "string") return "";
+  var t = raw.trim();
+  t = t.replace(/%+$/, "").trim();            // zsh no-newline marker(s)
+  t = t.replace(/^["']+|["']+$/g, "").trim(); // surrounding quotes
+  return t;
+}`;
+
 export const HISTORY_HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -171,7 +187,7 @@ export const HISTORY_HTML = `<!DOCTYPE html>
   <div id="thread-list-view">
     <div class="panel">
       <h2>Threads</h2>
-      <ul class="thread-list" id="thread-list"><li class="empty">Loading…</li></ul>
+      <ul class="thread-list" id="thread-list"><li class="empty locked">&#128274; Locked &mdash; paste your auth token above to view your memory.</li></ul>
     </div>
   </div>
 
@@ -202,6 +218,9 @@ export const HISTORY_HTML = `<!DOCTYPE html>
     // The token is in-memory only: a separate-origin tab cannot read a JS variable.
     var _authToken = null; // eslint-disable-line no-var
 
+    // ── Paste-path token sanitizer (chunk-04 tail B) ─────────────────────────────
+    ${SANITIZE_TOKEN_FN}
+
     // ── DOM refs ─────────────────────────────────────────────────────────────────
     var tokenInput = document.getElementById("token-input");
     var unlockBtn = document.getElementById("unlock-btn");
@@ -218,7 +237,7 @@ export const HISTORY_HTML = `<!DOCTYPE html>
 
     // ── Unlock ────────────────────────────────────────────────────────────────────
     unlockBtn.addEventListener("click", function () {
-      var val = tokenInput.value.trim();
+      var val = sanitizeToken(tokenInput.value); // chunk-04 tail B (was: .trim())
       if (!val) {
         setStatus("Enter a token first.", false);
         return;
@@ -239,15 +258,35 @@ export const HISTORY_HTML = `<!DOCTYPE html>
     // ── Thread list ───────────────────────────────────────────────────────────────
     function loadThreadList() {
       fetch("/memory/threads", { headers: { "Authorization": "Bearer " + _authToken } })
-        .then(function (r) { return r.json(); })
-        .then(function (data) { renderThreadList(data.threads || []); })
-        .catch(function (err) {
+        .then(function (r) {
+          if (r.status === 401) {
+            // Honest: unauthorized, NOT "no threads". (ADR-0012 5a / ADR-0013 read-gate.)
+            renderLocked("Unauthorized — check the token you pasted.");
+            setStatus("401 — bad or missing token.", false);
+            return null;
+          }
+          return r.json();
+        })
+        .then(function (data) {
+          if (data === null) return;              // 401 already handled
+          renderThreadList(data.threads || []);   // 200: real list or honest "No threads yet."
+        })
+        .catch(function () {
+          // Honest daemon-down / network error, NOT "no threads".
           clearChildren(threadList);
           var li = document.createElement("li");
           li.className = "empty";
-          li.textContent = "Failed to load threads.";
+          li.textContent = "Couldn’t reach the daemon — is it running?";
           threadList.appendChild(li);
         });
+    }
+
+    function renderLocked(msg) {
+      clearChildren(threadList);
+      var li = document.createElement("li");
+      li.className = "empty locked";
+      li.textContent = "🔒 " + (msg || "Locked — paste your auth token above to view your memory.");
+      threadList.appendChild(li);
     }
 
     function renderThreadList(threads) {

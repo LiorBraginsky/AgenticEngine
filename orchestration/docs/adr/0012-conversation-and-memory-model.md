@@ -209,9 +209,87 @@ This amendment is, in part, the regret arriving early: the global re-projection 
 exactly the way that TODO anticipated ("every thread felt cluttered / facts churned"). The pivot is the
 correction, made before the feature shipped as default rather than after.
 
+## Rider 2026-07-10 (proposed): Memory-EDIT semantics — message-correction vs fact-edit, and human-adopted facts
+
+> **Status:** `proposed` — **NOT yet accepted.** This rider is a **doc-style record of ALREADY-SHIPPED,
+> demo-blessed behavior**; it proposes no new design. **⚠️ Agent-authored during work** (adr-curator,
+> at the `memory-transparency-ui` chunk-04 closeout, 2026-07-10) — it captures what shipped across chunks
+> 03 + 05 and what Lior blessed in the chunk-03 demo (2026-07-09) and the joint demo (2026-07-10).
+> **This rider does NOT self-accept, and does NOT change this ADR's frontmatter status (stays `accepted`)
+> or the top Status block.** Amending a north-star ADR is a [[../PIPELINE]] §5.2 ADR-acceptance gate —
+> **Lior acceptance is pending; the conductor will route a separate Lior tap** to move this rider
+> `proposed → accepted`. It follows this file's existing in-file dated-section convention (see
+> "Amendment 2026-06-13" above); it is a **rider** that records now-settled *user-facing* semantics, not
+> a change to a HARD INVARIANT.
+
+### Why record this
+
+Decision **5a** promised "a view / **edit** / forget escape hatch — the user can always see, **correct**,
+and delete what the agent remembers." The `memory-transparency-ui` feature
+([[../specs/2026-07-02-memory-transparency-ui]]) moved that hatch into the overlay. Building it revealed
+that "edit" is **two distinct operations** the original spec wording conflated (spec EDIT-ruling block,
+~lines 41–48). Both now exist and are blessed; this rider names them so a future reader does not read
+"edit" as one thing, and records two adjacent semantics Lior confirmed as designed.
+
+### Ruling 1 — "edit" is TWO blessed semantics
+
+**(a) Message-correction** (shipped chunk-03). Editing a **message in the thread archive** via
+MUTATION-AS-APPEND (`WriteGate.edit(messageId)`, stamped `authored_by:human`). The corrected **text is
+persistent** — surfaced via `readThreadArchive` COALESCE over the append — but the **"edited by you"
+marker is session-local**: the `ThreadMessage` wire carries no persistent correction flag, so the badge
+does not survive a restart (the corrected text does). This is **not** editing distilled-fact text.
+
+**(b) Fact-edit** (shipped chunk-05). Editing the **distilled-fact TEXT itself** — the literal 5a
+"correct what the agent remembers" promise. Additive `target_type:"fact"` on `POST /memory/edit` →
+`store.editFactById`: REPLACE text in place, **id stable**, stamped `authored_by=human`, FTS refreshed.
+Carries a **durable human "yours" badge** — data-driven from `fact.authored_by`, so it **survives
+restart** (unlike the session-local message tag). **Demo-confirmed 2026-07-10: the durable badge survives
+a restart.**
+
+**Why two:** the spec said "edit a fact," but the frozen backend only had **message**-edit; fact-text
+editing was a genuinely missing surface added as chunk-05 (the spec's original wording **over-promised
+against the seam**, spec ~line 46). Both surfaces now exist and are blessed — this rider records the
+split, it does not choose it.
+
+### Ruling 2 — the human-adopted-fact rule (an edited fact survives source-forget)
+
+An edited fact is stamped `authored_by=human`, and a human-authored fact is **excluded from the
+message-forget cascade** → it **survives a later forget of its source conversation**. This is the designed
+5e / [[0015-intent-based-memory-forget]] B1 "the human adopted the fact" semantic: once a human corrects
+or edits a fact, it is **no longer owned by the machine-derived source** and is **not swept** when that
+source is forgotten. **Lior confirmed this as expected working-as-designed** (joint demo, 2026-07-10) — a
+feature, not a defect. It is the concrete user-facing face of 5e (never auto-overwrite human-authored
+entries) once edit and forget coexist in the hatch.
+
+### Ruling 3 — 5e machine-over-human protection is CONSUMED unchanged (context, not a new decision)
+
+Fact-edit routes through the **existing** never-overwrite-human demote + dedup-suppress path by stamping
+`human` and refreshing the canonical FTS; **the distiller was byte-untouched**. No frozen surface moved —
+`@agentic/protocol` and the mock reducer are unchanged, and `target_type:"fact"` is **additive** to the
+HTTP body (the same posture [[0013-daemon-memory-write-http-surface-caller-auth]] and
+[[0015-intent-based-memory-forget]] took). This is **why chunk-05 was not ADR-worthy for its mechanism** —
+the mechanism is the already-blessed 5e / 2026-06-13-amendment machinery. This rider only DOCUMENTS the
+now-settled **user-facing** semantics that emerged, per the spec's "ADR-0012 rider … rides the chunk-04
+closeout" note (spec ~line 47).
+
+### Relationship to existing decisions
+
+- **5a** — makes "edit / correct" concrete: it is **two** operations (message-correction + fact-edit),
+  and fact-edit is the one that literally fulfills "correct what the agent remembers."
+- **5e** — Ruling 2 is 5e made visible where edit and forget meet: a human-adopted fact is unassailable
+  by the machine-derived source's forget.
+- **Amendment 2026-06-13** — fact-edit is clause **(b)** of the amended STABILITY invariant ("a distilled
+  fact persists unchanged until … (b) the user edits it"); this rider is that clause reaching the UI.
+- **[[0013-daemon-memory-write-http-surface-caller-auth]]** — fact-edit is a token-gated `POST /memory/edit`
+  write; the caller-auth posture is 0013's, unchanged.
+- **[[0015-intent-based-memory-forget]]** — the human-adopted-fact exclusion is 0015's B1 separate-artifact
+  / human-precedence invariant; a source-forget touches `messages`/`mutations` only, never a
+  human-authored fact row.
+
 ## Related
 
 - [[../specs/2026-06-13-memory-distiller-v2]] — the incremental mechanics this amendment's invariant governs.
+- [[../specs/2026-07-02-memory-transparency-ui]] — the feature the 2026-07-10 rider records; its EDIT-ruling block (~lines 41–48) is the source the rider formalizes.
 - [[0001-interaction-pattern]] — streaming sessions + the **cross-session memory it explicitly deferred** (decision-point 4/6, Option C rejected as v2). This ADR is where that deferral comes due and commits the memory model. Sessions remain the in-thread turn substrate.
 - [[0002-ui-as-tool-calls]] — the **agent paradigm**: output is tool calls / widgets, not a chat-message channel. Decision 3 holds the line here.
 - [[0005-ui-contract-closed-set]] — closed-set primitives (**widgets out**, no transcript surface); A2UI **not adopted for our primitives** (cross-frontend rendering is already native), but **external rich-widget rendering stays open** ([[../open-questions]] Q11).
@@ -220,6 +298,8 @@ correction, made before the feature shipped as default rather than after.
 - [[0009-text-display-only-ui-primitive]] — the text answer is a **display-only widget**, not a message; multi-turn text continuation builds on this, not on a message channel.
 - [[0010-pluggable-llm-provider-abstraction]] — the **swappable-provider posture** decision 6 borrows for memory retrieval (vector/graph as a provider, not a v1 bet).
 - [[0011-llm-auth-and-subscription-strategy]] — part of the LLM text slice this ADR builds the conversational layer on top of.
+- [[0013-daemon-memory-write-http-surface-caller-auth]] — the token-gated `/memory/*` write surface the 2026-07-10 rider's fact-edit (`POST /memory/edit`, `target_type:"fact"`) rides.
+- [[0015-intent-based-memory-forget]] — the B1 separate-artifact / human-precedence invariant the rider's human-adopted-fact rule (Ruling 2) rests on.
 - [[../roadmap]] — "**Conversation & Interaction Model**" section (locked 2026-06-04); this ADR is the model, that section is the **phased route** (memory foundation → text continuation affordance → voice parity → richer widgets → concurrent threads/background).
 - [[../known-gotchas]] #31 — **CSWSH exposure**; the memory-poisoning surface (decision 5) **chains** with it.
 - [[../known-gotchas]] #45 — concurrent threads / background tasks; the last roadmap part, anticipated by but **not decided in** this ADR.

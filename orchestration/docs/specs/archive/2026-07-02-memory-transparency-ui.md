@@ -1,6 +1,8 @@
+> 🗄️ ARCHIVED 2026-07-10 — implemented. Historical record; do not edit.
+
 ---
 title: Memory transparency UI — the in-overlay hatch (backlog Theme A)
-status: accepted — Lior's in-chat scope sign-off 2026-07-02 (brainstorm rulings recorded below); decomposed same day → chunks-todo/memory-transparency-ui/01–04
+status: implemented — all chunks (01–05) shipped + Lior's joint §6.1 live demo signed 2026-07-10; archived chunks in chunks-todo/archive/memory-transparency-ui/ (was: accepted — in-chat scope sign-off 2026-07-02, decomposed same day → chunks 01–04, +chunk-05 fact-edit added at the 2026-07-09 demo)
 date: 2026-07-02
 tags: [memory, transparency, overlay, tray, settings, north-star]
 related:

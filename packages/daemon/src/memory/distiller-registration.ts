@@ -5,6 +5,7 @@ import type { MemoryScanner } from "./scanner/memory-scanner.js";
 import { SmartDistillError } from "./providers/smart-distiller-provider.js";
 import { normalizeFactText } from "./normalize-fact-text.js";
 import { memDebug, previewStr } from "./debug-log.js";
+import { applyFactOp } from "./apply-fact-op.js";
 
 /**
  * Wire the distiller as the consolidation-hook's batch handler.
@@ -178,117 +179,28 @@ async function distillOneThread(
       const provenance = `thread:${threadId}`;
 
       for (const op of cleanOps) {
-        // Q5 step 1: resolve targetOrdinal → id
+        // Q5 step 1: resolve targetOrdinal → id (stays with the caller — applyFactOp
+        // never sees a raw ordinal, only an already-resolved id or undefined).
         let targetId: string | undefined;
         if (op.op !== "new" && op.targetOrdinal !== undefined) {
           targetId = delta.candidateIds[op.targetOrdinal - 1];
         }
 
-        let effectiveOp = op.op;
-
-        if (op.op !== "new" && targetId !== undefined) {
-          // Q5 step 2: optimistic-concurrency check
-          const currentRow = store.rawDb()
-            .query("SELECT fact, authored_by FROM distilled_facts WHERE id = ?")
-            .get(targetId) as { fact: string; authored_by: string } | null;
-
-          if (currentRow === null) {
-            // Target no longer exists — demote to new
-            effectiveOp = "new";
-            targetId = undefined;
-          } else if (currentRow.fact !== op.expectedTargetText) {
-            // Concurrency conflict: target text moved — non-destructive demote
-            effectiveOp = "new";
-            targetId = undefined;
-          } else if (currentRow.authored_by === "human") {
-            // Q5 step 3: never-replace-human (5e) — demote to new
-            effectiveOp = "new";
-            targetId = undefined;
-          }
-        } else if (op.op !== "new") {
-          // No targetOrdinal or out-of-range candidateIds — demote to new
-          effectiveOp = "new";
-          targetId = undefined;
-        }
-
-        const newItemCanonical = op.canonical || normalizeFactText(op.fact);
-        const base = {
+        // Q5 steps 2-4 (optimistic-concurrency + never-replace-human demote +
+        // replace/append/new apply + dedup) now live in the shared applyFactOp
+        // primitive (D7a-bis) — extracted so both the distiller and the chunk-01
+        // MemoryActionPort share the same rule-gated apply, without duplicating it.
+        // The distiller ignores the returned outcome; it keeps its own watermark
+        // advances + insertDistillationEvent OUTSIDE this call (below).
+        applyFactOp(store, {
+          op: op.op,
           fact: op.fact,
-          canonical: newItemCanonical,
+          canonical: op.canonical || normalizeFactText(op.fact),
           topics: op.topics,
-          confidence: 1 as number,
-        };
-
-        if (effectiveOp === "replace" && targetId !== undefined) {
-          // Q5 step 4: surviving replace → updateFactById (records replaced text)
-          // machine facts are ALWAYS cross-thread (relay-006 MINOR-4); thread-local is human-only, 5f preserved in readDistilledFactsForThread.
-          store.updateFactById(
-            targetId,
-            { ...base },
-            { actor: provider.id, reason: "distill-replace" },
-            provider.id,
-          );
-        } else if (effectiveOp === "append" && targetId !== undefined) {
-          // Q5 step 4: surviving append → appendToFactById; false → new
-          //
-          // FIX-2 (MAJOR-2 relay-006): merged canonical on append.
-          // appendToFactById's doc requires the FULL MERGED canonical (all items) so
-          // BM25 can still find the fact by its EARLIER items. Read the target's
-          // CURRENT canonical and space-join with the new item's canonical.
-          // (No dedup needed — FTS5 tokenizes on whitespace.)
-          const currentCanonicalRow = store.rawDb()
-            .query("SELECT canonical FROM fact_fts WHERE fact_id = ?")
-            .get(targetId) as { canonical: string } | null;
-          const currentCanonical = currentCanonicalRow?.canonical ?? "";
-          const mergedCanonical = currentCanonical
-            ? `${currentCanonical} ${newItemCanonical}`
-            : newItemCanonical;
-
-          const appended = store.appendToFactById(targetId, op.fact, mergedCanonical);
-          if (!appended) {
-            // Cap hit or id absent — demote to new.
-            // v2-08 refined-B dedup (bus q#013): SUPPRESS-ONLY existence check over ALL facts —
-            // symmetric normalize (stored canonical is verbatim) + closed connector-strip key.
-            // Only no-ops a NEW/demoted insert here; never reaches replace/normal-append, so it
-            // never mutates an existing row (STABILITY untouched by construction). E-a (prompt)
-            // is the first line; this is the deterministic backstop for when E-a leaks.
-            const dedupHit = store.factExistsByDedupKey(newItemCanonical);
-            if (dedupHit) {
-              memDebug("distill", {
-                threadId,
-                dedupSkipped: previewStr(op.fact),
-                canonical: previewStr(newItemCanonical),
-              });
-            } else {
-              // machine facts are ALWAYS cross-thread (relay-006 MINOR-4); thread-local is human-only, 5f preserved in readDistilledFactsForThread.
-              store.insertFact(
-                { ...base, provenance, scope: "cross-thread", expiry: null, authored_by: "machine" },
-                provider.id,
-              );
-            }
-          }
-        } else {
-          // new (original or demoted).
-          // v2-08 refined-B dedup (bus q#013): SUPPRESS-ONLY existence check over ALL facts —
-          // symmetric normalize (stored canonical is verbatim) + closed connector-strip key.
-          // Only no-ops a NEW/demoted insert here; never reaches replace/normal-append, so it
-          // never mutates an existing row (STABILITY untouched by construction). E-a (prompt)
-          // is the first line; this is the deterministic backstop for when E-a leaks.
-          const dedupHit = store.factExistsByDedupKey(newItemCanonical);
-          if (dedupHit) {
-            memDebug("distill", {
-              threadId,
-              dedupSkipped: previewStr(op.fact),
-              canonical: previewStr(newItemCanonical),
-            });
-          } else {
-            // machine facts are ALWAYS cross-thread (relay-006 MINOR-4); thread-local is human-only, 5f preserved in readDistilledFactsForThread.
-            store.insertFact(
-              { ...base, provenance, scope: "cross-thread", expiry: null, authored_by: "machine" },
-              provider.id,
-            );
-          }
-        }
+          provenance,
+          targetId,
+          expectedTargetText: op.expectedTargetText,
+        }, provider.id);
       }
 
       // Both watermark advances are INSIDE the same tx (R1 / D-V3c)

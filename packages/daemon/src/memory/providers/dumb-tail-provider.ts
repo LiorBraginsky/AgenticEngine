@@ -1,6 +1,5 @@
-import type { MemoryProvider, DistillDelta } from "../memory-provider.js";
+import type { MemoryProvider, DistillDelta, RetrievedSlice } from "../memory-provider.js";
 import type { MemoryStore } from "../store.js";
-import type { SessionMessage } from "../../providers/provider.js";
 import { REDACTION_MARKER } from "../schema.js";
 import { REMEMBERED_LABEL } from "../../providers/system-prompt.js";
 import { normalizeFactText } from "../normalize-fact-text.js";
@@ -89,7 +88,7 @@ export class DumbTailProvider implements MemoryProvider {
    * Reads distilled_facts (the projection). Defense-in-depth: excludes any fact
    * whose provenance points at a now-tombstoned message (F1 backstop).
    */
-  async retrieve(store: MemoryStore, forThreadId: string): Promise<SessionMessage[]> {
+  async retrieve(store: MemoryStore, forThreadId: string): Promise<RetrievedSlice> {
     // MF-04 (5f): scope-filtered read — thread-local facts of OTHER threads are excluded;
     // cross-thread/global cross. forThreadId is now load-bearing (was void in MF-02).
     const rows = store.readDistilledFactsForThread(forThreadId, RETRIEVE_SLICE_N);
@@ -97,16 +96,17 @@ export class DumbTailProvider implements MemoryProvider {
     // covers both message-UUID provenances (DumbTail) and thread-level provenances.
     const live = rows.filter((f) => !store.isFactTombstoned(f.provenance));
     // ── D1 retrieve log (env-gated, zero-cost when OFF) ──────────────────────
-    // NOTE: rows currently lack `id` (Step 3 adds it); log factPreview + order for now.
     memDebug("retrieve", {
       forThreadId,
       injected: live.map((f, i) => ({
+        id: f.id,
         factPreview: previewStr(f.fact),
         order: i,
       })),
     });
-    return Promise.resolve(
-      live.map((f) => ({ role: "user" as const, content: `${REMEMBERED_LABEL}${f.fact}` })),
-    );
+    return Promise.resolve({
+      messages: live.map((f) => ({ role: "user" as const, content: `${REMEMBERED_LABEL}${f.fact}` })),
+      injectedFactIds: live.map((f) => f.id),
+    });
   }
 }

@@ -83,7 +83,7 @@ test("STABILITY: stable id + byte-identical text + nothing vanished across 4 re-
         };
       }
     },
-    retrieve: async () => [],
+    retrieve: async () => ({ messages: [], injectedFactIds: [] }),
   };
 
   registerDistiller(hook, store, echoProvider, scanner);
@@ -158,7 +158,7 @@ test("idempotence: unchanged thread → skip-guard fires → 0 new facts on 2nd 
         distilledThroughTurn: turn,
       };
     },
-    retrieve: async () => [],
+    retrieve: async () => ({ messages: [], injectedFactIds: [] }),
   };
 
   registerDistiller(hook, store, countingProvider, scanner);
@@ -212,7 +212,7 @@ test("idempotence: +2 new messages → only new facts, no dup", async () => {
         };
       }
     },
-    retrieve: async () => [],
+    retrieve: async () => ({ messages: [], injectedFactIds: [] }),
   };
 
   registerDistiller(hook, store, provider, scanner);
@@ -264,7 +264,7 @@ test("out-of-range targetOrdinal → demotes to new (non-destructive)", async ()
       distilledThroughMarker: s.readThreadMarker(threadId),
       distilledThroughTurn: s.maxTurnIndex(threadId),
     }),
-    retrieve: async () => [],
+    retrieve: async () => ({ messages: [], injectedFactIds: [] }),
   };
 
   registerDistiller(hook, store, provider, scanner);
@@ -317,7 +317,7 @@ test("concurrency conflict (expectedTargetText mismatch) → non-destructive, or
       distilledThroughMarker: s.readThreadMarker(threadId),
       distilledThroughTurn: s.maxTurnIndex(threadId),
     }),
-    retrieve: async () => [],
+    retrieve: async () => ({ messages: [], injectedFactIds: [] }),
   };
 
   registerDistiller(hook, store, provider, scanner);
@@ -372,7 +372,7 @@ test("never-replace-human: replace targeting a human-authored fact → human unc
       distilledThroughMarker: s.readThreadMarker(threadId),
       distilledThroughTurn: s.maxTurnIndex(threadId),
     }),
-    retrieve: async () => [],
+    retrieve: async () => ({ messages: [], injectedFactIds: [] }),
   };
 
   registerDistiller(hook, store, provider, scanner);
@@ -427,7 +427,7 @@ test("successful REPLACE: id unchanged + replaced text recorded in replaced_fact
       distilledThroughMarker: s.readThreadMarker(threadId),
       distilledThroughTurn: s.maxTurnIndex(threadId),
     }),
-    retrieve: async () => [],
+    retrieve: async () => ({ messages: [], injectedFactIds: [] }),
   };
 
   registerDistiller(hook, store, provider, scanner);
@@ -524,7 +524,7 @@ test("MAJOR-3: two-queued-same-target — non-destructive-on-conflict, no corrup
         };
       }
     },
-    retrieve: async () => [],
+    retrieve: async () => ({ messages: [], injectedFactIds: [] }),
   };
 
   registerDistiller(hook, store, twoQueuedProvider, scanner);
@@ -608,7 +608,7 @@ test("R1 atomicity: throw on op 2 (Phase-3 tx) → nothing landed + watermark no
         distilledThroughTurn: turn,
       };
     },
-    retrieve: async () => [],
+    retrieve: async () => ({ messages: [], injectedFactIds: [] }),
   };
 
   registerDistiller(hook, store, atomicTestProvider, scanner);
@@ -733,7 +733,7 @@ test("delta-apply: new op inserts fact + writes distill event", async () => {
       distilledThroughMarker: s.readThreadMarker(threadId),
       distilledThroughTurn: s.maxTurnIndex(threadId),
     }),
-    retrieve: async () => [],
+    retrieve: async () => ({ messages: [], injectedFactIds: [] }),
   };
 
   registerDistiller(hook, store, provider, scanner);
@@ -769,7 +769,7 @@ test("empty thread dismiss: event row written with 0 facts (5b)", async () => {
       distilledThroughMarker: s.readThreadMarker(threadId),
       distilledThroughTurn: s.maxTurnIndex(threadId),
     }),
-    retrieve: async () => [],
+    retrieve: async () => ({ messages: [], injectedFactIds: [] }),
   };
 
   registerDistiller(hook, store, provider, scanner);
@@ -794,7 +794,7 @@ test("dismiss() surfaces a throwing distiller's error so the WS handler catch is
     distill: async () => {
       throw new Error("distiller exploded");
     },
-    retrieve: async () => [],
+    retrieve: async () => ({ messages: [], injectedFactIds: [] }),
   };
   registerDistiller(hook, store, throwingProvider, new RuleBasedScanner());
 
@@ -835,7 +835,7 @@ test("S3: scope-escalation machine fact → quarantined, not inserted", async ()
       distilledThroughMarker: s.readThreadMarker(threadId),
       distilledThroughTurn: s.maxTurnIndex(threadId),
     }),
-    retrieve: async () => [],
+    retrieve: async () => ({ messages: [], injectedFactIds: [] }),
   };
 
   // Note: The scanner checks scope on the distilled fact as it's being written.
@@ -879,7 +879,7 @@ test("a poisoned fact string is quarantined at scan, not inserted (5d)", async (
       distilledThroughMarker: s.readThreadMarker(threadId),
       distilledThroughTurn: s.maxTurnIndex(threadId),
     }),
-    retrieve: async () => [],
+    retrieve: async () => ({ messages: [], injectedFactIds: [] }),
   };
 
   registerDistiller(hook, store, provider, scanner);
@@ -900,7 +900,7 @@ test("throwing provider failure: distill-failed row written, console.error fired
   const throwingProvider: MemoryProvider = {
     id: "throwing-test",
     distill: async () => { throw new Error("provider exploded"); },
-    retrieve: async () => [],
+    retrieve: async () => ({ messages: [], injectedFactIds: [] }),
   };
   registerDistiller(hook, store, throwingProvider, new RuleBasedScanner());
 
@@ -931,7 +931,7 @@ test("Phase-1 truncation error → distinct trigger='distill-truncated'", async 
   const truncatingProvider: MemoryProvider = {
     id: "smart",
     distill: async () => { throw new SmartDistillError("truncated at cap", { truncated: true }); },
-    retrieve: async () => [],
+    retrieve: async () => ({ messages: [], injectedFactIds: [] }),
   };
   registerDistiller(hook, store, truncatingProvider, new RuleBasedScanner());
   const t = store.createThread();
@@ -952,7 +952,7 @@ test("non-truncation failure writes 'distill-failed'", async () => {
   const plainFailProvider: MemoryProvider = {
     id: "smart",
     distill: async () => { throw new Error("network blip"); },
-    retrieve: async () => [],
+    retrieve: async () => ({ messages: [], injectedFactIds: [] }),
   };
   registerDistiller(hook, store, plainFailProvider, new RuleBasedScanner());
   const t = store.createThread();
@@ -972,7 +972,7 @@ test("a non-truncated SmartDistillError keeps 'distill-failed'", async () => {
   const parseFailProvider: MemoryProvider = {
     id: "smart",
     distill: async () => { throw new SmartDistillError("not valid JSON"); },
-    retrieve: async () => [],
+    retrieve: async () => ({ messages: [], injectedFactIds: [] }),
   };
   registerDistiller(hook, store, parseFailProvider, new RuleBasedScanner());
   const t = store.createThread();
@@ -1047,7 +1047,7 @@ test("FIX-1: batch dismiss distills EACH thread independently (N-per-batch)", as
         distilledThroughTurn: turn,
       };
     },
-    retrieve: async () => [],
+    retrieve: async () => ({ messages: [], injectedFactIds: [] }),
   };
 
   registerDistiller(hook, store, batchProvider, scanner);
@@ -1143,7 +1143,7 @@ test("FIX-2: op:append merges canonical so an EARLIER item's term still finds th
         };
       }
     },
-    retrieve: async () => [],
+    retrieve: async () => ({ messages: [], injectedFactIds: [] }),
   };
 
   registerDistiller(hook, store, appendProvider, scanner);
@@ -1232,7 +1232,7 @@ test("FIX-3: edit on already-distilled turn: fact UNCHANGED + distill-noop-edit 
         };
       }
     },
-    retrieve: async () => [],
+    retrieve: async () => ({ messages: [], injectedFactIds: [] }),
   };
 
   registerDistiller(hook, store, editNoopProvider, scanner);
@@ -1307,7 +1307,7 @@ test("FIX-4: machine distilled facts are always cross-thread scope", async () =>
       distilledThroughMarker: s.readThreadMarker(threadId),
       distilledThroughTurn: s.maxTurnIndex(threadId),
     }),
-    retrieve: async () => [],
+    retrieve: async () => ({ messages: [], injectedFactIds: [] }),
   };
 
   registerDistiller(hook, store, provider, scanner);
@@ -1377,7 +1377,7 @@ test("FIX-5: order stable for single-fact REPLACE scenario (slice[0] assertion)"
         };
       }
     },
-    retrieve: async () => [],
+    retrieve: async () => ({ messages: [], injectedFactIds: [] }),
   };
 
   registerDistiller(hook, store, provider, scanner);
@@ -1425,7 +1425,7 @@ describe("v2-06 FIX-A: whenIdle()", () => {
         distilledThroughMarker: s.readThreadMarker(threadId),
         distilledThroughTurn: s.maxTurnIndex(threadId),
       }),
-      retrieve: async () => [],
+      retrieve: async () => ({ messages: [], injectedFactIds: [] }),
     };
     const { whenIdle } = registerDistiller(hook, store, provider, new RuleBasedScanner());
     // No dismiss in flight — whenIdle should resolve immediately
@@ -1459,7 +1459,7 @@ describe("v2-06 FIX-A: whenIdle()", () => {
           distilledThroughTurn: s.maxTurnIndex(threadId),
         };
       },
-      retrieve: async () => [],
+      retrieve: async () => ({ messages: [], injectedFactIds: [] }),
     };
 
     const { whenIdle } = registerDistiller(hook, store, provider, scanner);
@@ -1498,7 +1498,7 @@ describe("v2-06 FIX-A: whenIdle()", () => {
     const provider: MemoryProvider = {
       id: "failing-distill",
       distill: async () => { throw new Error("intentional failure"); },
-      retrieve: async () => [],
+      retrieve: async () => ({ messages: [], injectedFactIds: [] }),
     };
     const { whenIdle } = registerDistiller(hook, store, provider, new RuleBasedScanner());
 
@@ -1537,7 +1537,7 @@ describe("2c chunk-01 D6b: forgotten_facts consult", () => {
         distilledThroughMarker: s.readThreadMarker(threadId),
         distilledThroughTurn: s.maxTurnIndex(threadId),
       }),
-      retrieve: async () => [],
+      retrieve: async () => ({ messages: [], injectedFactIds: [] }),
     };
 
     registerDistiller(hook, store, provider, scanner);
@@ -1573,7 +1573,7 @@ describe("2c chunk-01 D6b: forgotten_facts consult", () => {
         distilledThroughMarker: s.readThreadMarker(threadId),
         distilledThroughTurn: s.maxTurnIndex(threadId),
       }),
-      retrieve: async () => [],
+      retrieve: async () => ({ messages: [], injectedFactIds: [] }),
     };
 
     registerDistiller(hook, store, provider, scanner);
@@ -1610,7 +1610,7 @@ describe("2c chunk-01 D6b: forgotten_facts consult", () => {
         distilledThroughMarker: s.readThreadMarker(threadId),
         distilledThroughTurn: s.maxTurnIndex(threadId),
       }),
-      retrieve: async () => [],
+      retrieve: async () => ({ messages: [], injectedFactIds: [] }),
     };
 
     registerDistiller(hook, store, provider, scanner);
@@ -1652,7 +1652,7 @@ describe("2c chunk-01 D6b: forgotten_facts consult", () => {
         distilledThroughMarker: s.readThreadMarker(threadId),
         distilledThroughTurn: s.maxTurnIndex(threadId),
       }),
-      retrieve: async () => [],
+      retrieve: async () => ({ messages: [], injectedFactIds: [] }),
     };
 
     registerDistiller(hook, store, provider, scanner);
@@ -1688,7 +1688,7 @@ describe("2c chunk-01 D6b: forgotten_facts consult", () => {
         distilledThroughMarker: s.readThreadMarker(threadId),
         distilledThroughTurn: s.maxTurnIndex(threadId),
       }),
-      retrieve: async () => [],
+      retrieve: async () => ({ messages: [], injectedFactIds: [] }),
     };
 
     registerDistiller(hook, store, provider, scanner);
@@ -1725,7 +1725,7 @@ describe("2c chunk-01 D6b: forgotten_facts consult", () => {
         distilledThroughMarker: s.readThreadMarker(threadId),
         distilledThroughTurn: s.maxTurnIndex(threadId),
       }),
-      retrieve: async () => [],
+      retrieve: async () => ({ messages: [], injectedFactIds: [] }),
     };
 
     registerDistiller(hook, store, provider, scanner);
@@ -1763,7 +1763,7 @@ describe("2c chunk-01 D6b: forgotten_facts consult", () => {
         distilledThroughMarker: s.readThreadMarker(threadId),
         distilledThroughTurn: s.maxTurnIndex(threadId),
       }),
-      retrieve: async () => [],
+      retrieve: async () => ({ messages: [], injectedFactIds: [] }),
     };
 
     registerDistiller(hook, store, provider, scanner);
@@ -1807,7 +1807,7 @@ describe("2c chunk-01 D6b: forgotten_facts consult", () => {
         distilledThroughMarker: s.readThreadMarker(threadId),
         distilledThroughTurn: s.maxTurnIndex(threadId),
       }),
-      retrieve: async () => [],
+      retrieve: async () => ({ messages: [], injectedFactIds: [] }),
     };
 
     registerDistiller(hook, store, provider, scanner);
@@ -1856,7 +1856,7 @@ describe("2c chunk-01 FIX 5: dedupSkipped MEMORY_DEBUG glass-box restored", () =
           distilledThroughMarker: s.readThreadMarker(threadId),
           distilledThroughTurn: s.maxTurnIndex(threadId),
         }),
-        retrieve: async () => [],
+        retrieve: async () => ({ messages: [], injectedFactIds: [] }),
       };
 
       const captured: string[] = [];

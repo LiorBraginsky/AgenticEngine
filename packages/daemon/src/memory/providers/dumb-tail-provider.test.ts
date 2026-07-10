@@ -141,7 +141,8 @@ test("distill skips a quarantined message (5d)", async () => {
   store.close();
 });
 
-// ── retrieve (unchanged contract) ──────────────────────────────────────────
+// ── retrieve (chunk 2c-02: return shape widened to {messages, injectedFactIds};
+//    the `messages` content contract itself is unchanged) ─────────────────
 
 test("retrieve returns persisted facts as '[remembered] ...' prefixed messages", async () => {
   const store = freshStore();
@@ -151,7 +152,7 @@ test("retrieve returns persisted facts as '[remembered] ...' prefixed messages",
   );
   const t = store.createThread();
   const slice = await provider.retrieve(store, t);
-  expect(slice).toEqual([{ role: "user", content: "[remembered] deploy is yeet.sh" }]);
+  expect(slice.messages).toEqual([{ role: "user", content: "[remembered] deploy is yeet.sh" }]);
   store.close();
 });
 
@@ -166,7 +167,7 @@ test("retrieve skips a fact whose provenance message is tombstoned (defense-in-d
   );
   gate.forget(mid!, { actor: "user", authored_by: "human" });
   const slice = await provider.retrieve(store, t);
-  expect(slice.length).toBe(0);
+  expect(slice.messages.length).toBe(0);
   store.close();
 });
 
@@ -182,7 +183,7 @@ test("MF-04: retrieve drops thread-local fact from thread A when retrieving for 
     "dumb-tail",
   );
   const sliceB = await provider.retrieve(store, tB);
-  expect(sliceB.some((m) => m.content.includes("local-only fact"))).toBe(false);
+  expect(sliceB.messages.some((m) => m.content.includes("local-only fact"))).toBe(false);
   store.close();
 });
 
@@ -195,7 +196,7 @@ test("MF-04: retrieve admits thread-local fact when retrieving for its OWN origi
     "dumb-tail",
   );
   const sliceA = await provider.retrieve(store, tA);
-  expect(sliceA.some((m) => m.content.includes("local-only fact"))).toBe(true);
+  expect(sliceA.messages.some((m) => m.content.includes("local-only fact"))).toBe(true);
   store.close();
 });
 
@@ -209,7 +210,7 @@ test("MF-04: retrieve admits global-scope fact for any thread", async () => {
     "dumb-tail",
   );
   const sliceB = await provider.retrieve(store, tB);
-  expect(sliceB.some((m) => m.content.includes("global note"))).toBe(true);
+  expect(sliceB.messages.some((m) => m.content.includes("global note"))).toBe(true);
   store.close();
 });
 
@@ -225,7 +226,7 @@ test("label-consistency: retrieve output starts with REMEMBERED_LABEL === '[reme
   );
   const t = store.createThread();
   const slice = await provider.retrieve(store, t);
-  expect(slice.length).toBeGreaterThan(0);
-  expect(slice[0]!.content.startsWith(REMEMBERED_LABEL)).toBe(true);
+  expect(slice.messages.length).toBeGreaterThan(0);
+  expect(slice.messages[0]!.content.startsWith(REMEMBERED_LABEL)).toBe(true);
   store.close();
 });

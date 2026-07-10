@@ -3,7 +3,8 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { isOriginAllowed } from "./origin.js";
 import { buildInjector } from "./providers/injector.js";
-import type { AgentProvider, ProviderSessionState, ProviderInput } from "./providers/provider.js";
+import type { AgentProvider, ProviderSessionState, ProviderInput, MemoryTurnSlice } from "./providers/provider.js";
+import { withRememberedIndex, buildOrdinalMap } from "./providers/memory-turn-slice.js";
 import { MemoryStore } from "./memory/store.js";
 import { WriteGate } from "./memory/write-gate.js";
 import { RuleBasedScanner } from "./memory/scanner/memory-scanner.js";
@@ -13,6 +14,7 @@ import { buildMemoryProvider } from "./memory/memory-provider-selector.js";
 import type { MemoryProvider } from "./memory/memory-provider.js";
 import { registerDistiller } from "./memory/distiller-registration.js";
 import { Hatch } from "./memory/hatch.js";
+import { MemoryActionPort } from "./memory/memory-action-port.js";
 import { handleMemoryHttp } from "./memory/http-routes.js";
 import { TokenStore } from "./memory/token-store.js";
 import { stampProvenance } from "./memory/provenance-stamp.js";
@@ -67,13 +69,20 @@ const REDUCER_INPUT_TYPES = new Set(["session_start", "tool_result", "tool_cance
  *                   flow runs deterministically without a live Anthropic key.
  */
 export function startDaemon(port: number = DAEMON_PORT, provider?: AgentProvider, memoryProvider?: MemoryProvider) {
-  const activeProvider = provider ?? buildInjector();
   const dataDir = Bun.env.AGENTIC_DATA_DIR ?? join(homedir(), ".agentic-engine");
   const store = new MemoryStore({ dataDir });
   const scanner = new RuleBasedScanner();
   const gate = new WriteGate(store, scanner);
   const hatch = new Hatch(store, gate);
   const tokenStore = new TokenStore(dataDir);
+  // ADR-0016 decision 3 DI seam: the port is constructed once and threaded into
+  // buildInjector so the anthropic-api provider (if selected) can declare tools[]
+  // and run the bounded memory-action tool loop. memoryActionsActive gates the
+  // index.ts-side ordinal-map/prefix wiring below — only the anthropic-api
+  // provider consumes the capability today.
+  const memoryActionPort = new MemoryActionPort(store, gate, scanner);
+  const activeProvider = provider ?? buildInjector(undefined, { memoryActionPort });
+  const memoryActionsActive = activeProvider.id === "anthropic-api";
   // memoryProvider? — additive test/harness injection seam (mirrors provider?); production uses buildMemoryProvider().
   const memProvider = memoryProvider ?? buildMemoryProvider();
   const hook = new ConsolidationHook(store);
@@ -168,21 +177,41 @@ export function startDaemon(port: number = DAEMON_PORT, provider?: AgentProvider
           // CM-03: remember this thread so close(ws) can dismiss every active thread
           // on the connection (not just the last one).
           if (turnThreadId) (ws.data.touchedThreadIds ??= new Set<string>()).add(turnThreadId);
-          hydratedCount = begin.priorMessages.length;
+
+          // 2c-02 (ADR-0016 decision 3): index the first-N `[remembered]` messages
+          // and build the ordinal→factId map ONLY when the active provider consumes
+          // the memory-action-tool capability (memoryActionsActive). Gated on
+          // begin.injectedFactIds — the EXACT post-filter `live` slice retrieve()
+          // injected this turn (never raw DB rows, never LLM-echoed ids — D3a/D3b).
+          let priorMessages = begin.priorMessages;
+          let memoryActionSlice: MemoryTurnSlice | undefined;
+          if (memoryActionsActive && begin.injectedFactIds.length > 0) {
+            const n = begin.injectedFactIds.length;
+            priorMessages = priorMessages.map((m, idx) =>
+              idx < n ? { ...m, content: withRememberedIndex(m.content, idx + 1) } : m,
+            );
+            memoryActionSlice = { threadId: turnThreadId, ordinalMap: buildOrdinalMap(begin.injectedFactIds) };
+          } else if (memoryActionsActive) {
+            // remember-with-no-target still needs a threadId for provenance.
+            memoryActionSlice = { threadId: turnThreadId, ordinalMap: new Map() };
+          }
+
+          hydratedCount = priorMessages.length;
           // v2-08 seam: injectedMemory fires iff THIS turn injected ≥1 cross-thread
           // [remembered] fact — for BOTH the new-thread branch (retrieve) AND the
           // known-thread branch (which, post-v2-08, prepends facts before the tail).
           // The thread's own hydrated tail is NOT a [remembered] fact, so a known-thread
-          // turn with empty memory stays false. Import REMEMBERED_LABEL from system-prompt.
-          injectedMemory = begin.priorMessages.some(
+          // turn with empty memory stays false. withRememberedIndex preserves the
+          // REMEMBERED_LABEL prefix, so this check is unaffected by the ordinal indexing.
+          injectedMemory = priorMessages.some(
             (m) => m.role === "user" && m.content.startsWith(REMEMBERED_LABEL),
           );
           // Hydrate the thread tail into the messages[] seam (provider.ts:5).
           // phase:"done"/session_id:"" are don't-cares on start — every provider
           // reads only `.messages`; the mock adapter maps a session_start to a
           // fresh reducer call regardless of this phase.
-          priorState = begin.priorMessages.length
-            ? { phase: "done", session_id: "", messages: begin.priorMessages }
+          priorState = priorMessages.length
+            ? { phase: "done", session_id: "", messages: priorMessages, ...(memoryActionSlice ? { memoryActionSlice } : {}) }
             : undefined;
         } else {
           priorState = sessions.get(inbound.session_id);

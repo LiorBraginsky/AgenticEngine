@@ -196,7 +196,10 @@ test("FIX-A regression: new-thread retrieve sees fact committed by in-flight del
     },
     retrieve: async (s) => {
       const facts = s.readDistilledFacts(50);
-      return facts.map((f) => ({ role: "user" as const, content: `[remembered] ${f.fact}` }));
+      return {
+        messages: facts.map((f) => ({ role: "user" as const, content: `[remembered] ${f.fact}` })),
+        injectedFactIds: [],
+      };
     },
   };
 

@@ -238,7 +238,7 @@ test("Fix-2: Hatch.edit → distill → retrieve in new thread B reflects correc
   const threadB = store.createThread();
   const slice = await dumbTail.retrieve(store, threadB);
 
-  const contents = slice.map((m) => m.content).join(" ");
+  const contents = slice.messages.map((m) => m.content).join(" ");
   expect(contents).toContain("corrected fact for cross-thread");
   expect(contents).not.toContain("original fact for cross-thread");
 });

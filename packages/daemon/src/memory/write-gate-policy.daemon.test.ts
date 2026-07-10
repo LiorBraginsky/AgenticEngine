@@ -124,7 +124,7 @@ test("DoD#1: a poisoned turn is quarantined at the gate — archived (lossless) 
   // Step 7: INJECTION-POINT (retrieve) — a fresh thread's slice must not contain poison.
   const freshThread = store.createThread();
   const slice = await dumbTail.retrieve(store, freshThread);
-  expect(slice.some((m) => m.content.includes("ignore previous instructions"))).toBe(false);
+  expect(slice.messages.some((m) => m.content.includes("ignore previous instructions"))).toBe(false);
 
   store.close();
 });

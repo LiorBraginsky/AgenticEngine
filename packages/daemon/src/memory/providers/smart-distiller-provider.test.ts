@@ -486,7 +486,7 @@ test("SmartDistillerProvider.retrieve returns distilled facts prefixed with REME
   );
 
   const provider = new SmartDistillerProvider({ client: echoClient("[]") });
-  const messages = await provider.retrieve(store, threadId);
+  const { messages } = await provider.retrieve(store, threadId);
 
   expect(messages.length).toBe(1);
   expect(messages[0]!.role).toBe("user");
@@ -516,7 +516,7 @@ test("SmartDistillerProvider.retrieve skips tombstoned fact provenances (defense
   store.tombstoneFact(provenance, { actor: "user", authored_by: "human" });
 
   const provider = new SmartDistillerProvider({ client: echoClient("[]") });
-  const messages = await provider.retrieve(store, threadId);
+  const { messages } = await provider.retrieve(store, threadId);
 
   expect(messages.length).toBe(0);
 

@@ -54,7 +54,7 @@ test("human-edited fact survives re-distill: not overwritten, not duplicated; fo
       distilledThroughMarker: s.readThreadMarker(threadId),
       distilledThroughTurn: s.maxTurnIndex(threadId),
     }),
-    retrieve: async () => [],
+    retrieve: async () => ({ messages: [], injectedFactIds: [] }),
   };
   registerDistiller(hook, store, provider, scanner);
   await hook.dismiss([t]);

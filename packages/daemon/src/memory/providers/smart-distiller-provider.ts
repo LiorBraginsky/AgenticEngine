@@ -640,9 +640,11 @@ export class SmartDistillerProvider implements MemoryProvider {
    * Compose the bounded distilled slice for injection at a new thread's start.
    * Identical contract to DumbTailProvider.retrieve.
    *
-   * v2-04: the isForgottenNormalizedText backstop is REMOVED (Ruling 1-b).
-   * Under durable-delete, forgotten facts are gone from distilled_facts — the
-   * per-dismiss forgotten_facts suppression window no longer exists.
+   * v2-04: the isForgottenNormalizedText backstop is REMOVED from THIS retrieve() path
+   * (Ruling 1-b) — durable-delete already keeps a forgotten fact out of distilled_facts,
+   * so retrieve() needs no suppression check of its own. This does NOT mean forgotten_facts
+   * is dead: as of 2c chunk-01 it is LIVE again — the D6c soft nudge above (readForgottenFacts)
+   * and the D6b consult in distiller-registration.ts are the real defenses against re-derivation.
    * Retains: isFactTombstoned (MF-05 T1.2 — mutations tombstone backstop).
    */
   async retrieve(store: MemoryStore, forThreadId: string): Promise<SessionMessage[]> {

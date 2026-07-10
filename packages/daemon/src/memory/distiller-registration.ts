@@ -190,6 +190,12 @@ async function distillOneThread(
         // fact — MACHINE candidates only, honoring precedence: human fact ▷ human un-forget
         // ▷ forget record ▷ machine re-derivation. `continue` drops new/append candidates and
         // skips a replace non-destructively (the target is left as-is — no applyFactOp call).
+        // KNOWN LIMITATION (v2 dedup ceiling): this consult matches on the forgotten fact's
+        // DISPLAY text (relaxed connector-key), NOT on `op.canonical` — a re-derivation that
+        // shares the same canonical but reworded display text (esp. cross-language) can still
+        // slip past here. Tracked for the 2d hybrid-retrieval pass (memory-backlog §D); the
+        // D6c soft nudge (smart-distiller-provider.ts) is the honestly-ranked soft layer for
+        // this residual.
         const norm = normalizeFactText(op.fact);
         if (store.isForgottenNormalizedText(norm) && !store.hasHumanFactWithNormalizedText(norm)) {
           memDebug("distill", { threadId, forgottenSuppressed: previewStr(op.fact) });

@@ -110,9 +110,11 @@ export class WriteGate {
    * B1 untouched: no scrub of messages.content, no mutations row.
    *
    * Under incremental + stable-id + watermark, a durably-deleted fact is NOT re-derived on
-   * a normal dismiss, so the per-dismiss suppression job (forgotten_facts record) evaporates.
-   * The forgotten_facts table and its low-level primitives are retained as dormant v2-05
-   * optional ordered-replay Layer-T substrate (no live per-dismiss consumer).
+   * a normal dismiss, so THIS HTTP path still has no need to write forgotten_facts (Ruling
+   * 1-b, unchanged). The table itself is NOT dormant in 2c, though: MemoryActionPort.forget
+   * (the tool path) DOES record a row on every applied tool-forget, and the D6b delta-apply
+   * consult (distiller-registration.ts) reads it to suppress re-derivation there — LIVE again
+   * via that path, just not via this one.
    *
    * DOES NOT call tombstoneFact — the isMessageId throw stays on the message path (ADR-0015 decision 1).
    * DOES NOT call dropDistilledFactsByProvenance/dropDistilledFactsForThread — those are message-path.

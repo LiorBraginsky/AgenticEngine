@@ -108,12 +108,16 @@ The structure is sound for single-user dogfood. Everything below is **deferred /
   resumes, 2d should combine lexical BM25 with semantic embeddings (not embeddings-only) so exact-term
   matches and cross-language/reworded matches both land — the dedup ceiling (a cross-language re-derivation
   slipping past normalized dedup) is the concrete miss a hybrid ranker is meant to close.
-- **At the 2d design pass, RE-EXAMINE message-edit's right to exist (Lior 2026-07-10, at the ADR-0012
-  rider acceptance):** now that fact-edit is the real "correct what the agent remembers" lever, does
-  the archive message-correction surface (chunk-03) still earn its place — who is it for, what does a
-  corrected archive message actually feed (it does NOT re-trigger fact derivation — see Open cases),
-  and would removing it simplify the hatch? Deliberate revisit, not a drop. *Lives:* here; ADR-0012
-  rider 2026-07-10 Ruling 1(a).
+- **REMOVE message-edit — DECIDED (Lior 2026-07-10, final), EXECUTION scheduled at the 2d pass.**
+  Ruled same-day after the rider acceptance: with fact-edit shipped as the real "correct what the
+  agent remembers" lever, the archive message-correction surface (chunk-03) is pointless ("бестолковий")
+  — per fact source-independence it feeds nothing downstream. End state: **archive = read-only
+  immutable history; memory (facts) = the editable surface.** Removal is deliberately deferred to the
+  2d design pass (no urgency; it blocks nothing) — when 2d starts, add a removal chunk: strip the
+  message Edit affordance from the overlay + history.html, retire the `/memory/edit` message branch
+  (keep `target_type:"fact"`), keep the append-only mutation/correction machinery in the store
+  (immutable-history primitive, ADR-0015 B1 — it predates the UI and other things sit on it).
+  *Lives:* here; ADR-0012 rider 2026-07-10 Ruling 1 removal-note.
 
 ### E. What's remembered / fact richness
 - **Complex corrections & deletion-via-statement — NOT specced (open case).** Replace currently fires
@@ -171,11 +175,9 @@ The structure is sound for single-user dogfood. Everything below is **deferred /
    lever. *Lives:* roadmap.
 4. **Archive-summarization tier**: the O(archive) scaling trigger; also the point at which the
    candidate-fetch flips from all-facts → semantic (2d). *Lives:* roadmap; spec §3.3 D8.
-5. **Should message-edit re-trigger fact derivation?** (Lior 2026-07-10, at the ADR-0012 rider
-   acceptance): today a corrected archive message does NOT re-run distillation/fact-checking, so
-   facts derived from the old text stand until manually edited/forgotten. Lior: "not sure it should —
-   think about it." Couples with the §D "does message-edit earn its place" revisit — decide the two
-   together. *Lives:* here; ADR-0012 rider 2026-07-10 Ruling 2 (recorded open case).
+5. ~~**Should message-edit re-trigger fact derivation?**~~ **MOOT (Lior 2026-07-10, same day):**
+   message-edit itself is decided-for-removal (§D) — with no message-edit there is no re-derivation
+   question. Kept struck-through for the record only.
 
 ---
 

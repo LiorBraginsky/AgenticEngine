@@ -251,6 +251,13 @@ editing was a genuinely missing surface added as chunk-05 (the spec's original w
 against the seam**, spec ~line 46). Both surfaces now exist and are blessed — this rider records the
 split, it does not choose it.
 
+> **Removal note (Lior, 2026-07-10, same day — final):** semantics (a) message-correction is
+> **decided-for-REMOVAL** — with fact-edit shipped and facts source-independent (Ruling 2), a
+> corrected archive message feeds nothing downstream; the end state is **archive = read-only
+> immutable history, memory = the editable surface**. Execution is deliberately deferred to the
+> **2d design pass** (memory-backlog §D carries the removal scope); (a) remains shipped-but-doomed
+> until then. Do not build on it.
+
 ### Ruling 2 — fact source-independence (GENERALIZED at acceptance, Lior 2026-07-10)
 
 **A distilled fact, once it exists, lives independently of its source thread — for ALL facts, not

@@ -83,6 +83,24 @@ The structure is sound for single-user dogfood. Everything below is **deferred /
   poisoning-surface review (ADR-0012 5d). Shares a design+ADR pass with 2d. *Lives:* roadmap "Memory —
   next"; relay-001; v2-01/04/07/08/09 chunk notes. **This is Lior's "забути що я казав про X без
   адмінки" lever.**
+  - **IN PROGRESS 2026-07-10** — spec `specs/2026-07-10-memory-action-tools.md` (accepted) + ADR-0016
+    (accepted); building 2c only via conveyor (chunks 01–04). **chunk-01 (action core, no-LLM) DONE
+    ready-to-merge.**
+  - **⚠️ KNOWN RESIDUAL from chunk-01 (frontier-reviewer finding, flagged for Lior — NOT a merge
+    blocker):** the d5 re-derivation suppression (D6b consult) matches a forgotten fact on its
+    **display text** (relaxed connector-key, aligned with `factExistsByDedupKey`), **NOT** on the
+    distiller's separate `canonical` key. `forgotten_facts` has no canonical column, so a re-derivation
+    that shares the SAME canonical but a **reworded display text (esp. cross-language / Ukrainian
+    facts)** can slip past the consult and re-enter one dismiss later. This is **spec-compliant** —
+    §3.6 D6b promises match on "resulting **text** normalized-matches"; the D6c prompt-nudge is the
+    honestly-ranked soft layer. It is the SAME structural class as the §D known v2 dedup ceiling
+    (cross-language/reworded), one axis over. **Proper close = a spec §3.6 rider (new scope, §7.2 — not
+    freelanced into chunk-01):** additive `canonical` column on `forgotten_facts` (written by
+    `port.forget` from the target's `fact_fts.canonical`) + D6b consult also matches on canonical.
+    Best folded into the **§D 2d hybrid-retrieval pass** (same root: display-vs-canonical identity).
+    The connector-word bypass (the strict-vs-relaxed key divergence that was a genuine regression) was
+    **found and fixed** in chunk-01. *Lives:* here; chunk-01 PR + ledger; distiller-registration.ts
+    D6b consult in-code limitation note.
 
 ### C. Content erase — thread-forget  (roadmap 2e)
 - **thread-forget** — forget a WHOLE conversation (content-erase), the chosen replacement for the

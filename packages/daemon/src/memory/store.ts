@@ -85,6 +85,24 @@ export interface ForgottenFactRow {
   provenance: string | null;
 }
 
+/** Input to record one memory_action_events row (2c chunk-01, spec §3.9 D9a). */
+export interface MemoryActionEventInput {
+  thread_id: string;
+  action: "forget" | "remember" | "reassert";
+  outcome: string;      // "applied" | `refused-${code}`
+  fact_text: string;    // raw fact text (forgotten / remembered / attempted)
+  actor: string;        // "agent"
+}
+
+/** Row returned by readMemoryActionEvents. */
+export interface MemoryActionEventRow {
+  action: string;
+  outcome: string;
+  fact_text: string;
+  actor: string;
+  created_at: number;
+}
+
 interface TailRow {
   id: string;
   role: "user" | "assistant";
@@ -289,23 +307,33 @@ export class MemoryStore {
     return rows;
   }
 
-  // ---- forgotten_facts primitives (v2-04 Ruling 1-b: dormant substrate) ----
+  // ---- forgotten_facts primitives (2c chunk-01: LIVE again — spec §3.6) ----
   //
-  // dormant — retained for v2-05 optional ordered-replay Layer-T; no live per-dismiss consumer.
+  // LIVE writer: MemoryActionPort.forget (D6a) records a row on every applied tool-forget.
+  // LIVE reader: distiller-registration.ts's D6b per-dismiss delta-apply consult (suppresses
+  //   re-derivation of a tool-forgotten fact) + smart-distiller-provider.ts's soft prompt
+  //   nudge (the D6c soft layer). LIVE clears: WriteGate.editFact's human un-forget leg
+  //   (D6c) and MemoryActionPort.remember's prompted re-assertion leg (D6e).
   //
-  // Under durable-delete + no-re-derivation (v2-04), a forgotten fact is gone from
-  // distilled_facts and does NOT come back on a normal dismiss. The per-dismiss suppression
-  // machinery (recordForgottenFact write on forgetFact; buildForgottenNormSet/keepRow/
-  // suppressForgottenMachineRows on read; isForgottenNormalizedText in retrieve()) has been
-  // retired. These low-level primitives are kept so v2-05 can optionally use them in the
-  // ordered-replay migration path (Layer-T consulted during replay, NOT per-dismiss).
-  // If v2-05 ships "wipe + re-distill forward" as the default, this block is removable.
+  // v2-04 (Ruling 1-b) had retired this block as dormant — durable-delete + no-re-derivation
+  // meant a forgotten fact stayed gone on a NORMAL dismiss with no writer here. 2c reopened
+  // the seam: a tool-forget followed by a dismiss can RE-DERIVE the fact from the
+  // conversation ABOUT forgetting it (the D6 loophole, spec §3.6) — these primitives are
+  // the fix. Do not re-retire this block without re-checking spec §3.6.
+  //
+  // 2c-01 review FIX 1: the match below is INTENTIONALLY relaxed — every read/clear method
+  // matches on EITHER the strict normalized key OR the connector-word key (dedupConnectorKey),
+  // the SAME symmetric key `factExistsByDedupKey` uses for the dedup that runs one line after
+  // a d5 consult. A strict-only match here was weaker than the dedup it feeds: a re-derivation
+  // that drops a connector word ("favorite color is blue" → "favorite color blue") would fail
+  // the strict consult, and once the row is durably deleted the dedup has nothing left to
+  // match either — the forgotten fact would silently re-enter one dismiss later.
 
   /**
    * Record a durable fact-forget entry in `forgotten_facts`.
-   * Keyed on `normalizeFactText(raw_text)` — the load-bearing match key for Layer-T.
-   * The provenance is stored as-forgotten for Layer-P (opportunistic) + audit.
-   * dormant — retained for v2-05 optional ordered-replay Layer-T; no live per-dismiss consumer.
+   * Keyed on `normalizeFactText(raw_text)` (the STRICT column) — reads relax the match at
+   * query time (see FIX 1 note above); the stored column itself is unchanged.
+   * The provenance is stored as-forgotten for audit/display.
    */
   recordForgottenFact(e: ForgottenFactInput): void {
     const normalized = normalizeFactText(e.raw_text);
@@ -326,37 +354,54 @@ export class MemoryStore {
   }
 
   /**
-   * Read all forgotten facts.
-   * Returns normalized_text (Layer-T match key), raw_text (Layer-X nudge), provenance (Layer-P).
-   * dormant — retained for v2-05 optional ordered-replay Layer-T; no live per-dismiss consumer.
+   * Read forgotten facts. Returns normalized_text (the strict match key), raw_text (the
+   * D6c soft-nudge display text), provenance. `limit`, when given, bounds the result to the
+   * most-recent `limit` rows (2c-01 review FIX 3 — the smart-distiller's soft nudge joins
+   * `raw_text` into every distill prompt; unbounded would grow the prompt monotonically as
+   * the corpus of forgotten facts grows). Omitted ⇒ unbounded (unchanged default behavior).
    */
-  readForgottenFacts(): ForgottenFactRow[] {
+  readForgottenFacts(limit?: number): ForgottenFactRow[] {
+    if (limit === undefined) {
+      return this.db
+        .query("SELECT normalized_text, raw_text, provenance FROM forgotten_facts")
+        .all() as ForgottenFactRow[];
+    }
     return this.db
-      .query("SELECT normalized_text, raw_text, provenance FROM forgotten_facts")
-      .all() as ForgottenFactRow[];
+      .query("SELECT normalized_text, raw_text, provenance FROM forgotten_facts ORDER BY created_at DESC LIMIT ?")
+      .all(limit) as ForgottenFactRow[];
   }
 
   /**
-   * Returns true if ANY forgotten_facts row has the given normalized text.
-   * dormant — retained for v2-05 optional ordered-replay Layer-T; no live per-dismiss consumer.
+   * Returns true if ANY forgotten_facts row matches `text` on EITHER the strict normalized
+   * key OR the RELAXED connector-word key (FIX 1 — see block note above). `text` may be raw
+   * or already-normalized (dedupConnectorKey re-normalizes internally either way).
    */
-  isForgottenNormalizedText(norm: string): boolean {
-    const row = this.db
-      .query("SELECT 1 FROM forgotten_facts WHERE normalized_text = ? LIMIT 1")
-      .get(norm);
-    return row !== null;
+  isForgottenNormalizedText(text: string): boolean {
+    const norm = normalizeFactText(text);
+    if (norm === "") return false;
+    const conn = dedupConnectorKey(text);
+    const rows = this.db
+      .query("SELECT normalized_text FROM forgotten_facts")
+      .all() as { normalized_text: string }[];
+    return rows.some((r) => r.normalized_text === norm || dedupConnectorKey(r.normalized_text) === conn);
   }
 
   /**
-   * Remove all forgotten_facts rows with the given normalized text.
-   * Returns the number of rows deleted.
-   * dormant — retained for v2-05 optional ordered-replay Layer-T; no live per-dismiss consumer.
+   * Remove all forgotten_facts rows matching `text` on EITHER the strict normalized key OR
+   * the RELAXED connector-word key (FIX 1 — see block note above). Returns the number of
+   * rows deleted.
    */
-  clearForgottenByNormalizedText(norm: string): number {
-    const result = this.db
-      .query("DELETE FROM forgotten_facts WHERE normalized_text = ? RETURNING id")
-      .all(norm);
-    return result.length;
+  clearForgottenByNormalizedText(text: string): number {
+    const norm = normalizeFactText(text);
+    const conn = dedupConnectorKey(text);
+    const rows = this.db
+      .query("SELECT id, normalized_text FROM forgotten_facts")
+      .all() as { id: string; normalized_text: string }[];
+    const toDelete = rows.filter((r) => r.normalized_text === norm || dedupConnectorKey(r.normalized_text) === conn);
+    if (toDelete.length === 0) return 0;
+    const del = this.db.query("DELETE FROM forgotten_facts WHERE id = ?");
+    for (const r of toDelete) del.run(r.id);
+    return toDelete.length;
   }
 
   /**
@@ -392,14 +437,19 @@ export class MemoryStore {
   }
 
   /**
-   * Returns true if ANY human-authored distilled_fact has a normalized text matching `norm`.
-   * dormant — retained for v2-05 optional ordered-replay Layer-T; no live per-dismiss consumer.
+   * Returns true if ANY human-authored distilled_fact matches `text` on EITHER the strict
+   * normalized key OR the RELAXED connector-word key (2c chunk-01 review FIX 1 — this is the
+   * D6b precedence guard: human ▷ un-forget ▷ forget-record ▷ machine re-derivation. A
+   * strict-only match here let a connector-word rephrase of a HUMAN fact go undetected,
+   * wrongly letting the forgotten-record suppression fire over a human's pinned fact).
    */
-  hasHumanFactWithNormalizedText(norm: string): boolean {
+  hasHumanFactWithNormalizedText(text: string): boolean {
+    const norm = normalizeFactText(text);
+    const conn = dedupConnectorKey(text);
     const rows = this.db
-      .query("SELECT id, fact FROM distilled_facts WHERE authored_by = 'human'")
-      .all() as { id: string; fact: string }[];
-    return rows.some((r) => normalizeFactText(r.fact) === norm);
+      .query("SELECT fact FROM distilled_facts WHERE authored_by = 'human'")
+      .all() as { fact: string }[];
+    return rows.some((r) => normalizeFactText(r.fact) === norm || dedupConnectorKey(r.fact) === conn);
   }
 
   /**
@@ -955,6 +1005,35 @@ export class MemoryStore {
     return this.db.query(
       "SELECT replaced_text, actor, reason, created_at FROM replaced_facts WHERE fact_id = ? ORDER BY created_at ASC",
     ).all(factId) as ReplacedFactRow[];
+  }
+
+  // ── 2c chunk-01: memory_action_events audit trail (spec §3.9 D9a/D9b) ──────────────────
+
+  /** Record one durable memory-action audit event (applied OR refused — refusals are signal). */
+  recordMemoryActionEvent(e: MemoryActionEventInput): void {
+    this.db.query(
+      "INSERT INTO memory_action_events (id, thread_id, action, outcome, fact_text, actor, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    ).run(crypto.randomUUID(), e.thread_id, e.action, e.outcome, e.fact_text, e.actor, Date.now());
+  }
+
+  /**
+   * Read all memory-action audit events for a thread, ordered by created_at ASC. Ties (two
+   * events landing in the same millisecond) break on `rowid ASC` (2c-01 review FIX 7) — a
+   * monotonic secondary so chunk-04's render order is deterministic rather than relying on
+   * unspecified same-key SQL scan order.
+   */
+  readMemoryActionEvents(threadId: string): MemoryActionEventRow[] {
+    return this.db.query(
+      "SELECT action, outcome, fact_text, actor, created_at FROM memory_action_events WHERE thread_id = ? ORDER BY created_at ASC, rowid ASC",
+    ).all(threadId) as MemoryActionEventRow[];
+  }
+
+  /** Pre-resolve a distilled_facts row by id (D2c — the port derives typed results itself,
+   *  never from a void return). Returns null if the id does not exist. */
+  readFactById(id: string): DistilledFactRow | null {
+    return this.db.query(
+      "SELECT id, fact, provenance, scope, expiry, confidence, authored_by FROM distilled_facts WHERE id = ?",
+    ).get(id) as DistilledFactRow | null;
   }
 
   /**

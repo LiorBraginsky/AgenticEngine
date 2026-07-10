@@ -5,6 +5,7 @@ import type { MemoryScanner } from "./scanner/memory-scanner.js";
 import { SmartDistillError } from "./providers/smart-distiller-provider.js";
 import { normalizeFactText } from "./normalize-fact-text.js";
 import { memDebug, previewStr } from "./debug-log.js";
+import { applyFactOp } from "./apply-fact-op.js";
 
 /**
  * Wire the distiller as the consolidation-hook's batch handler.
@@ -178,116 +179,52 @@ async function distillOneThread(
       const provenance = `thread:${threadId}`;
 
       for (const op of cleanOps) {
-        // Q5 step 1: resolve targetOrdinal → id
+        // Q5 step 1: resolve targetOrdinal → id (stays with the caller — applyFactOp
+        // never sees a raw ordinal, only an already-resolved id or undefined).
         let targetId: string | undefined;
         if (op.op !== "new" && op.targetOrdinal !== undefined) {
           targetId = delta.candidateIds[op.targetOrdinal - 1];
         }
 
-        let effectiveOp = op.op;
-
-        if (op.op !== "new" && targetId !== undefined) {
-          // Q5 step 2: optimistic-concurrency check
-          const currentRow = store.rawDb()
-            .query("SELECT fact, authored_by FROM distilled_facts WHERE id = ?")
-            .get(targetId) as { fact: string; authored_by: string } | null;
-
-          if (currentRow === null) {
-            // Target no longer exists — demote to new
-            effectiveOp = "new";
-            targetId = undefined;
-          } else if (currentRow.fact !== op.expectedTargetText) {
-            // Concurrency conflict: target text moved — non-destructive demote
-            effectiveOp = "new";
-            targetId = undefined;
-          } else if (currentRow.authored_by === "human") {
-            // Q5 step 3: never-replace-human (5e) — demote to new
-            effectiveOp = "new";
-            targetId = undefined;
-          }
-        } else if (op.op !== "new") {
-          // No targetOrdinal or out-of-range candidateIds — demote to new
-          effectiveOp = "new";
-          targetId = undefined;
+        // D6b consult (spec §3.6, 2c chunk-01): suppress re-derivation of a tool-forgotten
+        // fact — MACHINE candidates only, honoring precedence: human fact ▷ human un-forget
+        // ▷ forget record ▷ machine re-derivation. `continue` drops new/append candidates and
+        // skips a replace non-destructively (the target is left as-is — no applyFactOp call).
+        // KNOWN LIMITATION (v2 dedup ceiling): this consult matches on the forgotten fact's
+        // DISPLAY text (relaxed connector-key), NOT on `op.canonical` — a re-derivation that
+        // shares the same canonical but reworded display text (esp. cross-language) can still
+        // slip past here. Tracked for the 2d hybrid-retrieval pass (memory-backlog §D); the
+        // D6c soft nudge (smart-distiller-provider.ts) is the honestly-ranked soft layer for
+        // this residual.
+        const norm = normalizeFactText(op.fact);
+        if (store.isForgottenNormalizedText(norm) && !store.hasHumanFactWithNormalizedText(norm)) {
+          memDebug("distill", { threadId, forgottenSuppressed: previewStr(op.fact) });
+          continue;
         }
 
-        const newItemCanonical = op.canonical || normalizeFactText(op.fact);
-        const base = {
+        // Q5 steps 2-4 (optimistic-concurrency + never-replace-human demote +
+        // replace/append/new apply + dedup) now live in the shared applyFactOp
+        // primitive (D7a-bis) — extracted so both the distiller and the chunk-01
+        // MemoryActionPort share the same rule-gated apply, without duplicating it.
+        // `reason: "distill-replace"` (2c-01 review FIX 6) preserves the distiller's OWN
+        // replaced_facts trail — distinct from the port's "apply-replace" default.
+        const result = applyFactOp(store, {
+          op: op.op,
           fact: op.fact,
-          canonical: newItemCanonical,
+          canonical: op.canonical || normalizeFactText(op.fact),
           topics: op.topics,
-          confidence: 1 as number,
-        };
+          provenance,
+          targetId,
+          expectedTargetText: op.expectedTargetText,
+          reason: "distill-replace",
+        }, provider.id);
 
-        if (effectiveOp === "replace" && targetId !== undefined) {
-          // Q5 step 4: surviving replace → updateFactById (records replaced text)
-          // machine facts are ALWAYS cross-thread (relay-006 MINOR-4); thread-local is human-only, 5f preserved in readDistilledFactsForThread.
-          store.updateFactById(
-            targetId,
-            { ...base },
-            { actor: provider.id, reason: "distill-replace" },
-            provider.id,
-          );
-        } else if (effectiveOp === "append" && targetId !== undefined) {
-          // Q5 step 4: surviving append → appendToFactById; false → new
-          //
-          // FIX-2 (MAJOR-2 relay-006): merged canonical on append.
-          // appendToFactById's doc requires the FULL MERGED canonical (all items) so
-          // BM25 can still find the fact by its EARLIER items. Read the target's
-          // CURRENT canonical and space-join with the new item's canonical.
-          // (No dedup needed — FTS5 tokenizes on whitespace.)
-          const currentCanonicalRow = store.rawDb()
-            .query("SELECT canonical FROM fact_fts WHERE fact_id = ?")
-            .get(targetId) as { canonical: string } | null;
-          const currentCanonical = currentCanonicalRow?.canonical ?? "";
-          const mergedCanonical = currentCanonical
-            ? `${currentCanonical} ${newItemCanonical}`
-            : newItemCanonical;
-
-          const appended = store.appendToFactById(targetId, op.fact, mergedCanonical);
-          if (!appended) {
-            // Cap hit or id absent — demote to new.
-            // v2-08 refined-B dedup (bus q#013): SUPPRESS-ONLY existence check over ALL facts —
-            // symmetric normalize (stored canonical is verbatim) + closed connector-strip key.
-            // Only no-ops a NEW/demoted insert here; never reaches replace/normal-append, so it
-            // never mutates an existing row (STABILITY untouched by construction). E-a (prompt)
-            // is the first line; this is the deterministic backstop for when E-a leaks.
-            const dedupHit = store.factExistsByDedupKey(newItemCanonical);
-            if (dedupHit) {
-              memDebug("distill", {
-                threadId,
-                dedupSkipped: previewStr(op.fact),
-                canonical: previewStr(newItemCanonical),
-              });
-            } else {
-              // machine facts are ALWAYS cross-thread (relay-006 MINOR-4); thread-local is human-only, 5f preserved in readDistilledFactsForThread.
-              store.insertFact(
-                { ...base, provenance, scope: "cross-thread", expiry: null, authored_by: "machine" },
-                provider.id,
-              );
-            }
-          }
-        } else {
-          // new (original or demoted).
-          // v2-08 refined-B dedup (bus q#013): SUPPRESS-ONLY existence check over ALL facts —
-          // symmetric normalize (stored canonical is verbatim) + closed connector-strip key.
-          // Only no-ops a NEW/demoted insert here; never reaches replace/normal-append, so it
-          // never mutates an existing row (STABILITY untouched by construction). E-a (prompt)
-          // is the first line; this is the deterministic backstop for when E-a leaks.
-          const dedupHit = store.factExistsByDedupKey(newItemCanonical);
-          if (dedupHit) {
-            memDebug("distill", {
-              threadId,
-              dedupSkipped: previewStr(op.fact),
-              canonical: previewStr(newItemCanonical),
-            });
-          } else {
-            // machine facts are ALWAYS cross-thread (relay-006 MINOR-4); thread-local is human-only, 5f preserved in readDistilledFactsForThread.
-            store.insertFact(
-              { ...base, provenance, scope: "cross-thread", expiry: null, authored_by: "machine" },
-              provider.id,
-            );
-          }
+        // 2c-01 review FIX 5: restore the dedup-skip glass-box the applyFactOp extraction
+        // dropped — the pre-extraction code logged this on every dedup no-op (the debug
+        // line that caught the v2-08/09 dedup defects). applyFactOp is side-effect-free
+        // (it just returns the outcome); the distiller re-emits the log from it.
+        if (result.outcome === "deduped" || result.outcome === "demoted-deduped") {
+          memDebug("distill", { threadId, dedupSkipped: previewStr(op.fact) });
         }
       }
 

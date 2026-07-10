@@ -529,6 +529,42 @@ test("hasHumanFactWithNormalizedText returns true only when a human fact matches
   store.close();
 });
 
+// ── 2c chunk-01 review FIX 1: d5 consult must match on the SAME relaxed key
+// (dedupConnectorKey) the dedup that runs one line later already uses — a
+// connector-word rephrase ("favorite color is blue" vs "favorite color blue")
+// must not defeat the d5 chain. ──────────────────────────────────────────────
+
+test("FIX1: isForgottenNormalizedText matches a connector-word rephrase (relaxed key)", () => {
+  const { store } = freshStore();
+  store.recordForgottenFact({ raw_text: "favorite color is blue", provenance: "thread:x", actor: "agent", authored_by: "machine" });
+  // Strict match still works (verbatim).
+  expect(store.isForgottenNormalizedText(normalizeFactText("favorite color is blue"))).toBe(true);
+  // Connector-word rephrase (dropped "is") must ALSO match.
+  expect(store.isForgottenNormalizedText(normalizeFactText("favorite color blue"))).toBe(true);
+  // An unrelated fact must NOT match.
+  expect(store.isForgottenNormalizedText(normalizeFactText("favorite food is pizza"))).toBe(false);
+  store.close();
+});
+
+test("FIX1: hasHumanFactWithNormalizedText matches a connector-word rephrase (relaxed key)", () => {
+  const { store } = freshStore();
+  store.rawDb().query(
+    "INSERT INTO distilled_facts (id, fact, provenance, scope, expiry, confidence, authored_by, derived_at, distiller_version) VALUES (?,?,?,?,?,?,?,?,?)",
+  ).run(crypto.randomUUID(), "is a fan of jogging", "h-prov", "cross-thread", null, 1, "human", Date.now(), "manual");
+  // Connector-word rephrase (dropped "is a") must match the human fact.
+  expect(store.hasHumanFactWithNormalizedText(normalizeFactText("fan of jogging"))).toBe(true);
+  store.close();
+});
+
+test("FIX1: clearForgottenByNormalizedText removes a row via connector-word rephrase (relaxed key)", () => {
+  const { store } = freshStore();
+  store.recordForgottenFact({ raw_text: "favorite color is blue", provenance: "p", actor: "u", authored_by: "human" });
+  const removed = store.clearForgottenByNormalizedText(normalizeFactText("favorite color blue"));
+  expect(removed).toBe(1);
+  expect(store.isForgottenNormalizedText(normalizeFactText("favorite color is blue"))).toBe(false);
+  store.close();
+});
+
 // v2-04: countFactsFedByMessages tests removed. countFactsFedByMessages was the
 // option-B cofed-count helper; it was removed in v2-04 along with option B.
 
@@ -975,5 +1011,79 @@ test("editFactById: updates text + stamps authored_by='human' + records prior te
 test("editFactById: unknown id → false, no throw", () => {
   const store = new MemoryStore({ dataDir: mkdtempSync(join(tmpdir(), "fe-store2-")) });
   expect(store.editFactById(crypto.randomUUID(), "x", { actor: "user" })).toBe(false);
+  store.close();
+});
+
+// ── 2c chunk-01 (2B): memory_action_events audit storage ────────────────────────────────
+
+test("recordMemoryActionEvent + readMemoryActionEvents: round-trip, thread-scoped, insert order (created_at ASC)", () => {
+  const { store } = freshStore();
+  const t1 = store.createThread();
+  const t2 = store.createThread();
+
+  store.recordMemoryActionEvent({ thread_id: t1, action: "forget", outcome: "applied", fact_text: "fact A", actor: "agent" });
+  store.recordMemoryActionEvent({ thread_id: t1, action: "remember", outcome: "applied", fact_text: "fact B", actor: "agent" });
+  store.recordMemoryActionEvent({ thread_id: t2, action: "forget", outcome: "refused-not_in_view", fact_text: "fact C", actor: "agent" });
+
+  const t1Events = store.readMemoryActionEvents(t1);
+  expect(t1Events.length).toBe(2);
+  expect(t1Events[0]!.fact_text).toBe("fact A"); // insert order
+  expect(t1Events[0]!.action).toBe("forget");
+  expect(t1Events[0]!.outcome).toBe("applied");
+  expect(t1Events[0]!.actor).toBe("agent");
+  expect(t1Events[1]!.fact_text).toBe("fact B");
+
+  const t2Events = store.readMemoryActionEvents(t2);
+  expect(t2Events.length).toBe(1); // thread-scoped
+  expect(t2Events[0]!.outcome).toBe("refused-not_in_view");
+
+  store.close();
+});
+
+test("readFactById: returns the row for a known id, null for unknown", () => {
+  const { store } = freshStore();
+  const id = store.insertFact({
+    fact: "favourite colour blue", canonical: "favourite colour blue", provenance: "thread:t",
+    scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: [],
+  }, "seed");
+  const row = store.readFactById(id);
+  expect(row).not.toBeNull();
+  expect(row!.fact).toBe("favourite colour blue");
+  expect(row!.authored_by).toBe("machine");
+  expect(store.readFactById(crypto.randomUUID())).toBeNull();
+  store.close();
+});
+
+// ── 2c chunk-01 review FIX 3: readForgottenFacts must be boundable, so the
+// smart-distiller's soft nudge doesn't grow the prompt unbounded/cross-thread ──
+
+test("FIX3: readForgottenFacts(limit) returns at most `limit` rows; unbounded call is unaffected", () => {
+  const { store } = freshStore();
+  for (let i = 0; i < 15; i++) {
+    store.recordForgottenFact({ raw_text: `forgotten-${i}`, provenance: "thread:x", actor: "agent", authored_by: "machine" });
+  }
+  expect(store.readForgottenFacts().length).toBe(15); // default (no arg) — unbounded, unchanged
+  expect(store.readForgottenFacts(10).length).toBe(10); // bounded
+  store.close();
+});
+
+// ── 2c chunk-01 review FIX 7: deterministic audit ordering — same-ms events
+// must break ties by a monotonic secondary (rowid), not implementation-defined
+// SQL scan order. ────────────────────────────────────────────────────────────
+
+test("FIX7: readMemoryActionEvents breaks same-created_at ties by insertion order (rowid)", () => {
+  const { store } = freshStore();
+  const t = store.createThread();
+  const now = Date.now();
+  const db = store.rawDb();
+  const insert = db.query(
+    "INSERT INTO memory_action_events (id, thread_id, action, outcome, fact_text, actor, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+  );
+  insert.run(crypto.randomUUID(), t, "forget", "applied", "first", "agent", now);
+  insert.run(crypto.randomUUID(), t, "remember", "applied", "second", "agent", now);
+  insert.run(crypto.randomUUID(), t, "reassert", "applied", "third", "agent", now);
+
+  const events = store.readMemoryActionEvents(t);
+  expect(events.map((e) => e.fact_text)).toEqual(["first", "second", "third"]);
   store.close();
 });

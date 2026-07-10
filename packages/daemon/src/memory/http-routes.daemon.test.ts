@@ -103,6 +103,8 @@ test("read-gate: GET /memory/thread/:id with VALID Bearer → 200 + HatchViewRes
   expect(Array.isArray(body["messages"])).toBe(true);
   expect(Array.isArray(body["distilledFacts"])).toBe(true);
   expect(Array.isArray(body["distillationEvents"])).toBe(true);
+  // 2c chunk-01 (2B): additive field — existing fields above stay unchanged.
+  expect(Array.isArray(body["memoryActionEvents"])).toBe(true);
 });
 
 // ─── Test 3: WS path — disallowed Origin without a token → 401 (token gate is now layer 1) ──────

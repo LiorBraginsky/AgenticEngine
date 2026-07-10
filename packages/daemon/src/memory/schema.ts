@@ -13,9 +13,12 @@
  *   `mutations` (kind='tombstone') — the MESSAGE-redaction artifact. Written by
  *     WriteGate.forget; hard-scrubs messages.content. The isMessageId throw in
  *     store.tombstoneFact stays as the defensive seam guard.
- *   `forgotten_facts` — the FACT-suppression artifact. Written by WriteGate.forgetFact;
- *     keyed on normalized fact text (not a messages.id). The smart distiller's
- *     Layer-T suppression reads from this table. These two artifacts NEVER cross.
+ *   `forgotten_facts` — the FACT-suppression artifact (2c chunk-01: LIVE again — spec
+ *     §3.6). Written by MemoryActionPort.forget (D6a); read by the D6b per-dismiss
+ *     delta-apply consult (distiller-registration.ts) and the smart-distiller's soft
+ *     prompt nudge; cleared by a human WriteGate.editFact re-assertion (D6c) or a
+ *     prompted memory_remember re-assertion (D6e). Keyed on normalized fact text (not a
+ *     messages.id). These two artifacts NEVER cross.
  *
  * v2-02 (spec §3.4/§3.5): adds fact_topics + fact_fts (FTS5, matched on a
  * canonical key supplied in code) + an AFTER DELETE sync trigger + the additive
@@ -149,4 +152,16 @@ CREATE TABLE IF NOT EXISTS replaced_facts (
   created_at    INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_replaced_facts_fact ON replaced_facts(fact_id);
+
+-- 2c chunk-01: durable audit of agent memory actions (spec §3.9 D9a). Additive, CREATE-only, no ALTER.
+CREATE TABLE IF NOT EXISTS memory_action_events (
+  id          TEXT PRIMARY KEY,
+  thread_id   TEXT NOT NULL,
+  action      TEXT NOT NULL,   -- 'forget' | 'remember' | 'reassert'
+  outcome     TEXT NOT NULL,   -- 'applied' | 'refused-<code>'
+  fact_text   TEXT NOT NULL,   -- raw fact text
+  actor       TEXT NOT NULL,   -- 'agent'
+  created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memory_action_events_thread ON memory_action_events(thread_id);
 `;

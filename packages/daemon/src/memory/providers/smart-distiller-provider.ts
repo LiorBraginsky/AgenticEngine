@@ -51,6 +51,14 @@ export const SMART_DIGEST_MAX_MSGS_PER_THREAD = 50;
 /** Bounded slice retrieved from distilled_facts to inject at new-thread start. */
 const RETRIEVE_SLICE_N = 20;
 
+/**
+ * 2c chunk-01 review FIX 3: bound the D6c soft prompt nudge to the most-recent N
+ * forgotten facts. It is a SOFT nudge only — the D6b delta-apply consult is the real
+ * (deterministic) suppression — so correctness never rests on this constant; it only
+ * caps monotonic hot-path token growth as the corpus of forgotten facts grows.
+ */
+const FORGOTTEN_NUDGE_MAX = 10;
+
 // ── System prompt (D10 — frozen shape) ────────────────────────────────────
 
 export const SMART_SYSTEM_PROMPT = `You are a memory distiller. Your job is to extract and deduplicate the key facts from the user's conversation archive.
@@ -574,7 +582,19 @@ export class SmartDistillerProvider implements MemoryProvider {
     // Phase 6: ONE LLM call (outside any tx — grill #6 seam)
     const client = this.getClient();
 
-    const userContent = `NEW TAIL:\n${tailText}${poolSection}`;
+    // D6c soft layer (spec §3.6, 2c chunk-01): nudge the LLM not to re-emit facts the user
+    // asked to forget. Honestly ranked a nudge, not defense (the D6b consult is the real
+    // suppression). Gated STRICTLY on non-empty so the common-case prompt (no forgets yet)
+    // stays byte-unchanged and every existing prompt/userContent test stays green. Bounded to
+    // the most-recent FORGOTTEN_NUDGE_MAX (2c-01 review FIX 3 — unbounded would grow this
+    // prompt monotonically, cross-thread, as the forgotten-fact corpus grows).
+    const forgotten = store.readForgottenFacts(FORGOTTEN_NUDGE_MAX);
+    const forgottenSection =
+      forgotten.length > 0
+        ? `\n\nDo NOT re-emit facts the user asked to forget: ${forgotten.map((f) => f.raw_text).join("; ")}.`
+        : "";
+
+    const userContent = `NEW TAIL:\n${tailText}${poolSection}${forgottenSection}`;
 
     const response = await client.messages.create({
       model: SMART_MODEL,
@@ -620,9 +640,11 @@ export class SmartDistillerProvider implements MemoryProvider {
    * Compose the bounded distilled slice for injection at a new thread's start.
    * Identical contract to DumbTailProvider.retrieve.
    *
-   * v2-04: the isForgottenNormalizedText backstop is REMOVED (Ruling 1-b).
-   * Under durable-delete, forgotten facts are gone from distilled_facts — the
-   * per-dismiss forgotten_facts suppression window no longer exists.
+   * v2-04: the isForgottenNormalizedText backstop is REMOVED from THIS retrieve() path
+   * (Ruling 1-b) — durable-delete already keeps a forgotten fact out of distilled_facts,
+   * so retrieve() needs no suppression check of its own. This does NOT mean forgotten_facts
+   * is dead: as of 2c chunk-01 it is LIVE again — the D6c soft nudge above (readForgottenFacts)
+   * and the D6b consult in distiller-registration.ts are the real defenses against re-derivation.
    * Retains: isFactTombstoned (MF-05 T1.2 — mutations tombstone backstop).
    */
   async retrieve(store: MemoryStore, forThreadId: string): Promise<SessionMessage[]> {

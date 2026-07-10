@@ -248,6 +248,75 @@ test("D6e: forget X then remember(X) → action:'reassert', forgotten_facts row 
   store.close();
 });
 
+// ─── 2c chunk-01 review FIX 1: D6e wasForgotten/clear must also match a
+// connector-word rephrase of the forgotten text, not just a verbatim echo. ──
+
+test("FIX1: forget X ('...is blue') then remember a connector-word REPHRASE ('...blue') → still 'reassert', row cleared", () => {
+  const { store, port } = freshHarness();
+  const t = store.createThread();
+
+  const id = store.insertFact({
+    fact: "User's favorite color is blue",
+    canonical: "user favorite color is blue",
+    topics: [],
+    provenance: `thread:${t}`,
+    scope: "cross-thread",
+    expiry: null,
+    confidence: 1,
+    authored_by: "machine",
+  }, "seed");
+
+  const ctx1 = freshCtx(t, new Map([[1, id]]));
+  const forgetResult = port.forget(ctx1, { ordinal: 1, expected_text: "User's favorite color is blue" });
+  expect(forgetResult.ok).toBe(true);
+
+  // Restate WITHOUT the connector word "is" — a rephrase, not a verbatim echo.
+  const ctx2 = freshCtx(t);
+  const rememberResult = port.remember(ctx2, { fact: "User's favorite color blue" });
+
+  expect(rememberResult.ok).toBe(true);
+  if (rememberResult.ok) {
+    expect(rememberResult.action).toBe("reassert");
+  }
+  expect(store.isForgottenNormalizedText("user's favorite color is blue")).toBe(false);
+
+  store.close();
+});
+
+// ─── 2c chunk-01 review FIX 2: an empty/whitespace-only remember must be
+// refused typed, never insert a durable junk machine fact. ──────────────────
+
+test("FIX2: remember('') → rejected_by_scan, no row inserted, audit written, does not throw", () => {
+  const { store, port } = freshHarness();
+  const t = store.createThread();
+  const factsBefore = store.readDistilledFacts(50).length;
+
+  const ctx = freshCtx(t);
+  let result: ReturnType<typeof port.remember> | undefined;
+  expect(() => { result = port.remember(ctx, { fact: "" }); }).not.toThrow();
+  expect(result).toMatchObject({ ok: false, code: "rejected_by_scan" });
+  expect(store.readDistilledFacts(50).length).toBe(factsBefore);
+
+  const events = store.readMemoryActionEvents(t);
+  expect(events.some((e) => e.outcome === "refused-rejected_by_scan")).toBe(true);
+
+  store.close();
+});
+
+test("FIX2: remember('   ') (whitespace-only) → rejected_by_scan, no row inserted, does not throw", () => {
+  const { store, port } = freshHarness();
+  const t = store.createThread();
+  const factsBefore = store.readDistilledFacts(50).length;
+
+  const ctx = freshCtx(t);
+  let result: ReturnType<typeof port.remember> | undefined;
+  expect(() => { result = port.remember(ctx, { fact: "   " }); }).not.toThrow();
+  expect(result).toMatchObject({ ok: false, code: "rejected_by_scan" });
+  expect(store.readDistilledFacts(50).length).toBe(factsBefore);
+
+  store.close();
+});
+
 // ─── Guardrails (typed, never throw) ────────────────────────────────────────
 
 test("guardrail: ordinal out of map → not_in_view, does not throw", () => {

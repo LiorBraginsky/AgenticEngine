@@ -131,6 +131,18 @@ export class MemoryActionPort {
     }
     ctx.actionsUsed++;
 
+    // 2c-01 review FIX 2: an empty/whitespace-only fact is invalid content — refuse it
+    // BEFORE any insert (and before the scanner call, which would otherwise pass it: the
+    // RuleBasedScanner has no emptiness rule). Reuses `rejected_by_scan` (no new typed-result
+    // code) rather than widening the frozen result-code set.
+    if (normalizeFactText(input.fact) === "") {
+      return this.audit(ctx, "remember", input.fact, {
+        ok: false,
+        code: "rejected_by_scan",
+        message: "I can't remember an empty note.",
+      });
+    }
+
     const scan = this.scanner.scan({ content: input.fact, scope: "cross-thread", authored_by: "machine" });
     if (!scan.ok) {
       this.store.recordQuarantine({ target_id: crypto.randomUUID(), rule: scan.rule });

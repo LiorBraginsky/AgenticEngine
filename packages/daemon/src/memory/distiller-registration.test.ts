@@ -1663,4 +1663,218 @@ describe("2c chunk-01 D6b: forgotten_facts consult", () => {
     expect(row.fact).toBe("enjoys hiking; loves jogging");
     store.close();
   });
+
+  // ── 2c chunk-01 review FIX 1: a connector-word REPHRASE of the forgotten text must
+  // ALSO be suppressed — the d5 consult must key on the SAME relaxed key the dedup
+  // running one line later already uses, or the forgotten fact silently re-enters. ──
+
+  test("FIX1(v): op:'new' — a CONNECTOR-WORD REPHRASE of the forgotten text is suppressed — no insert", async () => {
+    const { store } = freshStore();
+    const hook = new ConsolidationHook(store);
+    const scanner = new RuleBasedScanner();
+
+    // Forgotten with a connector word ("is"); re-derived WITHOUT it.
+    store.recordForgottenFact({ raw_text: "favorite color is blue", provenance: "thread:x", actor: "agent", authored_by: "machine" });
+
+    const t = store.createThread();
+    store.appendMessages(t, [{ role: "user", content: "still favorite color blue" }], "s1");
+
+    const provider: MemoryProvider = {
+      id: "d6b-new-rephrase",
+      distill: async (s, threadId) => ({
+        threadId,
+        ops: [{ op: "new", fact: "favorite color blue", canonical: "favorite color blue", topics: [] }],
+        candidateIds: [],
+        distilledThroughMarker: s.readThreadMarker(threadId),
+        distilledThroughTurn: s.maxTurnIndex(threadId),
+      }),
+      retrieve: async () => [],
+    };
+
+    registerDistiller(hook, store, provider, scanner);
+    await hook.dismiss([t]);
+
+    expect(store.readDistilledFacts(50).some((f) => f.fact === "favorite color blue")).toBe(false);
+    store.close();
+  });
+
+  test("FIX1(vi): op:'append' — a CONNECTOR-WORD REPHRASE of the forgotten item text is suppressed — target unchanged", async () => {
+    const { store } = freshStore();
+    const hook = new ConsolidationHook(store);
+    const scanner = new RuleBasedScanner();
+
+    const targetId = store.insertFact({
+      fact: "enjoys hiking", canonical: "enjoys hiking", provenance: "thread:seed",
+      scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: [],
+    }, "seed");
+    // Forgotten with connector words ("is a"); re-derived append item WITHOUT them.
+    store.recordForgottenFact({ raw_text: "is a fan of jogging", provenance: "thread:x", actor: "agent", authored_by: "machine" });
+
+    const t = store.createThread();
+    store.appendMessages(t, [{ role: "user", content: "also a fan of jogging" }], "s1");
+
+    const provider: MemoryProvider = {
+      id: "d6b-append-rephrase",
+      distill: async (s, threadId) => ({
+        threadId,
+        ops: [{
+          op: "append", fact: "fan of jogging", canonical: "fan of jogging", topics: [],
+          targetOrdinal: 1, expectedTargetText: "enjoys hiking",
+        }],
+        candidateIds: [targetId],
+        distilledThroughMarker: s.readThreadMarker(threadId),
+        distilledThroughTurn: s.maxTurnIndex(threadId),
+      }),
+      retrieve: async () => [],
+    };
+
+    registerDistiller(hook, store, provider, scanner);
+    await hook.dismiss([t]);
+
+    const row = store.rawDb().query("SELECT fact FROM distilled_facts WHERE id = ?").get(targetId) as { fact: string };
+    expect(row.fact).toBe("enjoys hiking"); // unchanged — no append happened
+    store.close();
+  });
+
+  test("FIX1(vii): op:'replace' — a CONNECTOR-WORD REPHRASE of the forgotten REPLACEMENT text is suppressed — target left as-is", async () => {
+    const { store } = freshStore();
+    const hook = new ConsolidationHook(store);
+    const scanner = new RuleBasedScanner();
+
+    const targetId = store.insertFact({
+      fact: "works at Acme Corp", canonical: "works at acme corp", provenance: "thread:seed",
+      scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: [],
+    }, "seed");
+    // Forgotten with a connector word ("the"); re-derived replacement WITHOUT it.
+    store.recordForgottenFact({ raw_text: "works at the BetaCo", provenance: "thread:x", actor: "agent", authored_by: "machine" });
+
+    const t = store.createThread();
+    store.appendMessages(t, [{ role: "user", content: "actually still works at BetaCo" }], "s1");
+
+    const provider: MemoryProvider = {
+      id: "d6b-replace-rephrase",
+      distill: async (s, threadId) => ({
+        threadId,
+        ops: [{
+          op: "replace", fact: "works at BetaCo", canonical: "works at betaco", topics: [],
+          targetOrdinal: 1, expectedTargetText: "works at Acme Corp",
+        }],
+        candidateIds: [targetId],
+        distilledThroughMarker: s.readThreadMarker(threadId),
+        distilledThroughTurn: s.maxTurnIndex(threadId),
+      }),
+      retrieve: async () => [],
+    };
+
+    registerDistiller(hook, store, provider, scanner);
+    await hook.dismiss([t]);
+
+    const row = store.rawDb().query("SELECT fact FROM distilled_facts WHERE id = ?").get(targetId) as { fact: string };
+    expect(row.fact).toBe("works at Acme Corp"); // unchanged — replace suppressed, non-destructive
+    expect(store.readReplacedFacts(targetId).length).toBe(0);
+    store.close();
+  });
+
+  test("FIX1(viii): precedence — a HUMAN fact matching by the RELAXED key still blocks suppression", async () => {
+    const { store } = freshStore();
+    const hook = new ConsolidationHook(store);
+    const scanner = new RuleBasedScanner();
+
+    const targetId = store.insertFact({
+      fact: "enjoys hiking", canonical: "enjoys hiking", provenance: "thread:seed",
+      scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: [],
+    }, "seed");
+    // The human fact is a CONNECTOR-WORD REPHRASE of the candidate op text — a strict
+    // compare would have missed it (this is what makes the precedence check itself need
+    // the relaxed key, not just the forgotten-record lookup).
+    store.rawDb().query(
+      "INSERT INTO distilled_facts (id, fact, provenance, scope, expiry, confidence, authored_by, derived_at, distiller_version) VALUES (?,?,?,?,?,?,?,?,?)",
+    ).run(crypto.randomUUID(), "is a fan of jogging", "human-pin", "cross-thread", null, 1, "human", Date.now(), "manual");
+    store.recordForgottenFact({ raw_text: "fan of jogging", provenance: "thread:x", actor: "agent", authored_by: "machine" });
+
+    const t = store.createThread();
+    store.appendMessages(t, [{ role: "user", content: "also a fan of jogging" }], "s1");
+
+    const provider: MemoryProvider = {
+      id: "d6b-precedence-rephrase",
+      distill: async (s, threadId) => ({
+        threadId,
+        ops: [{
+          op: "append", fact: "fan of jogging", canonical: "fan of jogging", topics: [],
+          targetOrdinal: 1, expectedTargetText: "enjoys hiking",
+        }],
+        candidateIds: [targetId],
+        distilledThroughMarker: s.readThreadMarker(threadId),
+        distilledThroughTurn: s.maxTurnIndex(threadId),
+      }),
+      retrieve: async () => [],
+    };
+
+    registerDistiller(hook, store, provider, scanner);
+    await hook.dismiss([t]);
+
+    const row = store.rawDb().query("SELECT fact FROM distilled_facts WHERE id = ?").get(targetId) as { fact: string };
+    // Human fact present (matched via the RELAXED key) ⇒ suppression does NOT fire ⇒ the append lands.
+    expect(row.fact).toBe("enjoys hiking; fan of jogging");
+    store.close();
+  });
+});
+
+// ─── 2c chunk-01 review FIX 5: the distiller's dedup-skip glass-box (dropped by the
+// applyFactOp extraction) must be restored — inspect the returned ApplyFactOutcome and
+// re-emit the debug line when the outcome is deduped/demoted-deduped. ─────────────────
+
+describe("2c chunk-01 FIX 5: dedupSkipped MEMORY_DEBUG glass-box restored", () => {
+  let savedDebug: string | undefined;
+  const setDebug = (on: boolean): void => {
+    if (on) process.env["MEMORY_DEBUG"] = "1";
+    else delete process.env["MEMORY_DEBUG"];
+  };
+
+  test("op:'new' exact-duplicate → memDebug('distill', {dedupSkipped}) is emitted", async () => {
+    savedDebug = process.env["MEMORY_DEBUG"];
+    setDebug(true);
+    try {
+      const { store } = freshStore();
+      const hook = new ConsolidationHook(store);
+      const scanner = new RuleBasedScanner();
+
+      store.insertFact({
+        fact: "Lior likes coffee", canonical: "lior likes coffee", provenance: "thread:seed",
+        scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: [],
+      }, "seed");
+
+      const t = store.createThread();
+      store.appendMessages(t, [{ role: "user", content: "I like coffee" }], "s1");
+
+      const provider: MemoryProvider = {
+        id: "fix5-dedup",
+        distill: async (s, threadId) => ({
+          threadId,
+          ops: [{ op: "new", fact: "Lior likes coffee", canonical: "lior likes coffee", topics: [] }],
+          candidateIds: [],
+          distilledThroughMarker: s.readThreadMarker(threadId),
+          distilledThroughTurn: s.maxTurnIndex(threadId),
+        }),
+        retrieve: async () => [],
+      };
+
+      const captured: string[] = [];
+      const errSpy = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+        captured.push(args.join(" "));
+      });
+      registerDistiller(hook, store, provider, scanner);
+      await hook.dismiss([t]);
+      errSpy.mockRestore();
+
+      const dedupLine = captured.find((l) => l.includes("dedupSkipped"));
+      expect(dedupLine).toBeDefined();
+      const jsonPart = dedupLine!.slice(dedupLine!.indexOf(" {"));
+      const obj = JSON.parse(jsonPart.trim());
+      expect(obj.dedupSkipped).toContain("Lior likes coffee");
+      store.close();
+    } finally {
+      setDebug(savedDebug === "1");
+    }
+  });
 });

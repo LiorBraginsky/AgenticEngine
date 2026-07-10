@@ -200,6 +200,75 @@ test("op:replace targeting a human-authored fact demotes to a competing insert; 
   store.close();
 });
 
+// ─── 2c chunk-01 review FIX 6: reason-string drift — the extracted replace must
+// let each caller record ITS OWN reason (distiller: "distill-replace", port:
+// "apply-replace"), restoring the pre-extraction behavior-preserving truth. ────
+
+test("FIX6: op:replace with an explicit reason records THAT reason in replaced_facts", () => {
+  const store = freshStore();
+  const t = store.createThread();
+
+  const id = store.insertFact({
+    fact: "favorite color blue",
+    canonical: "favorite color blue",
+    topics: [],
+    provenance: `thread:${t}`,
+    scope: "cross-thread",
+    expiry: null,
+    confidence: 1,
+    authored_by: "machine",
+  }, "seed");
+
+  applyFactOp(store, {
+    op: "replace",
+    fact: "favorite color red",
+    canonical: "favorite color red",
+    topics: [],
+    provenance: `thread:${t}`,
+    targetId: id,
+    expectedTargetText: "favorite color blue",
+    reason: "distill-replace",
+  }, "distiller-v2");
+
+  const replaced = store.readReplacedFacts(id);
+  expect(replaced.length).toBe(1);
+  expect(replaced[0]!.reason).toBe("distill-replace");
+
+  store.close();
+});
+
+test("FIX6: op:replace with NO explicit reason defaults to 'apply-replace' (the port's reason)", () => {
+  const store = freshStore();
+  const t = store.createThread();
+
+  const id = store.insertFact({
+    fact: "favorite color blue",
+    canonical: "favorite color blue",
+    topics: [],
+    provenance: `thread:${t}`,
+    scope: "cross-thread",
+    expiry: null,
+    confidence: 1,
+    authored_by: "machine",
+  }, "seed");
+
+  applyFactOp(store, {
+    op: "replace",
+    fact: "favorite color red",
+    canonical: "favorite color red",
+    topics: [],
+    provenance: `thread:${t}`,
+    targetId: id,
+    expectedTargetText: "favorite color blue",
+  }, "agent");
+
+  const replaced = store.readReplacedFacts(id);
+  expect(replaced.length).toBe(1);
+  expect(replaced[0]!.reason).toBe("apply-replace");
+
+  store.close();
+});
+
 // ─── append: within cap → appended + merged canonical searchable ──────────────
 
 test("op:append within cap appends the item and merges canonical so an earlier term still finds the fact", () => {

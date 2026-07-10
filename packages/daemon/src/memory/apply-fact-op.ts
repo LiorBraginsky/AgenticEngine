@@ -24,6 +24,10 @@ export interface ApplyFactOpInput {
   provenance: string;           // e.g. `thread:<id>`
   targetId?: string;            // resolved id (caller resolves ordinal→id); undefined ⇒ treated as new
   expectedTargetText?: string;  // for non-new ops: optimistic-concurrency check text
+  reason?: string;               // recordReplacedFact reason on a surviving replace (2c-01 review
+                                  // FIX 6 — restores the caller-specific trail the pre-extraction
+                                  // welded code recorded: the distiller passes "distill-replace",
+                                  // the port passes "apply-replace"). Defaults to "apply-replace".
 }
 
 export type ApplyFactOutcome =
@@ -88,7 +92,7 @@ export function applyFactOp(store: MemoryStore, input: ApplyFactOpInput, actor: 
     store.updateFactById(
       targetId,
       { ...base },
-      { actor, reason: "apply-replace" },
+      { actor, reason: input.reason ?? "apply-replace" },
       actor,
     );
     return { outcome: "replaced", factId: targetId };

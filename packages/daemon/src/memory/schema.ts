@@ -13,9 +13,12 @@
  *   `mutations` (kind='tombstone') — the MESSAGE-redaction artifact. Written by
  *     WriteGate.forget; hard-scrubs messages.content. The isMessageId throw in
  *     store.tombstoneFact stays as the defensive seam guard.
- *   `forgotten_facts` — the FACT-suppression artifact. Written by WriteGate.forgetFact;
- *     keyed on normalized fact text (not a messages.id). The smart distiller's
- *     Layer-T suppression reads from this table. These two artifacts NEVER cross.
+ *   `forgotten_facts` — the FACT-suppression artifact (2c chunk-01: LIVE again — spec
+ *     §3.6). Written by MemoryActionPort.forget (D6a); read by the D6b per-dismiss
+ *     delta-apply consult (distiller-registration.ts) and the smart-distiller's soft
+ *     prompt nudge; cleared by a human WriteGate.editFact re-assertion (D6c) or a
+ *     prompted memory_remember re-assertion (D6e). Keyed on normalized fact text (not a
+ *     messages.id). These two artifacts NEVER cross.
  *
  * v2-02 (spec §3.4/§3.5): adds fact_topics + fact_fts (FTS5, matched on a
  * canonical key supplied in code) + an AFTER DELETE sync trigger + the additive

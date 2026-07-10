@@ -200,9 +200,9 @@ async function distillOneThread(
         // replace/append/new apply + dedup) now live in the shared applyFactOp
         // primitive (D7a-bis) — extracted so both the distiller and the chunk-01
         // MemoryActionPort share the same rule-gated apply, without duplicating it.
-        // The distiller ignores the returned outcome; it keeps its own watermark
-        // advances + insertDistillationEvent OUTSIDE this call (below).
-        applyFactOp(store, {
+        // `reason: "distill-replace"` (2c-01 review FIX 6) preserves the distiller's OWN
+        // replaced_facts trail — distinct from the port's "apply-replace" default.
+        const result = applyFactOp(store, {
           op: op.op,
           fact: op.fact,
           canonical: op.canonical || normalizeFactText(op.fact),
@@ -210,7 +210,16 @@ async function distillOneThread(
           provenance,
           targetId,
           expectedTargetText: op.expectedTargetText,
+          reason: "distill-replace",
         }, provider.id);
+
+        // 2c-01 review FIX 5: restore the dedup-skip glass-box the applyFactOp extraction
+        // dropped — the pre-extraction code logged this on every dedup no-op (the debug
+        // line that caught the v2-08/09 dedup defects). applyFactOp is side-effect-free
+        // (it just returns the outcome); the distiller re-emits the log from it.
+        if (result.outcome === "deduped" || result.outcome === "demoted-deduped") {
+          memDebug("distill", { threadId, dedupSkipped: previewStr(op.fact) });
+        }
       }
 
       // Both watermark advances are INSIDE the same tx (R1 / D-V3c)

@@ -436,6 +436,33 @@ describe("delta distill contract (v2-03 incremental)", () => {
     store.close();
   });
 
+  // ── 2c chunk-01 review FIX 3: the D6c soft nudge must be BOUNDED, not join
+  // every forgotten fact unbounded/cross-thread into every distill prompt. ────
+  test("D6c soft nudge: only the most-recent FORGOTTEN_NUDGE_MAX forgotten facts are nudged into the prompt", async () => {
+    const store = freshStore();
+    const threadId = store.createThread();
+
+    // 15 forgotten facts — more than the bound (10).
+    for (let i = 0; i < 15; i++) {
+      store.recordForgottenFact({ raw_text: `forgotten-fact-${i}`, provenance: "thread:x", actor: "agent", authored_by: "machine" });
+    }
+    store.appendMessages(threadId, [{ role: "user", content: "I like coffee" }], "s1");
+
+    const { client, getCalls } = capturingClient("[]");
+    const provider = new SmartDistillerProvider({ client });
+    await provider.distill(store, threadId);
+
+    const params = getCalls()[0]!;
+    const messages = params["messages"] as Array<{ content: string }>;
+    const userContent = messages[messages.length - 1]?.content ?? "";
+
+    const mentionedCount = Array.from({ length: 15 }, (_, i) => i)
+      .filter((i) => userContent.includes(`forgotten-fact-${i}`)).length;
+    expect(mentionedCount).toBe(10);
+
+    store.close();
+  });
+
 });
 
 // ── retrieve mirrors dumb-tail behavior ───────────────────────────────────

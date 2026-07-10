@@ -87,9 +87,12 @@ The structure is sound for single-user dogfood. Everything below is **deferred /
 ### C. Content erase — thread-forget  (roadmap 2e)
 - **thread-forget** — forget a WHOLE conversation (content-erase), the chosen replacement for the
   dropped per-message message-forget. Scrubs the thread's messages (reuses the dormant, already-built
-  `WriteGate.forget` hard-scrub primitive) + deletes its facts. *Deferred:* its own feature; pairs with
-  2d (a forgotten topic could otherwise resurface via message-search). *Lives:* `specs/2026-06-13-
-  memory-distiller-v2.md` §1/§3.6; roadmap.
+  `WriteGate.forget` hard-scrub primitive). **⚠️ RULING CHANGE (Lior 2026-07-10, ADR-0012 rider
+  Ruling 2 — fact source-independence): thread-forget does NOT delete the thread's facts.** Facts
+  change/disappear ONLY via manual edit / prompted edit (2c) / explicit fact-forget; the earlier
+  "deletes its facts" sketch here is SUPERSEDED. *Deferred:* its own feature; pairs with
+  2d (a forgotten topic could otherwise resurface via message-search). *Lives:* ADR-0012 rider
+  2026-07-10; `specs/2026-06-13-memory-distiller-v2.md` §1/§3.6; roadmap.
 
 ### D. Retrieval quality — semantic candidate-fetch  (roadmap 2d)  ⭐ the root fix
 - **2d — on-demand archive retrieval + SEMANTIC (embeddings) candidate-fetch.** The PROPER
@@ -105,6 +108,12 @@ The structure is sound for single-user dogfood. Everything below is **deferred /
   resumes, 2d should combine lexical BM25 with semantic embeddings (not embeddings-only) so exact-term
   matches and cross-language/reworded matches both land — the dedup ceiling (a cross-language re-derivation
   slipping past normalized dedup) is the concrete miss a hybrid ranker is meant to close.
+- **At the 2d design pass, RE-EXAMINE message-edit's right to exist (Lior 2026-07-10, at the ADR-0012
+  rider acceptance):** now that fact-edit is the real "correct what the agent remembers" lever, does
+  the archive message-correction surface (chunk-03) still earn its place — who is it for, what does a
+  corrected archive message actually feed (it does NOT re-trigger fact derivation — see Open cases),
+  and would removing it simplify the hatch? Deliberate revisit, not a drop. *Lives:* here; ADR-0012
+  rider 2026-07-10 Ruling 1(a).
 
 ### E. What's remembered / fact richness
 - **Complex corrections & deletion-via-statement — NOT specced (open case).** Replace currently fires
@@ -162,6 +171,11 @@ The structure is sound for single-user dogfood. Everything below is **deferred /
    lever. *Lives:* roadmap.
 4. **Archive-summarization tier**: the O(archive) scaling trigger; also the point at which the
    candidate-fetch flips from all-facts → semantic (2d). *Lives:* roadmap; spec §3.3 D8.
+5. **Should message-edit re-trigger fact derivation?** (Lior 2026-07-10, at the ADR-0012 rider
+   acceptance): today a corrected archive message does NOT re-run distillation/fact-checking, so
+   facts derived from the old text stand until manually edited/forgotten. Lior: "not sure it should —
+   think about it." Couples with the §D "does message-edit earn its place" revisit — decide the two
+   together. *Lives:* here; ADR-0012 rider 2026-07-10 Ruling 2 (recorded open case).
 
 ---
 

@@ -209,18 +209,18 @@ This amendment is, in part, the regret arriving early: the global re-projection 
 exactly the way that TODO anticipated ("every thread felt cluttered / facts churned"). The pivot is the
 correction, made before the feature shipped as default rather than after.
 
-## Rider 2026-07-10 (proposed): Memory-EDIT semantics — message-correction vs fact-edit, and human-adopted facts
+## Rider 2026-07-10 (accepted): Memory-EDIT semantics — message-correction vs fact-edit, and fact source-independence
 
-> **Status:** `proposed` — **NOT yet accepted.** This rider is a **doc-style record of ALREADY-SHIPPED,
-> demo-blessed behavior**; it proposes no new design. **⚠️ Agent-authored during work** (adr-curator,
-> at the `memory-transparency-ui` chunk-04 closeout, 2026-07-10) — it captures what shipped across chunks
-> 03 + 05 and what Lior blessed in the chunk-03 demo (2026-07-09) and the joint demo (2026-07-10).
-> **This rider does NOT self-accept, and does NOT change this ADR's frontmatter status (stays `accepted`)
-> or the top Status block.** Amending a north-star ADR is a [[../PIPELINE]] §5.2 ADR-acceptance gate —
-> **Lior acceptance is pending; the conductor will route a separate Lior tap** to move this rider
-> `proposed → accepted`. It follows this file's existing in-file dated-section convention (see
-> "Amendment 2026-06-13" above); it is a **rider** that records now-settled *user-facing* semantics, not
-> a change to a HARD INVARIANT.
+> **Status:** `accepted` — **Lior, 2026-07-10** (the §5.2 acceptance tap, routed by the conductor).
+> Ruling 1 accepted as proposed. Ruling 2 accepted **in the GENERALIZED form Lior dictated at
+> acceptance** (the original "human-adopted-fact" wording was a special case of the broader rule he
+> actually holds — see Ruling 2). This rider is a **doc-style record of ALREADY-SHIPPED, demo-blessed
+> behavior** plus that acceptance-time generalization; it proposes no new mechanism. **⚠️
+> Agent-authored during work** (adr-curator, at the `memory-transparency-ui` chunk-04 closeout,
+> 2026-07-10); the Ruling-2 generalization was recorded by the conductor from Lior's own words at
+> acceptance. It follows this file's existing in-file dated-section convention (see "Amendment
+> 2026-06-13" above); it records now-settled *user-facing* semantics, not a change to a HARD
+> INVARIANT.
 
 ### Why record this
 
@@ -251,15 +251,29 @@ editing was a genuinely missing surface added as chunk-05 (the spec's original w
 against the seam**, spec ~line 46). Both surfaces now exist and are blessed — this rider records the
 split, it does not choose it.
 
-### Ruling 2 — the human-adopted-fact rule (an edited fact survives source-forget)
+### Ruling 2 — fact source-independence (GENERALIZED at acceptance, Lior 2026-07-10)
 
-An edited fact is stamped `authored_by=human`, and a human-authored fact is **excluded from the
-message-forget cascade** → it **survives a later forget of its source conversation**. This is the designed
-5e / [[0015-intent-based-memory-forget]] B1 "the human adopted the fact" semantic: once a human corrects
-or edits a fact, it is **no longer owned by the machine-derived source** and is **not swept** when that
-source is forgotten. **Lior confirmed this as expected working-as-designed** (joint demo, 2026-07-10) — a
-feature, not a defect. It is the concrete user-facing face of 5e (never auto-overwrite human-authored
-entries) once edit and forget coexist in the hatch.
+**A distilled fact, once it exists, lives independently of its source thread — for ALL facts, not
+only human-edited ones.** Lior's rule, dictated at acceptance: the ONLY paths by which a fact may
+change or disappear are —
+
+1. **manual edit** (the hatch fact-edit, chunk-05),
+2. **prompted edit** (conversational memory-action tools — future 2c),
+3. **explicit fact-forget** (the "release the reference" delete).
+
+There is **no other path**: erasing or forgetting source content (a message today, a whole thread
+when 2e thread-forget lands) must **NOT sweep the facts derived from it**. The originally-proposed
+"human-adopted-fact" rule (a human-edited fact survives source-forget because `authored_by=human`
+excludes it from the message-forget cascade — demo-confirmed 2026-07-10) is the **already-shipped
+special case** of this rule; the generalization **binds the future 2e thread-forget design**, which
+must be content-erase of messages ONLY (the backlog's earlier "deletes its facts" sketch is
+superseded — see memory-backlog §C). Symmetry note: this is the mirror of the 2026-07-02
+forget-philosophy ("forgetting a fact releases the reference, never deletes the source") — the two
+stores are independent in BOTH directions.
+
+*Recorded open case (not decided here):* message-edit today does **not** re-trigger fact derivation
+for facts derived from the edited message; Lior flagged "not sure it should — think about it" →
+memory-backlog Open cases.
 
 ### Ruling 3 — 5e machine-over-human protection is CONSUMED unchanged (context, not a new decision)
 
@@ -276,8 +290,9 @@ closeout" note (spec ~line 47).
 
 - **5a** — makes "edit / correct" concrete: it is **two** operations (message-correction + fact-edit),
   and fact-edit is the one that literally fulfills "correct what the agent remembers."
-- **5e** — Ruling 2 is 5e made visible where edit and forget meet: a human-adopted fact is unassailable
-  by the machine-derived source's forget.
+- **5e** — Ruling 2's shipped special case is 5e made visible where edit and forget meet: a
+  human-adopted fact is unassailable by the machine-derived source's forget. The generalization
+  extends the posture to all facts: sources never reach into the fact store.
 - **Amendment 2026-06-13** — fact-edit is clause **(b)** of the amended STABILITY invariant ("a distilled
   fact persists unchanged until … (b) the user edits it"); this rider is that clause reaching the UI.
 - **[[0013-daemon-memory-write-http-surface-caller-auth]]** — fact-edit is a token-gated `POST /memory/edit`

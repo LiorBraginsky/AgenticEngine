@@ -1,6 +1,6 @@
 # Chunk 1: Action core — MemoryActionPort, guardrails, forget/remember paths (no LLM)
 
-**Status:** todo
+**Status:** in-progress
 **Created:** 2026-07-10
 **Phase:** memory-action-tools (2c)
 **Estimated size:** ~1 day

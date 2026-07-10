@@ -29,6 +29,10 @@ fallback), self-concept module (agent knows it cannot self-forget), language pre
 user views/edits/forgets via the loopback **`history.html`** page (browser), NOT in the overlay.
 Spec: `specs/2026-06-13-memory-distiller-v2.md` (status: implemented).
 
+**Update 2026-07-10 — Theme A (`memory-transparency-ui`) SHIPPED:** the user now views / edits /
+forgets memory **in the overlay** (tray → "Open Memory…"), not only via the loopback `history.html`
+page — which stays as the no-install browser fallback. See §A below.
+
 The structure is sound for single-user dogfood. Everything below is **deferred / not-yet-built**.
 
 ---
@@ -40,12 +44,19 @@ The structure is sound for single-user dogfood. Everything below is **deferred /
 > contacting the super-chat is the single most expensive mistake."* Build view/edit/forget +
 > provenance + expiry day-one. Today this exists ONLY as the browser `history.html` page.
 >
-> **→ IN BUILD since 2026-07-02** — brainstorm settled, spec =
-> `specs/2026-07-02-memory-transparency-ui.md` (that doc records the rulings; the residue
-> below is what did NOT go into the build).
+> **→ SHIPPED 2026-07-10** — the `memory-transparency-ui` feature (Theme A) shipped: chunks
+> 01–05 merged + Lior's joint §6.1 live demo signed. Spec (now `implemented`) =
+> `specs/archive/2026-07-02-memory-transparency-ui.md`. The two bullets below (in-answer
+> provenance affordance + token revocation) are what remains carved out / deferred.
 
-- **In-overlay memory UI + tray-icon shell + history.html UX tails** — **moved into the 2026-07-02
-  spec** (full view/edit/forget, tray entry point un-defers ADR-0006 p.4, 🔒 locked-state + token-trim).
+- **In-overlay memory UI + tray-icon shell + history.html UX tails** — ✅ **SHIPPED 2026-07-10**
+  (Theme A). Tray icon status + "Open Memory…" window (no token paste, ADR-0006 p.4 un-deferred);
+  in-overlay threads/facts VIEW with per-fact thread-level provenance; distilled-fact-text EDIT
+  (durable human "yours" badge, survives restart) + message-correction (session-local tag);
+  "release the reference" FORGET (fact-delete, sources untouched); expiry/confidence shown only
+  when non-default; honest locked/401/daemon-down states; and the browser `history.html` fallback
+  tails (🔒 locked instead of false "Loading…", zsh-`%`/whitespace token-trim). Chunks archived in
+  `chunks-todo/archive/memory-transparency-ui/`.
 - **In-answer "where did this come from?" provenance affordance** — **CARVED OUT to its own design
   task** (Lior 2026-07-02): weigh pros/cons of dragging fact→thread linkage through live answers —
   Lior's concern is memory UX overcomplication. ⚠️ ADR-0012 **5a names it MANDATORY** — this is a
@@ -89,6 +100,11 @@ The structure is sound for single-user dogfood. Everything below is **deferred /
   *Deferred:* embeddings install complexity on Bun (`onnxruntime-node`/`setCustomSQLite` — see gotchas)
   + premature at single-user scale. *Lives:* roadmap; `specs/2026-06-13-memory-distiller-v2.md` §1; q#008;
   `research/2026-06-13-memory-similarity-approaches.md`.
+- **2d shape = HYBRID retrieval (BM25 + embeddings) — Lior direction 2026-07-10** (recorded at the
+  memory-transparency-ui joint demo, on the accepted-as-known v2 dedup ceiling). When memory-quality work
+  resumes, 2d should combine lexical BM25 with semantic embeddings (not embeddings-only) so exact-term
+  matches and cross-language/reworded matches both land — the dedup ceiling (a cross-language re-derivation
+  slipping past normalized dedup) is the concrete miss a hybrid ranker is meant to close.
 
 ### E. What's remembered / fact richness
 - **Complex corrections & deletion-via-statement — NOT specced (open case).** Replace currently fires
@@ -161,8 +177,8 @@ surface). **Theme A above is the direct execution of that mandate and is the lea
 ---
 
 ## Suggested next step
-**Theme A picked 2026-07-02** (brainstorm → spec `specs/2026-07-02-memory-transparency-ui.md` →
-decompose → conveyor). After it ships, the queue in rough order: **2c (conversational forget)** —
-Lior re-confirmed 2026-07-02 as the small next feature; the **in-answer provenance affordance design
-task** (carved out of Theme A — see §A); then 2d (semantic retrieval) once the corpus outgrows
-all-facts-below-cap.
+**Theme A SHIPPED 2026-07-10** (`memory-transparency-ui`; chunks 01–05 + joint §6.1 demo signed).
+The queue now, in rough order: **2c (conversational forget)** — Lior re-confirmed 2026-07-02 as the
+small next feature; then the **in-answer provenance affordance design task** (carved out of Theme A —
+see §A); then **2d — HYBRID retrieval (BM25 + embeddings; §D, Lior 2026-07-10)** once the corpus
+outgrows all-facts-below-cap.

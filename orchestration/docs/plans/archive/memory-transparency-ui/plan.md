@@ -1,3 +1,9 @@
+> 🗄️ ARCHIVED 2026-07-10 — shipped. Historical record; do not edit.
+
+> **Feature status: SHIPPED 2026-07-10.** All chunks (01–05) merged and the joint §6.1 live
+> demo signed by Lior. This is the accumulated per-chunk plan for `memory-transparency-ui`;
+> per-chunk `## Status` sections below are historical and neutralized by this banner.
+
 # Tray Icon + Memory-Window Shell — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. This is **chunk-01** of feature `memory-transparency-ui` (backlog Theme A). Scope is FROZEN by `orchestration/chunks-todo/memory-transparency-ui/01-tray-icon-and-memory-window-shell.md` — do not exceed it.

@@ -1,6 +1,8 @@
+> 🗄️ ARCHIVED 2026-07-10 — done. Historical record; do not edit.
+
 # Chunk 4: history.html fallback UX tails + feature closeout (joint demo)
 
-**Status:** in-progress
+**Status:** done
 **Created:** 2026-07-02
 **Phase:** memory-transparency-ui (backlog Theme A — spec `docs/specs/2026-07-02-memory-transparency-ui.md`)
 **Estimated size:** ~0.5–1 day

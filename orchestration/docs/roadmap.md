@@ -207,21 +207,38 @@ tags: [roadmap, milestones]
 > grouped themes, deferral reasons, ruled-out items, open cases, and the vision anchor. The summary
 > below is the high-level view.
 
+> **Theme A — in-overlay memory transparency & control — SHIPPED 2026-07-10.** The
+> `memory-transparency-ui` feature (chunks 01–05 + Lior's joint §6.1 live demo) delivered the
+> day-one transparency mandate in the overlay: tray entry point (ADR-0006 p.4 un-deferred), threads/
+> facts VIEW with per-fact provenance, distilled-fact-text EDIT (durable human badge) + message
+> correction, "release the reference" FORGET, and honest locked/daemon-down states (+ `history.html`
+> fallback tails). Spec `specs/archive/2026-07-02-memory-transparency-ui.md` (implemented). **Queue
+> now: 2c → in-answer provenance-affordance design task → 2d (hybrid).**
+
 `memory-distiller-v2` shipped the incremental distiller: per-turn cross-thread fact injection,
 durable forget-by-id, suppress-only dedup, stable replace-on-change, and a single-user "all-facts
 candidate pool" (BM25 retained only as the above-cap fallback). The remaining memory work, in
 rough priority:
 
-- **2d — on-demand archive retrieval + SEMANTIC (embeddings) candidate-fetch.** The proper
-  cross-language / reworded retrieval. **Supersedes BOTH BM25 AND the all-facts-below-cap stopgap**
-  once the fact corpus outgrows "pass them all to the distiller." The cross-language BM25 miss it
-  replaces was the root of the demo-3 duplicate-colour defect (Ukrainian tail vs English canonical).
+- **2c — agent memory-action tools** *(next up, Lior 2026-07-02)*. A conversational forget/recall
+  lever — the agent ACTS on memory via tool-use ("forget X" actually forgets), not only passive
+  injection. New side-effecting action-tool class → an ADR-0002/0005 closed-set extension + a
+  poisoning-surface review (ADR-0012 5d); shares one design+ADR pass with 2d.
+- **In-answer "where did this come from?" provenance-affordance design task** *(carved out of
+  Theme A, Lior 2026-07-02)*. Weigh dragging fact→thread linkage through live agent answers (UX
+  overcomplication concern). ⚠️ ADR-0012 5a names it MANDATORY — a recorded deliberate revisit, not
+  a drop; the design task owns reconciling with (or amending) ADR-0012.
+- **2d — on-demand archive retrieval + HYBRID candidate-fetch (BM25 + embeddings).** The proper
+  cross-language / reworded retrieval. **Lior direction 2026-07-10: HYBRID (lexical BM25 + semantic
+  embeddings), not embeddings-only** — so exact-term and reworded/cross-language matches both land.
+  **Supersedes BOTH plain BM25 AND the all-facts-below-cap stopgap** once the fact corpus outgrows
+  "pass them all to the distiller." The cross-language BM25 miss it replaces was the root of the
+  demo-3 duplicate-colour defect (and the accepted-as-known v2 dedup ceiling; Ukrainian tail vs
+  English canonical).
 - **Variant B — distilled facts rendered into the SYSTEM prompt** (instead of `[remembered]`
   user-messages). Architecturally cleaner per-turn injection; pairs naturally with 2c/2d. Considered
   and deferred in v2-08 (the `[remembered]`-as-messages format is load-bearing across system-prompt +
   provenance-stamp + tests — too big a rewrite for the recall fix; variant A shipped instead).
-- **2c — agent memory-action tools.** A conversational forget/recall lever (the agent can act on
-  memory via tool-use) rather than only passive injection.
 - **thread-forget** — a content-erase primitive (reuses the dormant `WriteGate` scrub); the
   successor to the dropped message-forget (ADR-0015 decision 5 superseded).
 - **Finer (message-level) provenance** — deferred from v2-06; better "dig deeper" + forget

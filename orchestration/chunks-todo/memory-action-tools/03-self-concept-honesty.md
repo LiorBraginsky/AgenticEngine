@@ -1,6 +1,6 @@
 # Chunk 3: Self-concept flip + honesty rails + injection drill
 
-**Status:** todo
+**Status:** in-progress
 **Created:** 2026-07-10
 **Phase:** memory-action-tools (2c)
 **Estimated size:** ~0.5–1 day

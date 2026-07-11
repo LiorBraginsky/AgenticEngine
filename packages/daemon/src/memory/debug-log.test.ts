@@ -160,3 +160,107 @@ test("MEMORY_DEBUG() is a function that re-reads process.env each call", async (
   delete process.env["MEMORY_DEBUG"];
   expect(MEMORY_DEBUG()).toBe(false);
 });
+
+// ── Test 5: "action" stage (chunk 2c-03, spec §3.9) ────────────────────────
+
+test("MEMORY_DEBUG unset -> memDebug('action', ...) does NOT call console.error", async () => {
+  delete process.env["MEMORY_DEBUG"];
+
+  const { memDebug } = await import("./debug-log.js");
+  const spy = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    memDebug("action", { threadId: "t", tool: "memory_forget", outcome: "applied", factPreview: "blue" });
+    expect(spy).not.toHaveBeenCalled();
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+test("MEMORY_DEBUG=1 -> memDebug('action', ...) emits exactly one [memory-debug] action line, JSON parses", async () => {
+  process.env["MEMORY_DEBUG"] = "1";
+
+  const { memDebug } = await import("./debug-log.js");
+  const captured: string[] = [];
+  const spy = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+    captured.push(args.join(" "));
+  });
+  try {
+    memDebug("action", { threadId: "t", tool: "memory_forget", outcome: "applied", factPreview: "blue" });
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    const line = captured[0]!;
+    expect(line).toContain("[memory-debug]");
+    expect(line).toContain("action");
+    const jsonPart = line.slice(line.indexOf(" {"));
+    const obj = JSON.parse(jsonPart.trim());
+    expect(obj).toHaveProperty("stage", "action");
+    expect(obj).toHaveProperty("threadId", "t");
+  } finally {
+    spy.mockRestore();
+  }
+});
+
+// ── Test 6: backward-compatible comma-channel gate (Orchestrator decision, FLAG 4) ──
+
+test("comma gate: MEMORY_DEBUG='action' enables action but NOT distill", async () => {
+  process.env["MEMORY_DEBUG"] = "action";
+
+  const { memDebug } = await import("./debug-log.js");
+  const actionSpy = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    memDebug("action", { threadId: "t", tool: "memory_forget", outcome: "applied", factPreview: "x" });
+    expect(actionSpy).toHaveBeenCalledTimes(1);
+  } finally {
+    actionSpy.mockRestore();
+  }
+
+  const distillSpy = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    memDebug("distill", { threadId: "t1", sinceTurn: -1, tail: [], candidates: [] });
+    expect(distillSpy).not.toHaveBeenCalled();
+  } finally {
+    distillSpy.mockRestore();
+  }
+});
+
+test("comma gate: MEMORY_DEBUG='distill,retrieve' enables distill but NOT action", async () => {
+  process.env["MEMORY_DEBUG"] = "distill,retrieve";
+
+  const { memDebug } = await import("./debug-log.js");
+  const actionSpy = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    memDebug("action", { threadId: "t", tool: "memory_forget", outcome: "applied", factPreview: "x" });
+    expect(actionSpy).not.toHaveBeenCalled();
+  } finally {
+    actionSpy.mockRestore();
+  }
+
+  const distillSpy = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    memDebug("distill", { threadId: "t1", sinceTurn: -1, tail: [], candidates: [] });
+    expect(distillSpy).toHaveBeenCalledTimes(1);
+  } finally {
+    distillSpy.mockRestore();
+  }
+});
+
+test("comma gate backward-compat: MEMORY_DEBUG='1' enables BOTH action and distill", async () => {
+  process.env["MEMORY_DEBUG"] = "1";
+
+  const { memDebug } = await import("./debug-log.js");
+  const actionSpy = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    memDebug("action", { threadId: "t", tool: "memory_forget", outcome: "applied", factPreview: "x" });
+    expect(actionSpy).toHaveBeenCalledTimes(1);
+  } finally {
+    actionSpy.mockRestore();
+  }
+
+  const distillSpy = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    memDebug("distill", { threadId: "t1", sinceTurn: -1, tail: [], candidates: [] });
+    expect(distillSpy).toHaveBeenCalledTimes(1);
+  } finally {
+    distillSpy.mockRestore();
+  }
+});

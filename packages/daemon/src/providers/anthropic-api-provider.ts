@@ -23,7 +23,7 @@ import type {
 } from "./provider.js";
 import { resolveAnthropicKey } from "../secrets/cloud-secrets.js";
 import type { ResolveOpts } from "../secrets/cloud-secrets.js";
-import { COMPOSED_SYSTEM_PROMPT } from "./system-prompt.js";
+import { composeSystemPrompt } from "./system-prompt.js";
 import type {
   MemoryActionPort,
   MemoryActionTurnContext,
@@ -31,6 +31,7 @@ import type {
 } from "../memory/memory-action-port.js";
 import { MEMORY_ACTIONS_MAX_PER_TURN } from "../memory/memory-action-port.js";
 import { MEMORY_ACTION_TOOLS_PARAM, serializeToolResult } from "./memory-action-tools.js";
+import { memDebug, previewStr } from "../memory/debug-log.js";
 
 // ── Pure formatters (functional core) ─────────────────────────────────────
 
@@ -206,6 +207,17 @@ function dispatchTool(
   }
 }
 
+/**
+ * Best-effort preview of a tool call's user-supplied fact/target text, for the
+ * MEMORY_DEBUG `action` glass-box channel (chunk 2c-03, spec §3.9). Never
+ * throws — carries only content the tool call already holds, no secret.
+ */
+function actionInputPreview(name: string, input: unknown): string {
+  const i = (input ?? {}) as Record<string, unknown>;
+  const src = name === "memory_remember" ? i["fact"] : i["expected_text"];
+  return typeof src === "string" ? src : "";
+}
+
 // ── Injectable factory ─────────────────────────────────────────────────────
 
 /**
@@ -354,6 +366,7 @@ export function createAnthropicApiProvider(
 
         const port = opts.memoryActionPort;
         const useTools = port !== undefined;
+        const systemPromptText = composeSystemPrompt(useTools);
         const slice = state?.memoryActionSlice;
         // Constructed ONCE per turn (spec §7 CLOSED): the SAME object is handed
         // to every port call this turn, so the shared cap counter (actionsUsed)
@@ -393,7 +406,7 @@ export function createAnthropicApiProvider(
             system: [
               {
                 type: "text",
-                text: COMPOSED_SYSTEM_PROMPT,
+                text: systemPromptText,
                 cache_control: { type: "ephemeral" },
               },
             ],
@@ -431,11 +444,23 @@ export function createAnthropicApiProvider(
           }
 
           convo.push({ role: "assistant", content: response.content });
-          const results: Anthropic.ToolResultBlockParam[] = toolUses.map((tu) => ({
-            type: "tool_result",
-            tool_use_id: tu.id,
-            content: serializeToolResult(dispatchTool(tu.name, tu.input, port!, turnCtx!)),
-          }));
+          const results: Anthropic.ToolResultBlockParam[] = toolUses.map((tu) => {
+            const result = dispatchTool(tu.name, tu.input, port!, turnCtx!);
+            // MEMORY_DEBUG `action` channel (chunk 2c-03, spec §3.9): one line per
+            // dispatchTool result, applied AND refused alike — off by default.
+            memDebug("action", {
+              threadId: turnCtx!.threadId,
+              tool: tu.name,
+              outcome: result.ok ? "applied" : `refused-${result.code}`,
+              ...(result.ok && result.factId !== undefined ? { factId: result.factId } : {}),
+              factPreview: previewStr(actionInputPreview(tu.name, tu.input)),
+            });
+            return {
+              type: "tool_result",
+              tool_use_id: tu.id,
+              content: serializeToolResult(result),
+            };
+          });
           convo.push({ role: "user", content: results });
 
           rounds++;

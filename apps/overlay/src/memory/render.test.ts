@@ -4,8 +4,8 @@
  * callback, and the expiry/confidence "shown only when non-default" rule.
  */
 import { test, expect } from "bun:test";
-import { renderFacts, renderEvents, renderThreadList, renderMessages } from "./render.js";
-import type { DistilledFactView, DistillationEventView, ThreadSummary } from "./types.js";
+import { renderFacts, renderEvents, renderAuditEvents, renderThreadList, renderMessages } from "./render.js";
+import type { DistilledFactView, DistillationEventView, MemoryActionEventView, ThreadSummary } from "./types.js";
 
 function host(): HTMLElement { const d = document.createElement("div"); document.body.appendChild(d); return d; }
 const baseFact: DistilledFactView = {
@@ -117,4 +117,39 @@ test("renderFacts: persistent 'yours' badge iff authored_by==='human' (data-driv
   const factTextEl = rows[0]!.children[0] as HTMLElement;
   expect(badge!.parentElement).toBe(factTextEl);
   expect(badge!.parentElement).not.toBe(rows[0]);
+});
+
+// chunk-04 (2c D9b): render-only agent memory-action audit trail.
+const baseAuditEvent: MemoryActionEventView = {
+  action: "forget", outcome: "applied", fact_text: "likes tea", actor: "agent", created_at: 1,
+};
+
+test("renderAuditEvents: an applied forget row renders action + outcome + fact_text + agent attribution", () => {
+  const el = host();
+  renderAuditEvents(el, [baseAuditEvent]);
+  expect(el.textContent).toContain("forget");
+  expect(el.textContent).toContain("applied");
+  expect(el.textContent).toContain("likes tea");
+  expect(el.textContent).toContain("agent");
+});
+
+test("renderAuditEvents: a refused row renders its outcome", () => {
+  const el = host();
+  renderAuditEvents(el, [{ ...baseAuditEvent, outcome: "refused-refused_human_fact" }]);
+  expect(el.textContent).toContain("refused-refused_human_fact");
+});
+
+test("renderAuditEvents: empty array renders the honest 'No memory actions.' state", () => {
+  const el = host();
+  renderAuditEvents(el, []);
+  expect(el.textContent).toContain("No memory actions.");
+});
+
+test("renderAuditEvents: render-only guard — NO interaction affordances in the rendered subtree", () => {
+  const el = host();
+  renderAuditEvents(el, [baseAuditEvent]);
+  expect(el.querySelector(".act-btn")).toBeNull();
+  expect(el.querySelector(".act-forget")).toBeNull();
+  expect(el.querySelector(".act-edit")).toBeNull();
+  expect(el.querySelector(".inline-editor")).toBeNull();
 });

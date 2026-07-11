@@ -22,8 +22,18 @@ export interface DistillationEventView {
   distiller_version: string;
   created_at: number;
 }
+// 2c chunk-04 (D9b): frontend-local mirror of daemon store.ts MemoryActionEventRow.
+// Render-only audit trail — additive-on-type is what makes the wire field type-checked.
+export interface MemoryActionEventView {
+  action: string;   // "forget" | "remember" | "reassert"
+  outcome: string;  // "applied" | "refused-<code>"
+  fact_text: string;
+  actor: string;    // "agent"
+  created_at: number;
+}
 export interface HatchView {
   messages: ThreadMessage[];
   distilledFacts: DistilledFactView[];
   distillationEvents: DistillationEventView[];
+  memoryActionEvents: MemoryActionEventView[]; // 2c D9b — render-only audit trail
 }

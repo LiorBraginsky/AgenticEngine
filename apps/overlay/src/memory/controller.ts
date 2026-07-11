@@ -19,7 +19,7 @@
 import type { ShellState } from "../memory-liveness.js";
 import type { MemoryApiDeps } from "./memory-api.js";
 import { fetchThreads, fetchThread } from "./memory-api.js";
-import { renderThreadList, renderMessages, renderFacts, renderEvents, renderState } from "./render.js";
+import { renderThreadList, renderMessages, renderFacts, renderEvents, renderAuditEvents, renderState } from "./render.js";
 import { forgetFact, editMessage, editFact, type WriteResult } from "./memory-write.js";
 
 export interface MemoryControllerEls {
@@ -29,6 +29,7 @@ export interface MemoryControllerEls {
   messagesEl: HTMLElement;
   factsEl: HTMLElement;
   eventsEl: HTMLElement;
+  actionsEl: HTMLElement; // 2c chunk-04 (D9b): render-only agent memory-action audit list
   backBtn: HTMLElement;
 }
 export interface MemoryControllerDeps {
@@ -85,10 +86,19 @@ export function createMemoryController(deps: MemoryControllerDeps): MemoryContro
     renderState(els.messagesEl, "Loading…");
     renderState(els.factsEl, "Loading…");
     renderState(els.eventsEl, "Loading…");
+    renderState(els.actionsEl, "Loading…");
     const r = await fetchThread(deps.api, threadId);
     if (gen !== loadGen) return; // stale load, invalidated by a down transition -> skip
-    if (r.kind === "unauthorized") { renderState(els.messagesEl, LOCKED); renderState(els.factsEl, LOCKED); renderState(els.eventsEl, LOCKED); return; }
-    if (r.kind === "unreachable") { renderState(els.messagesEl, DOWN); renderState(els.factsEl, DOWN); renderState(els.eventsEl, DOWN); return; }
+    if (r.kind === "unauthorized") {
+      renderState(els.messagesEl, LOCKED); renderState(els.factsEl, LOCKED);
+      renderState(els.eventsEl, LOCKED); renderState(els.actionsEl, LOCKED);
+      return;
+    }
+    if (r.kind === "unreachable") {
+      renderState(els.messagesEl, DOWN); renderState(els.factsEl, DOWN);
+      renderState(els.eventsEl, DOWN); renderState(els.actionsEl, DOWN);
+      return;
+    }
     renderMessages(els.messagesEl, r.data.messages ?? [], {
       onEdit: (messageId, newText) => void editAction(messageId, newText),
       editedIds,
@@ -98,6 +108,7 @@ export function createMemoryController(deps: MemoryControllerDeps): MemoryContro
       onEditFact: (factId, newText) => void editFactAction(factId, newText), // chunk-05
     });
     renderEvents(els.eventsEl, r.data.distillationEvents ?? []);
+    renderAuditEvents(els.actionsEl, r.data.memoryActionEvents ?? []); // 2c chunk-04 (D9b)
   }
 
   function openThread(threadId: string): void { currentView = { kind: "detail", threadId }; showDetail(); void loadThread(threadId); }
@@ -128,6 +139,7 @@ export function createMemoryController(deps: MemoryControllerDeps): MemoryContro
       renderState(els.messagesEl, msg);
       renderState(els.factsEl, msg);
       renderState(els.eventsEl, msg);
+      renderState(els.actionsEl, msg);
     } else {
       renderState(els.threadListEl, msg, "li");
     }
@@ -152,6 +164,7 @@ export function createMemoryController(deps: MemoryControllerDeps): MemoryContro
       renderState(els.messagesEl, msg);
       renderState(els.factsEl, msg);
       renderState(els.eventsEl, msg);
+      renderState(els.actionsEl, msg);
     } else {
       renderState(els.threadListEl, msg, "li");
     }

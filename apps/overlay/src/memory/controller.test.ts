@@ -18,7 +18,7 @@ function makeEls(): MemoryControllerEls {
   return {
     listView: host(), detailView: host(),
     threadListEl: host(), messagesEl: host(), factsEl: host(), eventsEl: host(),
-    backBtn: host(),
+    actionsEl: host(), backBtn: host(),
   };
 }
 
@@ -340,4 +340,35 @@ test("chunk-03 edit: 204 → re-fetch, corrected text shown + 'edited by you' ta
   els.messagesEl.querySelector<HTMLButtonElement>(".act-save")!.click(); await flush(); // POST → re-fetch
   expect(els.messagesEl.textContent).toContain("corrected"); // new text visible on reload
   expect(els.messagesEl.textContent).toContain("edited by you"); // session marker
+});
+
+// chunk-04 (2c D9b): the audit list reads the DECLARED HatchView.memoryActionEvents field.
+test("chunk-04: loadThread renders the audit trail's memoryActionEvents (forget/applied) after the thread opens", async () => {
+  const fetchFn = (url: string): Promise<Response> => {
+    const body = url.includes("/memory/thread/")
+      ? {
+          messages: [], distilledFacts: [], distillationEvents: [],
+          memoryActionEvents: [{ action: "forget", outcome: "applied", fact_text: "likes tea", actor: "agent", created_at: 1 }],
+        }
+      : { threads: [{ thread_id: "T1", title: "One", last_active_at: 1, status: "active" }] };
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+  };
+  const els = makeEls();
+  const c = createMemoryController({ api: { fetchFn, baseUrl: "http://127.0.0.1:7777", token: "TOK" }, els });
+  c.start(); await flush();
+  els.threadListEl.querySelector<HTMLElement>(".thread-list-item")!.click(); await flush();
+  expect(els.actionsEl.textContent).toContain("forget");
+  expect(els.actionsEl.textContent).toContain("applied");
+});
+
+test("chunk-04: a down/unreachable transition clears the actions panel to the honest DOWN message", async () => {
+  const f = makeFetch();
+  const { c, els } = make(f);
+  c.start(); await flush();
+  els.threadListEl.querySelector<HTMLElement>(".thread-list-item")!.click(); await flush();
+
+  c.onLivenessState("connected");   // baseline
+  f.setMode("down");
+  c.onLivenessState("unreachable"); // daemon-kill transition while viewing a thread
+  expect(els.actionsEl.textContent).toContain("Daemon unreachable");
 });

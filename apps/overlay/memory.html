@@ -21,12 +21,12 @@
       .message-row.role-assistant { border-color: #84c47a; }
       .message-role { font-size: 11px; font-weight: 600; text-transform: uppercase; color: #888; }
       .message-content { white-space: pre-wrap; word-break: break-word; }
-      .fact-row, .event-row { padding: 6px 8px; margin-bottom: 4px; background: #fafafa; border: 1px solid #eee; border-radius: 4px; }
+      .fact-row, .event-row, .action-row { padding: 6px 8px; margin-bottom: 4px; background: #fafafa; border: 1px solid #eee; border-radius: 4px; }
       .fact-meta { font-size: 11px; color: #999; margin-top: 2px; }
       .prov-link { color: #2060b0; cursor: pointer; }
       .facts-count { font-weight: 600; }
       .zero-count { color: #e07b00; }
-      .event-date { font-size: 11px; color: #aaa; }
+      .event-date, .action-date { font-size: 11px; color: #aaa; }
       .act-btn { font-size: 12px; margin-top: 6px; margin-right: 6px; padding: 2px 8px; border: 1px solid #c8c8c8; border-radius: 4px; background: #fff; cursor: pointer; color: #333; }
       .act-btn:hover { background: #f0f0f0; }
       .act-btn[disabled] { color: #aaa; border-color: #e0e0e0; cursor: default; background: #fff; }
@@ -60,6 +60,7 @@
         <div class="panel"><h2>Messages</h2><div id="messages-container"></div></div>
         <div class="panel"><h2>Distilled facts</h2><div id="facts-container"></div></div>
         <div class="panel"><h2>Distillation events</h2><div id="events-container"></div></div>
+        <div class="panel"><h2>Agent memory actions</h2><div id="actions-container"></div></div>
       </div>
     </main>
     <script type="module" src="/src/memory.ts"></script>

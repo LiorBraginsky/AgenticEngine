@@ -252,4 +252,19 @@ function actionInputPreview(name: string, input: unknown): string {
 5. **The chunk-02 probe (`memory-action-tool-probe.ts`) is unaffected and out of scope** — scenario 1 auto-inherits the capability-present prompt (free improvement); scenario 2 is prompt-agnostic. Leave as-is.
 6. **Behavioral DoD (agent's live behavior matches the variant) — requires runtime demo (chunk-04); never "verified."** Code-reading and passing scripted tests are not evidence the *real* LLM owns the capability when wired and never claims it when not (PIPELINE §6.1). This chunk's mechanical DoD is provable with command evidence; the behavioral line stays open for Lior's chunk-04 live demo.
 
-## Status: In progress (implementation)
+## Status: Review-complete — ready-to-merge (crawl §11.4; conductor merges after clean re-verify)
+
+**Gate evidence (orchestrator-verified, HEAD `8cd505b`):**
+- `bun test` (full repo, 70 files) → **697 pass / 0 fail** (+15 vs 682 baseline).
+- `bun run typecheck` → clean (no output). `bun run lint:strict` (`eslint . --max-warnings=0`) → clean.
+- Frozen byte-diff empty: `git diff main -- packages/protocol packages/daemon/src/providers/mock-provider.ts packages/daemon/src/mock-agent.ts` → no output.
+- `system-prompt.ts` deliberately un-frozen under accepted spec §3.8 (cited in commit `e314895`); capability-ABSENT path byte-identical (asserted + reviewer-diffed).
+
+**engine-reviewer verdict: CLEAN — 0 blockers, 0 majors, 1 minor, 1 nit.**
+- Injection-drill VALIDITY adversarially PROVEN (tweak-and-revert): raising `MEMORY_ACTIONS_MAX_PER_TURN` 3→10 → drill RED (cap-bound); disabling the port 5e branch → drill RED on the audit-row (5e-bound). NOT green-by-construction.
+- MINOR (chunk-04 rehearsal, NOT a chunk-03 defect): demo-harness real-mode uses a fixed 300/400ms settle before audit reads → real-mode distill (1–3s LLM round-trip) can outrun it and silently skip the 5e-live rehearsal. Chunk-04 should poll-until-fact-present (reuse the `whenIdle` pattern). This also explains the worker's real-mode harness stall (pre-existing FACT-EDIT section, before the new 2c section).
+- NIT (no action): `previewStr(actionInputPreview(...))` computed before `memDebug`'s internal gate short-circuit — negligible, consistent with every other `memDebug` call site; "zero-cost when off" (no stderr) holds.
+
+**hard-reviewer: NOT run** (proportionality) — chunk-03 adds no new destructive/concurrent code (that was 01/02); the one subtle security property (drill validity) was adversarially RED-proven by the Opus reviewer; hard-reviewer now costs 2× Opus post-promo (2026-06-22). Matches the ledger precedent (low-mechanism chunks skip it).
+
+**Behavioral DoD** (agent's live behavior matches the variant) → **requires runtime demo (chunk-04)**, NOT verified here (PIPELINE §6.1).

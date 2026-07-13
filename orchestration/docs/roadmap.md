@@ -213,8 +213,8 @@ tags: [roadmap, milestones]
 > facts VIEW with per-fact provenance, distilled-fact-text EDIT (durable human badge) + message
 > correction, "release the reference" FORGET, and honest locked/daemon-down states (+ `history.html`
 > fallback tails). Spec `specs/archive/2026-07-02-memory-transparency-ui.md` (implemented). **Queue
-> now: provenance-affordance chunk-01 (design task RESOLVED 2026-07-13, see the memory-work list
-> below) → 2d (hybrid).** (chunk-05 D1 dedup fix merged 2026-07-13 — 2c closed.)
+> head now: 2d (hybrid).** (provenance-affordance chunk-01 SHIPPED 2026-07-13 via PR #93 — feature
+> closed, spec implemented+archived; chunk-05 D1 dedup fix merged 2026-07-13 — 2c closed.)
 
 > **2c — agent memory-action tools (conversational forget/remember) — SHIPPED + CLOSED 2026-07-13.**
 > The agent now ACTS on memory mid-conversation via `memory_forget` /
@@ -239,17 +239,18 @@ rough priority:
   actually forgets), not only passive injection. Shipped as the daemon-internal action-tool plane
   (ADR-0016) + the 5d poisoning-guardrail package. **chunk-05 (D1 case-duplicate dedup fix) merged —
   spec implemented, folder drained.**
-- **In-answer "where did this come from?" provenance-affordance design task** *(carved out of
-  Theme A, Lior 2026-07-02)* — ✅ **RESOLVED 2026-07-13** (spec
-  `specs/2026-07-13-in-answer-provenance-affordance.md`, Lior sign-off rides the design PR).
+- **In-answer "where did this come from?" provenance-affordance** *(design task carved out of
+  Theme A, Lior 2026-07-02)* — ✅ **RESOLVED + SHIPPED + CLOSED 2026-07-13.** Design pass (spec
+  sign-off) then the single implementation chunk `provenance-affordance/01` shipped in PR #93.
   Mandate archaeology showed the earlier «ADR-0012 5a names it MANDATORY» wording was a
   mis-attribution (the ruling lives in the foundation spec's 5a-open and asks only for a
-  lightweight generic affordance — already demo-blessed at MF-05). Resolution: retarget the
-  generic line to the Memory window (**chunk `provenance-affordance/01`**, gated on spec
-  acceptance); per-fact in-answer linkage = deliberate deferral with named revisit triggers
-  (stale-fact wrong-answer incident · multi-user · 2d). No ADR-0012 change. See [[memory-backlog]] §A.
-- **2d — on-demand archive retrieval + HYBRID candidate-fetch (BM25 + embeddings).** The proper
-  cross-language / reworded retrieval. **Lior direction 2026-07-10: HYBRID (lexical BM25 + semantic
+  lightweight generic affordance — already demo-blessed at MF-05). Resolution as built: retargeted
+  the generic provenance line from the stale `history.html` port-URL to the in-overlay Memory
+  window (tray → "Open Memory…"); per-fact in-answer linkage = deliberate deferral with named
+  revisit triggers (stale-fact wrong-answer incident · multi-user · 2d). No ADR-0012 change. Spec
+  `specs/archive/2026-07-13-in-answer-provenance-affordance.md` (implemented). See [[memory-backlog]] §A.
+- **2d — on-demand archive retrieval + HYBRID candidate-fetch (BM25 + embeddings).** ← **QUEUE HEAD
+  (2026-07-13, after provenance-affordance closed).** The proper cross-language / reworded retrieval. **Lior direction 2026-07-10: HYBRID (lexical BM25 + semantic
   embeddings), not embeddings-only** — so exact-term and reworded/cross-language matches both land.
   **Supersedes BOTH plain BM25 AND the all-facts-below-cap stopgap** once the fact corpus outgrows
   "pass them all to the distiller." The cross-language BM25 miss it replaces was the root of the

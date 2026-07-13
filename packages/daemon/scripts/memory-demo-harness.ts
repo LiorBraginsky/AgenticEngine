@@ -638,13 +638,16 @@ try {
     // The A′ recall-usage report (above) is the real-mode evidence for STEP 2.
     console.log(`[demo-harness] STEP 2b (real mode informational): t1HadMemory=${t1HadMemory} t2HadMemory=${t2HadMemory} (LLM-fuzzy — hard assert is stub-only).`);
     // DoD-2 real-mode provenance evidence: the known-thread fix (v2-08 Part 1)
-    // stamps /history.html in the reply when facts were injected on that turn.
-    // Turn 1 (new thread) and turn 2 (known thread with injected facts) should
-    // both carry the stamp. Informational only — real-mode is non-fatal.
-    const t1HasProvenance = t1.reply.includes("/history.html");
-    const t2HasProvenance = t2.reply.includes("/history.html");
-    console.log(`[demo-harness] STEP 2b (real mode) turn-1 provenance stamp (/history.html): ${t1HasProvenance}`);
-    console.log(`[demo-harness] STEP 2b (real mode) turn-2 provenance stamp (/history.html): ${t2HasProvenance}`);
+    // stamps the provenance line in the reply when facts were injected on that turn.
+    // The line is identified by the stable marker "used remembered context" (the
+    // history.html URL was dropped in the provenance-affordance retarget — the line
+    // now teaches the tray path). Turn 1 (new thread) and turn 2 (known thread with
+    // injected facts) should both carry the stamp. Informational only — real-mode is non-fatal.
+    const PROVENANCE_MARKER = "used remembered context";
+    const t1HasProvenance = t1.reply.includes(PROVENANCE_MARKER);
+    const t2HasProvenance = t2.reply.includes(PROVENANCE_MARKER);
+    console.log(`[demo-harness] STEP 2b (real mode) turn-1 provenance stamp (${PROVENANCE_MARKER}): ${t1HasProvenance}`);
+    console.log(`[demo-harness] STEP 2b (real mode) turn-2 provenance stamp (${PROVENANCE_MARKER}): ${t2HasProvenance}`);
     if (!t1HasProvenance && !t2HasProvenance) {
       console.log(`[demo-harness] STEP 2b (real mode) no provenance stamps — either no facts were seeded or the LLM key is absent/skipped.`);
     }

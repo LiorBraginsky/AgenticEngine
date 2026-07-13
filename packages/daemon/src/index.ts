@@ -38,12 +38,11 @@ type SocketData = {
 function send(
   ws: { send(data: string): number },
   msg: Envelope,
-  port: number,
   injectedMemory: boolean,
 ): void {
   // T2.3a: stamp the provenance line on show_text envelopes when this turn drew
   // on cross-thread injected memory (new OR known thread; iff ≥1 [remembered] fact injected this turn).
-  const out = injectedMemory ? stampProvenance(msg, port) : msg;
+  const out = injectedMemory ? stampProvenance(msg) : msg;
   // Outbound is validated against the frozen contract too (defence in depth).
   const check = parseEnvelope(out);
   if (check.kind !== "ok") {
@@ -268,7 +267,7 @@ export function startDaemon(port: number = DAEMON_PORT, provider?: AgentProvider
           }
         }
 
-        for (const out of result.outbound) send(ws, out, boundPort, injectedMemory);
+        for (const out of result.outbound) send(ws, out, injectedMemory);
       },
       async close(ws) {
         // ── S1 partial-turn flush (UNCHANGED): persist any in-flight turn's delta

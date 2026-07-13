@@ -14,21 +14,27 @@
  * starts so retrieve() deterministically returns ≥1 prior message on new-thread
  * sessions — no dependency on distillation timing.
  *
+ * The provenance stamp is identified by the stable marker "used remembered context"
+ * (the phrase common to the line regardless of where it points). The history.html
+ * port-URL was dropped in the provenance-affordance retarget — the line now teaches
+ * the tray path (menu bar → "Open Memory…"), so these tests key on the marker, not
+ * the (now-gone) URL.
+ *
  * Scenarios:
  *   A. NEW-thread session (no thread_id) when retrieve returns ≥1 prior message:
- *      → show_text content MUST contain "/history.html"
+ *      → show_text content MUST contain the provenance stamp
  *   B. SAME-thread turn (thread_id of an existing thread sent):
- *      → show_text content must NOT contain "/history.html"
+ *      → show_text content must NOT contain the provenance stamp
  *   C. PERSISTENT SOCKET — two sequential turns on ONE socket:
- *      turn 1: no thread_id → new-thread → injectedMemory=true → show_text contains /history.html
+ *      turn 1: no thread_id → new-thread → injectedMemory=true → show_text is stamped
  *      turn 2: same socket + minted thread_id → same-thread hydration → injectedMemory=false (local
- *              variable reset) → show_text does NOT contain /history.html.
+ *              variable reset) → show_text is NOT stamped.
  *      This proves injectedMemory cannot leak across turns multiplexed on one persistent socket.
  *   D. CM-01 ADOPTED-ID FLOW (real overlay flow) — two sequential turns on separate sockets:
  *      turn 1: session_start WITH a client-minted unknown UUID thread_id → CM-01 adoption →
- *              retrieve() injects seeded fact → show_text MUST contain /history.html.
+ *              retrieve() injects seeded fact → show_text MUST be stamped.
  *      turn 2: session_start WITH the SAME thread_id (now known) → same-thread hydration →
- *              show_text must NOT contain /history.html.
+ *              show_text is NOT stamped.
  *      This is the flow the real overlay ALWAYS uses (it always sends a client-minted UUID
  *      on the first turn). T2.3a-C missed it because turn 1 sent NO thread_id.
  */
@@ -163,12 +169,12 @@ function findShowTextContent(
 // The DumbTailProvider.retrieve() reads distilled_facts — the seeded fact is
 // present, so begin.priorMessages.length > 0 → injectedMemory = true → stamp.
 
-test("T2.3a-A: new-thread session with seeded prior fact → show_text contains /history.html", async () => {
+test("T2.3a-A: new-thread session with seeded prior fact → show_text is stamped (provenance marker present)", async () => {
   // No thread_id → new thread → retrieve() injects the seeded fact.
   const envelopes = await runTurn("What do you know?");
   const content = findShowTextContent(envelopes);
   expect(content).toBeDefined();
-  expect(content).toContain("/history.html");
+  expect(content).toContain("used remembered context");
 });
 
 // ─── B. SAME-thread turn (within-thread hydration, now ALSO retrieved memory) ───
@@ -179,12 +185,12 @@ test("T2.3a-A: new-thread session with seeded prior fact → show_text contains 
 // The seeded fact IS present in the store, so retrieve() returns it → injectedMemory=true
 // → show_text is stamped.
 
-test("T2.3a-B: same-thread turn with seeded fact → known-thread branch now retrieves it → show_text CONTAINS /history.html", async () => {
+test("T2.3a-B: same-thread turn with seeded fact → known-thread branch now retrieves it → show_text IS stamped (provenance marker present)", async () => {
   // Use the sourceThreadId (already in the store) → known-thread branch now also retrieves.
   const envelopes = await runTurn("Tell me more.", sourceThreadId);
   const content = findShowTextContent(envelopes);
   expect(content).toBeDefined();
-  expect(content).toContain("/history.html");
+  expect(content).toContain("used remembered context");
 });
 
 // ─── C. PERSISTENT SOCKET — two sequential turns on ONE socket ─────────────
@@ -262,7 +268,7 @@ test("T2.3a-C: persistent socket — turn 1 (new-thread) stamped; turn 2 (same-t
     const turn1Envelopes = await turnOnSocket(ws, "What do you know?");
     const turn1Content = findShowTextContent(turn1Envelopes);
     expect(turn1Content).toBeDefined();
-    expect(turn1Content).toContain("/history.html");
+    expect(turn1Content).toContain("used remembered context");
 
     // Discover the thread minted during turn 1 so we can pass it on turn 2.
     const mintedThreadId = newestThreadId();
@@ -274,7 +280,7 @@ test("T2.3a-C: persistent socket — turn 1 (new-thread) stamped; turn 2 (same-t
     const turn2Envelopes = await turnOnSocket(ws, "Tell me more.", mintedThreadId);
     const turn2Content = findShowTextContent(turn2Envelopes);
     expect(turn2Content).toBeDefined();
-    expect(turn2Content).toContain("/history.html");
+    expect(turn2Content).toContain("used remembered context");
   } finally {
     ws.close();
   }
@@ -303,7 +309,7 @@ test("T2.3a-D: CM-01 adopted-id flow — turn 1 (client-minted UUID) stamped; tu
   const turn1Envelopes = await runTurn("What do you know?", clientMintedThreadId);
   const turn1Content = findShowTextContent(turn1Envelopes);
   expect(turn1Content).toBeDefined();
-  expect(turn1Content).toContain("/history.html");
+  expect(turn1Content).toContain("used remembered context");
 
   // Turn 2: send the SAME UUID — the thread now exists in the store.
   // v2-08 fix A: known-thread branch now retrieves the cross-thread slice too.
@@ -311,7 +317,7 @@ test("T2.3a-D: CM-01 adopted-id flow — turn 1 (client-minted UUID) stamped; tu
   const turn2Envelopes = await runTurn("Tell me more.", clientMintedThreadId);
   const turn2Content = findShowTextContent(turn2Envelopes);
   expect(turn2Content).toBeDefined();
-  expect(turn2Content).toContain("/history.html");
+  expect(turn2Content).toContain("used remembered context");
 });
 
 // ─── E. KNOWN-THREAD TURN WITH EMPTY MEMORY → NOT stamped ─────────────────
@@ -396,7 +402,7 @@ test("T2.3a-E: known-thread turn with EMPTY memory → NOT stamped (tail-only hy
     const turn1Envs = await runTurnOn(p, tok2, "first");
     const turn1Content = findShowTextContent(turn1Envs);
     expect(turn1Content).toBeDefined();
-    expect(turn1Content).not.toContain("/history.html");
+    expect(turn1Content).not.toContain("used remembered context");
 
     // Discover the thread minted on turn 1.
     const db2 = new Database(join(dir2, "memory.sqlite"));
@@ -411,7 +417,7 @@ test("T2.3a-E: known-thread turn with EMPTY memory → NOT stamped (tail-only hy
     const turn2Envs = await runTurnOn(p, tok2, "second", knownTid);
     const turn2Content = findShowTextContent(turn2Envs);
     expect(turn2Content).toBeDefined();
-    expect(turn2Content).not.toContain("/history.html");
+    expect(turn2Content).not.toContain("used remembered context");
   } finally {
     srv.stop(true);
     process.env.AGENTIC_DATA_DIR = prevDataDir;

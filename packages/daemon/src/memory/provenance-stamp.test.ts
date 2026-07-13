@@ -4,7 +4,7 @@
  * TDD: these tests are written FIRST — before the implementation exists.
  *
  * A. stampProvenance on a show_text tool_call:
- *    - appends the History URL line to the content
+ *    - appends the provenance line to the content
  *    - original content is preserved (prefix unchanged)
  *    - parseEnvelope(stamped) still returns kind:"ok"
  *
@@ -15,8 +15,6 @@
 import { test, expect } from "bun:test";
 import { parseEnvelope, type Envelope } from "@agentic/protocol";
 import { stampProvenance } from "./provenance-stamp.js";
-
-const PORT = 7777;
 
 // ─── A. show_text tool_call ────────────────────────────────────────────────
 
@@ -35,18 +33,18 @@ const showTextEnv: Envelope = {
   },
 };
 
-test("stampProvenance: show_text → appends History URL line to content", () => {
-  const stamped = stampProvenance(showTextEnv, PORT);
+test("stampProvenance: show_text → appends provenance line to content", () => {
+  const stamped = stampProvenance(showTextEnv);
   expect(stamped.type).toBe("tool_call");
   if (stamped.type !== "tool_call") return;
   expect(stamped.payload.tool).toBe("show_text");
   if (stamped.payload.tool !== "show_text") return;
   const content = stamped.payload.args.text.content;
-  expect(content).toContain("\n\n— this reply used remembered context · view in History: http://127.0.0.1:7777/history.html");
+  expect(content).toContain("\n\n— this reply used remembered context · view it in the menu bar → Open Memory…");
 });
 
 test("stampProvenance: show_text → original content is preserved as prefix", () => {
-  const stamped = stampProvenance(showTextEnv, PORT);
+  const stamped = stampProvenance(showTextEnv);
   if (stamped.type !== "tool_call") return;
   if (stamped.payload.tool !== "show_text") return;
   const content = stamped.payload.args.text.content;
@@ -54,14 +52,14 @@ test("stampProvenance: show_text → original content is preserved as prefix", (
 });
 
 test("stampProvenance: stamped show_text passes parseEnvelope validation", () => {
-  const stamped = stampProvenance(showTextEnv, PORT);
+  const stamped = stampProvenance(showTextEnv);
   const result = parseEnvelope(stamped);
   expect(result.kind).toBe("ok");
 });
 
 test("stampProvenance: original envelope is not mutated (returns a copy)", () => {
   const originalContent = "Hello, world! This is the LLM reply.";
-  const stamped = stampProvenance(showTextEnv, PORT);
+  const stamped = stampProvenance(showTextEnv);
   // original must be unchanged
   if (showTextEnv.type !== "tool_call") return;
   if (showTextEnv.payload.tool !== "show_text") return;
@@ -78,7 +76,7 @@ const sessionAckEnv: Envelope = {
 };
 
 test("stampProvenance: session_ack returned as same reference (unchanged)", () => {
-  const result = stampProvenance(sessionAckEnv, PORT);
+  const result = stampProvenance(sessionAckEnv);
   expect(result).toBe(sessionAckEnv);
 });
 
@@ -89,7 +87,7 @@ const sessionEndEnv: Envelope = {
 };
 
 test("stampProvenance: session_end returned as same reference (unchanged)", () => {
-  const result = stampProvenance(sessionEndEnv, PORT);
+  const result = stampProvenance(sessionEndEnv);
   expect(result).toBe(sessionEndEnv);
 });
 
@@ -110,6 +108,6 @@ const showColorPickerEnv: Envelope = {
 };
 
 test("stampProvenance: show_color_picker tool_call returned as same reference (unchanged)", () => {
-  const result = stampProvenance(showColorPickerEnv, PORT);
+  const result = stampProvenance(showColorPickerEnv);
   expect(result).toBe(showColorPickerEnv);
 });

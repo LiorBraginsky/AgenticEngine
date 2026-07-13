@@ -213,17 +213,29 @@ tags: [roadmap, milestones]
 > facts VIEW with per-fact provenance, distilled-fact-text EDIT (durable human badge) + message
 > correction, "release the reference" FORGET, and honest locked/daemon-down states (+ `history.html`
 > fallback tails). Spec `specs/archive/2026-07-02-memory-transparency-ui.md` (implemented). **Queue
-> now: 2c → in-answer provenance-affordance design task → 2d (hybrid).**
+> now: chunk-05 (D1 dedup fix, closes 2c) → in-answer provenance-affordance design task → 2d (hybrid).**
+
+> **2c — agent memory-action tools (conversational forget/remember) — SHIPPED 2026-07-13 (with
+> findings; chunk-05 in-flight).** The agent now ACTS on memory mid-conversation via `memory_forget` /
+> `memory_remember` tool calls (daemon-internal action-tool plane, ADR-0016) with the 5d poisoning
+> guardrails, the capability-conditional honest self-concept, durable audit events, and a render-only
+> Memory-window audit trail. **Lior's live §6.1 demo SIGNED 2026-07-13 (§5 items 1–5 all PASS).** One
+> in-feature defect (D1 case-duplicate — one statement ⇒ 2 case-only-differing facts, violates spec
+> d6) is routed to **chunk-05** (in-flight); 2c formally closes (spec accepted→implemented) when
+> chunk-05 merges. Two observations (O2 injection-blob reply quality; O3 replace-steering miss =
+> degradation-not-corruption) are recorded in [[memory-backlog]] §B/§E. Spec
+> `specs/2026-07-10-memory-action-tools.md` (accepted).
 
 `memory-distiller-v2` shipped the incremental distiller: per-turn cross-thread fact injection,
 durable forget-by-id, suppress-only dedup, stable replace-on-change, and a single-user "all-facts
 candidate pool" (BM25 retained only as the above-cap fallback). The remaining memory work, in
 rough priority:
 
-- **2c — agent memory-action tools** *(next up, Lior 2026-07-02)*. A conversational forget/recall
-  lever — the agent ACTS on memory via tool-use ("forget X" actually forgets), not only passive
-  injection. New side-effecting action-tool class → an ADR-0002/0005 closed-set extension + a
-  poisoning-surface review (ADR-0012 5d); shares one design+ADR pass with 2d.
+- **2c — agent memory-action tools** — ✅ **SHIPPED 2026-07-13 (pending chunk-05; see the callout
+  above).** A conversational forget/recall lever — the agent ACTS on memory via tool-use ("forget X"
+  actually forgets), not only passive injection. Shipped as the daemon-internal action-tool plane
+  (ADR-0016) + the 5d poisoning-guardrail package. **Remaining: chunk-05 (D1 case-duplicate dedup
+  fix) closes it.**
 - **In-answer "where did this come from?" provenance-affordance design task** *(carved out of
   Theme A, Lior 2026-07-02)*. Weigh dragging fact→thread linkage through live agent answers (UX
   overcomplication concern). ⚠️ ADR-0012 5a names it MANDATORY — a recorded deliberate revisit, not
@@ -247,7 +259,10 @@ rough priority:
   candidate-fetch flips from all-facts → semantic (2d).
 - **Recall-usage quality (A′ tail)** — the structural cause (turn-2+ fact loss) was fixed in v2-08;
   the residual is the LLM-fuzzy tail (the model occasionally not using an injected fact). Asymptotic;
-  2c (tool-based recall) is the likely lever if it ever matters.
+  2c (tool-based recall) is the lever — **now LIVE (shipped 2026-07-13)**, re-measurable against the
+  real tool path. Fresh datapoint **O2** (2c live demo): a large incoherent injection blob degraded
+  the reply to a greeting non-sequitur (the defense held), an answer/prompt-quality signal on this
+  tail ([[memory-backlog]] §B / open-case #3).
 
 ---
 

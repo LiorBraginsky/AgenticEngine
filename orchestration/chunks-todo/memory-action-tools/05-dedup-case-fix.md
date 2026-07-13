@@ -1,6 +1,6 @@
 # Chunk 5: dedup case-fix — one statement must yield ONE fact (demo-found defect)
 
-**Status:** todo
+**Status:** in-progress
 **Created:** 2026-07-13
 **Phase:** memory-action-tools (2c)
 **Estimated size:** small (~half day)

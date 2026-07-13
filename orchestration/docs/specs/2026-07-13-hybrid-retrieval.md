@@ -21,10 +21,12 @@ tags: [spec, memory, retrieval, hybrid, bm25, embeddings, rrf, fts5, memory-sear
 > load-bearing input; where a chunk depends on one of its versioned claims (gotcha #46-class facts
 > rot), the chunk's DoD RE-VERIFIES at build time.
 >
-> **Decision provenance.** The two genuinely-open judgment seams (the privacy/default-lane fork and
-> the ADR call, plus the search-result-targetability guardrail question) were routed UP the dev-bus —
-> **q#017**. An adversarial grill pass (design-critic subagent) ran on this draft; findings folded
-> inline, tagged `[grill …]`. The §5.2 gates (spec sign-off + ADR-0017 acceptance if ruled) are
+> **Decision provenance.** The three genuinely-open judgment seams (the privacy/default-lane fork,
+> the ADR call, the search-result-targetability guardrail) were routed UP the dev-bus and RULED —
+> **q#017, all-as-recommended + 4 conductor riders** (`.conveyor/bus/a/017-privacy-adr-guardrails.md`),
+> folded into §0. An adversarial grill pass (design-critic subagent) ran on the draft BEFORE the
+> ask; findings folded inline, tagged `[grill …]` (verdict: 1 BLOCKER / 8 MAJOR / 6 minor, all
+> addressed). The §5.2 gates (spec sign-off + ADR-0017 acceptance + the ADR-0016 d7 rider) are
 > **Lior's** — the decompose PR does NOT merge before them.
 >
 > **Empirical inputs produced by THIS pass** (not assumptions): the FTS5 `unicode61` Cyrillic
@@ -33,71 +35,79 @@ tags: [spec, memory, retrieval, hybrid, bm25, embeddings, rrf, fts5, memory-sear
 
 ---
 
-## 0. Decision points for sign-off (Lior — read these first)
+## 0. Decision points for sign-off (Lior — the four-point package, exactly; ruled q#017 all-as-recommended, conductor 2026-07-13)
 
-1. **Privacy fork — the default embedding lane. ⚠️ q#017 sub-1 (conductor lean pending; drafted
-   with the recommendation).** Embedding a fact/message means feeding its TEXT to a model. The three
-   lanes, honestly:
+### 0.1 — Privacy: the default embedding lane = LOCAL-FIRST (WASM in-process) + the pre-framed spike ladder
 
-   | Lane | What leaves the machine | Quality | Install weight | Risk |
-   |---|---|---|---|---|
-   | **local in-process, WASM** (transformers.js, `onnxruntime-web` backend; multilingual ONNX model) | **NOTHING** | unverified for UA (true of ALL lanes — §3.8 golden set decides) | one-time model download (~100–500 MB by model choice) | gotcha #46 is about the NATIVE backend; WASM avoids it, but the exact force-WASM-on-Bun steps are UNVERIFIED (research §9) → chunk-03 SPIKE gates it |
-   | **hosted API** (Voyage `voyage-multilingual-2` — Anthropic's recommended third party; 50M tokens/mo free tier) | **every fact + every archived message text**, to a third party, under their retention/training terms (research §10 links) | likely strongest multilingual | zero | new data-egress surface for PERSONAL memory content; a separate API key to manage |
-   | **local sidecar** (Ollama `bge-m3` / `nomic-embed-text-v2-moe`) | nothing | good | user must install+run Ollama — violates zero-infra (ADR-0012 posture) | opt-in only |
+Embedding a fact/message means feeding its TEXT to a model. The three lanes, honestly:
 
-   **Recommendation (drafted-in): local-first — WASM in-process is the DEFAULT; the hosted lane is
-   NOT BUILT up-front [grill #7]: the port's second implementation is the fixture provider (tests),
-   Voyage stays a DOCUMENTED port shape built as a fast-follow IFF the golden set (§3.8) shows local
-   UA quality is insufficient; Ollama is a documented opt-in lane.** Rationale: ADR-0012's
-   local-first posture + the security-as-pitch moat (prior-art memory `project_prior_art_findings`)
-   both say personal memory content should not egress by default — and building a production egress
-   adapter for a lane that may never be selected is speculative surface at dogfood scale. The port
-   makes the choice reversible per-install (env var); the golden set — not marketing — arbitrates
-   quality. If WASM proves unbuildable at the chunk-03 spike, OR the golden set fails every local
-   candidate model, the ladder is: escalate → Lior picks the hosted lane (its build + its egress
-   consent become a deliberate step) — a §5.2 decision, not a worker call.
+| Lane | What leaves the machine | Quality | Install weight | Risk |
+|---|---|---|---|---|
+| **local in-process, WASM** (transformers.js, `onnxruntime-web` backend; multilingual ONNX model) | **NOTHING** | unverified for UA (true of ALL lanes — §3.8 golden set decides) | one-time model download (~100–500 MB by model choice) | gotcha #46 is about the NATIVE backend; WASM avoids it, but the exact force-WASM-on-Bun steps are UNVERIFIED (research §9) → chunk-03 SPIKE gates it |
+| **hosted API** (Voyage `voyage-multilingual-2` — Anthropic's recommended third party; 50M tokens/mo free tier) | **every fact + every archived message text**, to a third party, under their retention/training terms (research §10 links) | likely strongest multilingual | zero | new data-egress surface for PERSONAL memory content; a separate API key to manage |
+| **local sidecar** (Ollama `bge-m3` / `nomic-embed-text-v2-moe`) | nothing | good | user must install+run Ollama — violates zero-infra (ADR-0012 posture) | opt-in only |
 
-2. **`memory_search` results are READ-ONLY — NOT forget/replace-targetable. ⚠️ q#017 sub-3.**
-   ADR-0016's guardrail package (d2/d7) bounds the poisoning blast radius to *this-turn injected*
-   facts (≤3 actions/turn). Letting search results join the targetable ordinal map would widen d7 to
-   "any machine fact reachable by search" — a guardrail change to an accepted, constitutive part of
-   ADR-0016. **Recommendation: keep the targetable set = the injected slice, unchanged.** "Forget X"
-   for an out-of-view fact still honestly defers to the Memory window even when search can SEE X —
-   the tool answers questions; it does not extend the write surface. Revisit trigger (recorded): the
-   fact corpus outgrowing `RETRIEVE_SLICE_N`=20 so far that Memory-window deferrals become a felt
-   nuisance in dogfood — then an ADR-0016 amendment (full §5.2 gate) can widen targeting deliberately.
+**Ruled (q#017 sub-1): local-first — WASM in-process is the DEFAULT; the hosted lane is NOT built
+up-front [grill #7]** — the port's second implementation is the fixture provider (tests); the
+Voyage adapter is a **fast-follow chunk IFF the golden set (§3.8) fails ALL local candidate
+models** (the literal deferral condition — conductor rider 2; the documented adapter shape is the
+deliverable now); Ollama is a documented opt-in lane. Rationale: ADR-0012's local-first posture +
+the security-as-pitch moat (`project_prior_art_findings`) both say personal memory content should
+not egress by default; the port makes the choice reversible per-install (env var); the golden set —
+not marketing — arbitrates quality.
 
-3. **Honest consequence — the archive becomes agent-reachable for the first time.** Today the agent
-   sees only injected facts; 2d's `memory_search(scope:archive)` lets it read archive content
-   on demand. THREE edges stated honestly, not hidden:
-   - A **forgotten FACT's source conversation** remains searchable — this is BY DESIGN (ADR-0012
-     rider Ruling 2: fact-forget releases the reference, never touches sources; the archive is
-     lossless). The content-erase remedy is **2e thread-forget** (queued, backlog §C) — exactly the
-     "pairs with 2d" coupling the backlog recorded. Until 2e ships, the only content-erase is none.
-   - **Tombstoned/scrubbed content is NOT searchable** — search reads honor `mutations` tombstones
-     the same way every archive read does today, AND a scrub deletes the message's embedding row
-     (§3.3) so semantic search cannot rank scrubbed content either. **[grill #1 — the race is
-     closed by design, not luck:** the async embed drain re-checks tombstone status INSIDE its
-     upsert transaction and skips scrubbed rows, so a scrub landing mid-drain can never be
-     re-materialized as a vector — §3.3 D3b.]
-   - **[grill #6] A NEW second-order prompt-injection channel, named:** a poisoned PAST message
-     (benign as history, injection as a search result) can re-enter the LLM context mid-turn via
-     archive search. Mitigations, stated at their honest strength: search-result snippets pass the
-     existing `RuleBasedScanner` (flagged snippets withheld with a typed note — defense-in-depth,
-     not a guarantee); results are framed as quoted UNTRUSTED data in the `tool_result`, never as
-     instructions; and the WRITE-side blast radius is unchanged (a steered same-turn forget is
-     still bounded by d2/d7 — in-view ordinals, ≤3, machine-only, audited). The d7 ceiling
-     statement in ADR-0016 gains a short dated RIDER recording this widened read surface — it
-     rides this PR through the same §5.2 acceptance as this spec (⚠️ q#017 sub-3).
+**The PRE-FRAMED spike-failure ladder (conductor rider 1 — no stall on an unverified assumption,
+no silent default flip):** chunk-03's time-boxed WASM spike fails ⇒ **bus-escalate WITH the
+measured data**; the pre-agreed candidate fallbacks, in order of posture-fit: **(i) Ollama as the
+opt-in local lane**, **(ii) hosted Voyage behind an explicit consent gate**. The pick at that point
+is a recorded conductor/Lior decision (§5.2) — never a worker call, never a silent flip of the
+default.
 
-4. **ADR-0017 (if the conductor rules one is warranted — q#017 sub-2).** Proposed content: the
-   **`EmbeddingProvider` provider PLANE** (the decision that outlives this feature — the same way
-   ADR-0016 recorded the action-tool plane [grill #15]) + the egress posture (local default;
-   hosted = a future explicit-opt-in lane with its own consent gate) + the vector lifecycle
-   (write-time embed, `model_id` stamped, full re-embed as the swap migration). Tier per PIPELINE
-   Finding #5: lean **decision-grade (hard-to-reverse)** — a new provider plane + a named future
-   egress lane is closer to ADR-0016's tier than to a doc-style record [grill #15]; either way it
-   rides this PR as `proposed` and Lior accepts together with this spec (same gate event).
+### 0.2 — `memory_search` results are READ-ONLY — never forget/replace-targetable
+
+**Ruled (q#017 sub-3, first half).** ADR-0016's guardrail package (d2/d7) bounds the poisoning
+blast radius to *this-turn injected* facts (≤3 actions/turn). Letting search results join the
+targetable ordinal map would widen d7 to "any machine fact reachable by search" — a change to a
+constitutive guardrail of an accepted ADR. **The targetable set stays = the injected slice,
+unchanged.** "Forget X" for an out-of-view fact still honestly defers to the Memory window even
+when search can SEE X — the tool answers questions; it does not extend the write surface.
+**Revisit trigger (recorded):** the fact corpus outgrowing `RETRIEVE_SLICE_N`=20 so far that
+Memory-window deferrals become a felt nuisance in dogfood ⇒ a deliberate ADR-0016 amendment (full
+§5.2 gate).
+
+### 0.3 — The ADR-0016 d7 rider: archive search is a NEW second-order injection channel (named, mitigated, ridden)
+
+**Ruled (q#017 sub-3, second half).** The archive becomes agent-reachable for the first time —
+three edges stated honestly, and the third one amends an accepted ADR's ceiling statement:
+
+- A **forgotten FACT's source conversation** remains searchable — BY DESIGN (ADR-0012 rider
+  Ruling 2: fact-forget releases the reference, never touches sources; the archive is lossless).
+  The content-erase remedy is **2e thread-forget** (queued, backlog §C) — exactly the "pairs with
+  2d" coupling the backlog recorded. Until 2e ships, the only content-erase is none.
+- **Tombstoned/scrubbed content is NOT searchable** — search reads honor `mutations` tombstones
+  the same way every archive read does today, AND a scrub deletes the message's embedding row
+  (§3.3). **[grill #1 — the race is closed by design, not luck:** the async embed drain re-checks
+  tombstone status INSIDE its upsert transaction and skips scrubbed rows, so a scrub landing
+  mid-drain can never be re-materialized as a vector — §3.3 D3b.]
+- **[grill #6] The injection channel:** a poisoned PAST message (benign as history, injection as a
+  search result) can re-enter the LLM context mid-turn via archive search. Mitigations, at their
+  honest strength: search-result snippets pass the existing `RuleBasedScanner` (flagged snippets
+  withheld with a typed note — defense-in-depth, not a guarantee); results are framed as quoted
+  UNTRUSTED data in the `tool_result`, never as instructions; and the **WRITE-side blast radius is
+  UNCHANGED** (a steered same-turn forget is still bounded by d2/d7 — in-view ordinals, ≤3,
+  machine-only, audited). **The SHORT DATED RIDER on ADR-0016's d7 ceiling records exactly this**
+  (it touches an accepted ADR ⇒ it rides this PR through the same §5.2 acceptance as this spec —
+  conductor rider 4).
+
+### 0.4 — ADR-0017 acceptance: the EmbeddingProvider plane + egress posture (hard-to-reverse tier)
+
+**Ruled (q#017 sub-2): ONE new ADR, hard-to-reverse tier, rides this PR** (conductor rider 3).
+Content: the **`EmbeddingProvider` provider PLANE** (the decision that outlives this feature — the
+same way ADR-0016 recorded the action-tool plane [grill #15]) + the egress posture (local default;
+hosted = a future explicit-opt-in lane with its own consent gate; §0.1's ladder) + the vector
+lifecycle (write-time embed, `model_id` stamped per row, full re-embed as the swap migration).
+`status: proposed` in this PR — **Lior accepts it TOGETHER with this spec** (same §5.2 gate event,
+no async shortcut — Finding #5 hard tier).
 
 ---
 
@@ -586,7 +596,7 @@ Riders first (independent, drain committed decisions); then the embedding lane b
 | **02** | forgotten_facts canonical axis | R2: guarded-ALTER column, port.forget writes canonical, two-axis D6b consult, 16-rephrase + cross-language tests | none (01 recommended first — same test files) |
 | **03** | EmbeddingProvider port + storage | #46 re-verify + WASM SPIKE (gate); port + registry + env + degrade; `fact_embeddings`/`message_embeddings`/`message_fts` + the stateless drain (restart-safe, scrub-race-guarded) + scrub-cleanup + backfill script; fixture-vector provider; Voyage = documented shape only [grill #7] | none |
 | **04** | hybrid ranker + candidate-fetch | RRF ranker (both corpora); `fetchCandidates` above-cap lane swap; **golden-set eval EXECUTED (RED baseline → hybrid pass)**; unicode61 re-check | 03 |
-| **05** | `memory_search` read tool | registry `kind:read` row + result-union widening + port read method (ranker DI) + loop dispatch; independent read-cap + raised loop bound [grill #3]; scanner-on-snippets + untrusted framing [grill #6]; capability-conditional self-concept + targeting honesty; ADR-0016 d7 rider rides the feature PR set; MEMORY_DEBUG `search`; real-API probe | 04 |
+| **05** | `memory_search` read tool | registry `kind:read` row + result-union widening + port read method (ranker DI) + loop dispatch; independent read-cap + raised loop bound [grill #3]; scanner-on-snippets + untrusted framing [grill #6] (implements the ADR-0016 d7 rider, ridden in THIS decompose PR); capability-conditional self-concept + targeting honesty; MEMORY_DEBUG `search`; real-API probe | 04 |
 | **06** | e2e closeout + LIVE demo | full-path wiring proof; docs reconcile (backlog §D → shipped, roadmap tick, gotcha #46/#47 status notes); **Lior LIVE demo (§5 items 1–5)** | 05 |
 
 01/02 are runtime-independent of 03–06 (disjoint tables/paths — §7.1-checked: the only shared
@@ -606,6 +616,7 @@ surface is `forgotten_facts` reads, which 03+ do not touch). Chunks do NOT start
 
 ## Related
 
+- [[../adr/0017-embedding-provider-plane-and-egress-posture]] — the plane + egress posture this spec's §0.4 packages (proposed; rides this PR; Lior gates).
 - [[../research/2026-07-13-hybrid-retrieval-bm25-embeddings]] — the load-bearing input (all forks + leans).
 - [[../adr/0012-conversation-and-memory-model]] — decision 6 executed; STABILITY amendment untouched; rider Ruling 1 removal-note (R1) + Ruling 2 (§0.3).
 - [[../adr/0016-agent-memory-action-tools]] — the plane; the `kind:read` slot consumed; guardrails unchanged (§0.2).

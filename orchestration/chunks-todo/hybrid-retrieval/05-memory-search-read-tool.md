@@ -28,8 +28,9 @@
 - **NO ordinals on results; results never join the forget/replace map** (spec §0.2 — ADR-0016
   d2/d7 blast radius unchanged). NO durable audit event (read = no side effect); `MEMORY_DEBUG`
   gains a `search` channel.
-- **The ADR-0016 d7 rider** (spec §0.3 — the widened READ surface named on the record) rides the
-  feature PR set — a short dated rider, Lior-gated with the spec (§5.2).
+- **The ADR-0016 d7 rider** (spec §0.3 — the widened READ surface named on the record) was
+  authored in the DECOMPOSE PR and is Lior-gated with the spec; this chunk IMPLEMENTS its two
+  mitigations (scanner-on-snippets + untrusted framing) — do not re-litigate them.
 - Capability-conditional self-concept additions (spec D6c/D6d, the 2c D8 pattern): can search;
   found-but-not-in-view stays Memory-window territory for forget/edit; answer with attribution;
   never claim search when the port is absent.

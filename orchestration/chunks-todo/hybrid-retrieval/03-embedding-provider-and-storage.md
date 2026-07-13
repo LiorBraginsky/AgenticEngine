@@ -12,7 +12,11 @@
 - **OPENING SPIKE (time-boxed, a GATE not a task):** re-verify gotcha **#46** status
   (`oven-sh/bun#30431` open? installed Bun version?) AND prove transformers.js embeds one string
   on our Bun with the **WASM backend only** (no `onnxruntime-node` native addon loaded — assert
-  it). Spike fails ⇒ STOP, post BLOCKED, escalate (§0.1 fallback ladder is Lior's, not yours).
+  it). **Spike fails ⇒ STOP, post BLOCKED, bus-escalate WITH the measured data** (what failed, on
+  which Bun/OS, the error) — the PRE-FRAMED fallbacks are already agreed (spec §0.1, conductor
+  q#017 rider 1): (i) Ollama opt-in local lane, (ii) hosted Voyage behind an explicit consent
+  gate; the PICK is a recorded conductor/Lior decision — never a worker call, never a silent
+  default flip.
 - `EmbeddingProvider` port (spec D2a: `{id, modelId, dims, embed(texts) → Float32Array[]|null}`,
   never-throws) + registry Map + `EMBEDDING_PROVIDER` env selection + loud-log degrade — the
   `memory-provider-selector.ts:51-73` house pattern.

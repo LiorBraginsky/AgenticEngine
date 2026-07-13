@@ -123,7 +123,14 @@ export function applyFactOp(store: MemoryStore, input: ApplyFactOpInput, actor: 
   // SUPPRESS-ONLY existence check over ALL facts — only no-ops a NEW/demoted
   // insert here; never reaches replace/normal-append, so it never mutates an
   // existing row.
-  if (store.factExistsByDedupKey(canonical)) {
+  // Dedup across BOTH write paths (chunk-05, spec §3.5 d6 / §3.7 suppress-as-dup):
+  // check the English canonical (distiller-vs-distiller cross-language) AND the
+  // user-language display-text norm (tool-vs-distiller — the tool path stores a
+  // user-language canonical, so a distiller re-derivation carrying the LLM's ENGLISH
+  // canonical would otherwise miss the tool's fact → dup spam / D1). normalizeFactText
+  // is the ONE shared key helper — no second normalization.
+  const displayNorm = normalizeFactText(input.fact);
+  if (store.factExistsByDedupKey(canonical) || store.factExistsByDedupKey(displayNorm)) {
     return { outcome: demoted ? "demoted-deduped" : "deduped" };
   }
 

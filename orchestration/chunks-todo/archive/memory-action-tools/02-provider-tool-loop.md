@@ -1,6 +1,8 @@
+> 🗄️ ARCHIVED 2026-07-13 — done. Historical record; do not edit.
+
 # Chunk 2: Provider tool loop — registry, bounded tool-use, DI wiring, real-API probe
 
-**Status:** in-progress
+**Status:** done
 **Created:** 2026-07-10
 **Phase:** memory-action-tools (2c)
 **Estimated size:** ~1 day

@@ -1,3 +1,5 @@
+> 🗄️ ARCHIVED 2026-07-13 — shipped. Historical record; do not edit.
+
 # Memory Action Tools (2c) — Chunk 01 "Action core" Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -8,7 +10,7 @@
 
 **Tech Stack:** TypeScript on Bun; `bun:sqlite` (real DB, no mocks); `bun test`; existing memory package under `packages/daemon/src/memory/`.
 
-## Status: Done — implemented, reviewed, verified-done (ready-to-merge, crawl rung)
+## Status: shipped — merged to `main` (PR #86); feature verified-done + Lior's live §6.1 demo signed 2026-07-13
 
 > **Review outcome (2026-07-10).** engine-reviewer: 0 blockers / 0 majors. hard-reviewer (frontier
 > second pass, layered — justified by the security-critical action-core): found **1 MAJOR** — d5

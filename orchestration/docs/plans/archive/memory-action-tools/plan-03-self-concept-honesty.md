@@ -1,3 +1,5 @@
+> 🗄️ ARCHIVED 2026-07-13 — shipped. Historical record; do not edit.
+
 # Memory Action Tools (2c) — Chunk 03 "Self-concept flip + honesty rails + injection drill" Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -252,7 +254,7 @@ function actionInputPreview(name: string, input: unknown): string {
 5. **The chunk-02 probe (`memory-action-tool-probe.ts`) is unaffected and out of scope** — scenario 1 auto-inherits the capability-present prompt (free improvement); scenario 2 is prompt-agnostic. Leave as-is.
 6. **Behavioral DoD (agent's live behavior matches the variant) — requires runtime demo (chunk-04); never "verified."** Code-reading and passing scripted tests are not evidence the *real* LLM owns the capability when wired and never claims it when not (PIPELINE §6.1). This chunk's mechanical DoD is provable with command evidence; the behavioral line stays open for Lior's chunk-04 live demo.
 
-## Status: Review-complete — ready-to-merge (crawl §11.4; conductor merges after clean re-verify)
+## Status: shipped — merged to `main` (PR #88); feature verified-done + Lior's live §6.1 demo signed 2026-07-13
 
 **Gate evidence (orchestrator-verified, HEAD `8cd505b`):**
 - `bun test` (full repo, 70 files) → **697 pass / 0 fail** (+15 vs 682 baseline).

@@ -70,15 +70,15 @@ The structure is sound for single-user dogfood. Everything below is **deferred /
   when non-default; honest locked/401/daemon-down states; and the browser `history.html` fallback
   tails (🔒 locked instead of false "Loading…", zsh-`%`/whitespace token-trim). Chunks archived in
   `chunks-todo/archive/memory-transparency-ui/`.
-- **In-answer "where did this come from?" provenance affordance** — ✅ **DESIGN TASK RESOLVED
-  2026-07-13** (spec `specs/2026-07-13-in-answer-provenance-affordance.md`, Lior §5.2 sign-off rides
-  the design PR; bus ruling q#016). **Mandate archaeology reversed the carve-out's premise:** the
+- **In-answer "where did this come from?" provenance affordance** — ✅ **RESOLVED + SHIPPED + CLOSED
+  2026-07-13** (spec `specs/archive/2026-07-13-in-answer-provenance-affordance.md` (implemented),
+  Lior §5.2 sign-off; chunk `provenance-affordance/01` shipped via PR #93; bus ruling q#016). **Mandate archaeology reversed the carve-out's premise:** the
   earlier «⚠️ ADR-0012 5a names it MANDATORY» wording here was a **mis-attribution** — ADR-0012 5a's
   text is the view/edit/forget *hatch*; the "MANDATORY in-answer affordance" ruling lives in the
   **memory-foundation spec §3.5/§7 (5a-open)**, asks only for a *lightweight generic* "from where?"
   → leads into the memory surface, and was already satisfied by the MF-05 generic line (demo step 6
-  signed). **Resolution: O1** — retarget the generic line to the Memory window (chunk
-  `chunks-todo/provenance-affordance/01`, gated on spec acceptance; drops the stale `history.html`
+  signed). **Resolution: O1** — retargeted the generic line to the Memory window (chunk archived at
+  `chunks-todo/archive/provenance-affordance/01`; dropped the stale `history.html`
   port-URL); **per-fact in-answer linkage = deliberate deferral, NOT built** (Lior's
   overcomplication concern upheld; revisit triggers: stale-fact wrong-answer incident in dogfood ·
   multi-user · 2d search landing — escalation ladder O2 chip → O3 per-fact, re-gated). **No

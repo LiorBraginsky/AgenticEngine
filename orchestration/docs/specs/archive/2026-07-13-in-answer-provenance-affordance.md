@@ -1,6 +1,8 @@
+> 🗄️ ARCHIVED 2026-07-13 — implemented. Historical record; do not edit.
+
 ---
 title: In-answer provenance affordance — design resolution (the Theme A carve-out)
-status: accepted — Lior 2026-07-13 (§5.2 sign-off, all three §0 points AS RECOMMENDED — archaeology confirmed ⇒ NO ADR-0012 rider · O1 + deliberate deferral w/ named triggers · line drops the history.html URL)
+status: implemented — chunk 01 (the single implementation chunk) shipped via PR #93 2026-07-13; generic provenance line retargeted from the stale history.html port-URL to the in-overlay Memory window (tray → "Open Memory…"); mechanical DoD (bun test 706/0, typecheck/lint:strict 0, frozen byte-unchanged). (was: accepted — Lior 2026-07-13 §5.2 sign-off, all three §0 points AS RECOMMENDED — archaeology confirmed ⇒ NO ADR-0012 rider · O1 + deliberate deferral w/ named triggers · line drops the history.html URL)
 date: 2026-07-13
 tags: [memory, transparency, provenance, overlay, design-task, north-star]
 related:

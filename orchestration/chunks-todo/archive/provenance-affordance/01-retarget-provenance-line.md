@@ -1,6 +1,8 @@
+> 🗄️ ARCHIVED 2026-07-13 — done. Historical record; do not edit.
+
 # Chunk 01 — retarget the generic provenance line to the Memory window
 
-Status: todo — **gated on spec acceptance** (`specs/2026-07-13-in-answer-provenance-affordance.md`, §5.2 Lior sign-off; do not start before the spec flips draft→accepted)
+Status: done — shipped via PR #93 2026-07-13 (mechanical DoD §6.2: bun test 706/0, typecheck/lint:strict 0, frozen byte-unchanged; RED-first direction-proof). Feature `provenance-affordance` closes with this single chunk.
 Feature: provenance-affordance
 Depends on: none (single chunk)
 Size: ~0.25 d

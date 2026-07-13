@@ -58,8 +58,9 @@ The structure is sound for single-user dogfood. Everything below is **deferred /
 >
 > **→ SHIPPED 2026-07-10** — the `memory-transparency-ui` feature (Theme A) shipped: chunks
 > 01–05 merged + Lior's joint §6.1 live demo signed. Spec (now `implemented`) =
-> `specs/archive/2026-07-02-memory-transparency-ui.md`. The two bullets below (in-answer
-> provenance affordance + token revocation) are what remains carved out / deferred.
+> `specs/archive/2026-07-02-memory-transparency-ui.md`. Of the two carve-outs below, the
+> in-answer provenance affordance is **resolved** (2026-07-13, first bullet); token
+> revocation remains deferred.
 
 - **In-overlay memory UI + tray-icon shell + history.html UX tails** — ✅ **SHIPPED 2026-07-10**
   (Theme A). Tray icon status + "Open Memory…" window (no token paste, ADR-0006 p.4 un-deferred);
@@ -69,12 +70,21 @@ The structure is sound for single-user dogfood. Everything below is **deferred /
   when non-default; honest locked/401/daemon-down states; and the browser `history.html` fallback
   tails (🔒 locked instead of false "Loading…", zsh-`%`/whitespace token-trim). Chunks archived in
   `chunks-todo/archive/memory-transparency-ui/`.
-- **In-answer "where did this come from?" provenance affordance** — **CARVED OUT to its own design
-  task** (Lior 2026-07-02): weigh pros/cons of dragging fact→thread linkage through live answers —
-  Lior's concern is memory UX overcomplication. ⚠️ ADR-0012 **5a names it MANDATORY** — this is a
-  recorded deliberate revisit, NOT a silent drop; the design task owns reconciling with (or amending)
-  ADR-0012. Anchor: forget stays "release the reference" (fact-delete only, sources untouched).
-  *Lives:* `specs/2026-06-04-memory-foundation.md` §7 (5a-open), ADR-0012 5a.
+- **In-answer "where did this come from?" provenance affordance** — ✅ **DESIGN TASK RESOLVED
+  2026-07-13** (spec `specs/2026-07-13-in-answer-provenance-affordance.md`, Lior §5.2 sign-off rides
+  the design PR; bus ruling q#016). **Mandate archaeology reversed the carve-out's premise:** the
+  earlier «⚠️ ADR-0012 5a names it MANDATORY» wording here was a **mis-attribution** — ADR-0012 5a's
+  text is the view/edit/forget *hatch*; the "MANDATORY in-answer affordance" ruling lives in the
+  **memory-foundation spec §3.5/§7 (5a-open)**, asks only for a *lightweight generic* "from where?"
+  → leads into the memory surface, and was already satisfied by the MF-05 generic line (demo step 6
+  signed). **Resolution: O1** — retarget the generic line to the Memory window (chunk
+  `chunks-todo/provenance-affordance/01`, gated on spec acceptance; drops the stale `history.html`
+  port-URL); **per-fact in-answer linkage = deliberate deferral, NOT built** (Lior's
+  overcomplication concern upheld; revisit triggers: stale-fact wrong-answer incident in dogfood ·
+  multi-user · 2d search landing — escalation ladder O2 chip → O3 per-fact, re-gated). **No
+  ADR-0012 rider** (nothing in the ADR changes; fallback doc-style rider recorded in spec §0.1 if
+  Lior reads the quotes differently). Anchor unchanged: forget stays "release the reference".
+  *Lives:* the 2026-07-13 spec (the record); `specs/2026-06-04-memory-foundation.md` §7 (5a-open).
 - **Expiry / confidence per fact — decision RECORDED 2026-07-02: leave as-is, do NOT build.** The DB
   columns exist and `retrieve` filters `WHERE expiry IS NULL OR expiry > now`, but the distiller
   hardcodes `expiry: null` / `confidence: 1` — dormant. Ruling: no scoring/decay until Lior's own
@@ -271,6 +281,7 @@ surface). **Theme A above is the direct execution of that mandate and is the lea
 **Theme A SHIPPED 2026-07-10** (`memory-transparency-ui`; chunks 01–05 + joint §6.1 demo signed).
 **2c (`memory-action-tools`, conversational forget/remember) SHIPPED + CLOSED 2026-07-13** — live §6.1
 demo signed; the one in-feature defect (D1 case-duplicate) fixed in chunk-05 (merged), spec
-accepted→implemented, folder drained (§B). The queue now, in rough order: the
-**in-answer provenance affordance design task** (carved out of Theme A — see §A); then **2d — HYBRID
-retrieval (BM25 + embeddings; §D, Lior 2026-07-10)** once the corpus outgrows all-facts-below-cap.
+accepted→implemented, folder drained (§B). **The provenance-affordance design task RESOLVED
+2026-07-13 (§A)** — one trivial chunk (`provenance-affordance/01`, gated on spec acceptance), per-fact
+deliberately deferred. The queue now, in rough order: that chunk; then **2d — HYBRID retrieval (BM25 +
+embeddings; §D, Lior 2026-07-10)** once the corpus outgrows all-facts-below-cap.

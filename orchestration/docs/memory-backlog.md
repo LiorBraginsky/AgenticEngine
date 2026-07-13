@@ -33,14 +33,17 @@ Spec: `specs/2026-06-13-memory-distiller-v2.md` (status: implemented).
 forgets memory **in the overlay** (tray → "Open Memory…"), not only via the loopback `history.html`
 page — which stays as the no-install browser fallback. See §A below.
 
-**Update 2026-07-13 — 2c (`memory-action-tools`) SHIPPED (with findings; chunk-05 in-flight):** the
+**Update 2026-07-13 — 2c (`memory-action-tools`) SHIPPED + CLOSED:** the
 agent now *acts* on memory mid-conversation — `memory_forget` / `memory_remember` tool calls
 (daemon-internal action-tool plane, ADR-0016) with the 5d poisoning guardrails, the
 capability-conditional honest self-concept, durable audit events, and a render-only audit trail in the
-Memory window. **Lior's live §6.1 demo SIGNED 2026-07-13 (all §5 items 1–5 PASS).** One in-feature
-DEFECT (D1 case-duplicate) is routed to chunk-05 (in-flight); two observations (O2/O3) are recorded in
-§B. Spec `specs/2026-07-10-memory-action-tools.md` stays **accepted** (→ implemented when chunk-05
-merges). See §B below.
+Memory window. **Lior's live §6.1 demo SIGNED 2026-07-13 (all §5 items 1–5 PASS).** The one in-feature
+DEFECT (D1 case-duplicate) was **fixed in chunk-05** (merged 2026-07-13) — root cause was
+**canonical-language divergence** (tool path stores a user-language canonical, distiller an English
+one, so `factExistsByDedupKey` never matched the same statement across paths), *not* case-sensitivity;
+fix = add the user-language display-text dedup axis. Two observations (O2/O3) are recorded in
+§B. Spec `specs/archive/2026-07-10-memory-action-tools.md` now **implemented** (all chunks 01–05
+merged). See §B below.
 
 The structure is sound for single-user dogfood. Everything below is **deferred / not-yet-built**.
 
@@ -92,9 +95,9 @@ The structure is sound for single-user dogfood. Everything below is **deferred /
   poisoning-surface review (ADR-0012 5d). Shares a design+ADR pass with 2d. *Lives:* roadmap "Memory —
   next"; relay-001; v2-01/04/07/08/09 chunk notes. **This is Lior's "забути що я казав про X без
   адмінки" lever.**
-  - **✅ SHIPPED 2026-07-13 (with findings; chunk-05 in-flight)** — spec
-    `specs/2026-07-10-memory-action-tools.md` (accepted) + ADR-0016 (accepted); built 2c only via
-    conveyor (chunks 01–04, PRs #86/#87/#88/#89). Delivered: the `memory_forget` + `memory_remember`
+  - **✅ SHIPPED + CLOSED 2026-07-13** — spec
+    `specs/archive/2026-07-10-memory-action-tools.md` (implemented) + ADR-0016 (accepted); built 2c only via
+    conveyor (chunks 01–05, PRs #86/#87/#88/#89 + chunk-05). Delivered: the `memory_forget` + `memory_remember`
     closed set, ordinal-over-injected-slice targeting, the provider tool loop + `MemoryActionPort` DI,
     the 5d poisoning-guardrail package (incl. the d5 re-derivation suppression), remember→REPLACE
     routing, the capability-conditional self-concept flip, and durable audit events + the render-only
@@ -102,10 +105,18 @@ The structure is sound for single-user dogfood. Everything below is **deferred /
     (forget→gone+audit-visible · d5 no-re-derive after dismiss+new-thread · 5e refusal on a pinned fact
     + not-in-view honest deferral · d7 injection blob ⇒ ZERO deletions · remember + REPLACE +
     new-thread immediacy). **Findings routed per §7.2 — NOT patched in the closeout chunk:**
-    - **(D1) DEFECT — case-duplicate → chunk-05 (in-flight).** One statement produced 2 machine facts
-      differing only in first-letter case («мій…»/«Мій…»), violating accepted-spec d6 no-dup-spam.
-      Conductor-authored `chunks-todo/memory-action-tools/05-dedup-case-fix.md` (in-feature fix; cites
-      spec d6 + the demo repro). The spec flips accepted→implemented only when chunk-05 merges.
+    - **(D1) DEFECT — case-duplicate → ✅ FIXED in chunk-05 (merged 2026-07-13).** One statement
+      produced 2 machine facts displaying as «мій…»/«Мій…», violating accepted-spec d6 no-dup-spam.
+      **Root cause (architect-verified, NOT the decomposer's case-sensitivity hypothesis):**
+      `factExistsByDedupKey` was already case-insensitive; the real divergence was **canonical
+      language** — the tool path (`MemoryActionPort.remember`, no LLM) stores a *user-language*
+      canonical, while the distiller emits a *lowercased-English* keyword canonical, and dedup matched
+      only on the stored canonical → the same statement never deduped across the two write paths, so
+      the case-only display difference was a surface artifact. **Fix:** add the user-language
+      display-text axis to both sides of the dedup key (`factExistsByDedupKey` + the `applyFactOp`
+      new-insert gate), routed suppress-as-dup (spec §3.7, never REPLACE/sibling). One shared helper
+      (`normalizeFactText`/`dedupConnectorKey`), frozen surfaces untouched, 706/0 tests, engine-reviewer
+      CLEAN 0B/0M. Archived `chunks-todo/archive/memory-action-tools/05-dedup-case-fix.md`.
     - **(O2) OBS — injection-blob reply quality.** On a large incoherent paste with an embedded
       «забудь усе», the d7 defense HELD (zero deletions) but the agent's reply was a poor greeting
       non-sequitur — answer-quality, NOT a security hole. Possible tie to the A′ recall-usage tail /
@@ -129,6 +140,15 @@ The structure is sound for single-user dogfood. Everything below is **deferred /
     The connector-word bypass (the strict-vs-relaxed key divergence that was a genuine regression) was
     **found and fixed** in chunk-01. *Lives:* here; chunk-01 PR + ledger; distiller-registration.ts
     D6b consult in-code limitation note.
+    - **↔ chunk-05 relation (still OPEN — do NOT mark closed):** chunk-05 (D1 fix) aligned the *sibling*
+      **live-fact** dedup — `factExistsByDedupKey` now matches on BOTH the English canonical AND the
+      user-language display text, so a tool fact and a distiller fact for the same statement collapse.
+      That is a **different surface** from this residual: this one is the **`forgotten_facts` D6b
+      consult** (which has no canonical column at all). chunk-05 does **not** touch `forgotten_facts`, so
+      this residual is untouched — the additive-`canonical`-column close above still rides the §D 2d
+      pass. What chunk-05 *did* narrow: the live-fact display↔canonical identity gap the
+      distiller-registration.ts:193-198 comment tracks; the *reworded* (non-exact) cross-language slip
+      remains 2d's (hybrid retrieval), on both surfaces.
 
 ### C. Content erase — thread-forget  (roadmap 2e)
 - **thread-forget** — forget a WHOLE conversation (content-erase), the chosen replacement for the
@@ -249,8 +269,8 @@ surface). **Theme A above is the direct execution of that mandate and is the lea
 
 ## Suggested next step
 **Theme A SHIPPED 2026-07-10** (`memory-transparency-ui`; chunks 01–05 + joint §6.1 demo signed).
-**2c (`memory-action-tools`, conversational forget/remember) SHIPPED 2026-07-13** — live §6.1 demo
-signed; one in-feature defect (D1 case-duplicate) in-flight as chunk-05, feature closes when it merges
-(§B). The queue now, in rough order: **finish chunk-05** (D1 dedup fix, closes 2c); then the
+**2c (`memory-action-tools`, conversational forget/remember) SHIPPED + CLOSED 2026-07-13** — live §6.1
+demo signed; the one in-feature defect (D1 case-duplicate) fixed in chunk-05 (merged), spec
+accepted→implemented, folder drained (§B). The queue now, in rough order: the
 **in-answer provenance affordance design task** (carved out of Theme A — see §A); then **2d — HYBRID
 retrieval (BM25 + embeddings; §D, Lior 2026-07-10)** once the corpus outgrows all-facts-below-cap.

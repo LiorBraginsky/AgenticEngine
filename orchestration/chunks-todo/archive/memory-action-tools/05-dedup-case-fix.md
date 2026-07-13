@@ -1,6 +1,8 @@
+> 🗄️ ARCHIVED 2026-07-13 — done. Historical record; do not edit.
+
 # Chunk 5: dedup case-fix — one statement must yield ONE fact (demo-found defect)
 
-**Status:** in-progress
+**Status:** done
 **Created:** 2026-07-13
 **Phase:** memory-action-tools (2c)
 **Estimated size:** small (~half day)

@@ -1,12 +1,15 @@
+> 🗄️ ARCHIVED 2026-07-13 — shipped. Historical record; do not edit.
+
 # Chunk 05 (dedup case-fix) — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use `superpowers:test-driven-development` and `superpowers:executing-plans`. Steps use `- [ ]` checkboxes. RED-first is mandatory (chunk §Task item 1 + DoD).
 
 ## Status
 
-- Phase 1 (planning): **Done** — architect root-caused the defect; plan persisted 2026-07-13.
-- Phase 2 (implementation + review): pending.
-- Phase 3 (verified-done + closeout): pending.
+**shipped** (2026-07-13) — all three phases complete.
+- Phase 1 (planning): Done — architect root-caused the defect (canonical-language divergence, NOT case).
+- Phase 2 (implementation + review): Done — RED-first repro → display-axis dedup fix → regressions; engine-reviewer CLEAN 0B/0M (1 nit fixed); 706/0 tests, typecheck 0, lint:strict 0, frozen empty.
+- Phase 3 (verified-done + closeout): Done — all mechanical DoD proven by command evidence; spec → implemented; folder drained; ready-to-merge (crawl §11.4 — conductor merges).
 
 **Goal:** One user statement must yield ONE machine fact across both write paths (tool-`memory_remember` at turn-time + distiller re-derivation at dismiss) — closing demo defect D1 (spec §3.5 d6 "no dup spam").
 

@@ -3,7 +3,9 @@
  * XSS discipline (history.html / text-reply.ts): all API-derived strings via textContent/
  * createElement — NEVER innerHTML. Uses the pure fact-view helpers for the display rules.
  */
-import type { ThreadSummary, ThreadMessage, DistilledFactView, DistillationEventView } from "./types.js";
+import type {
+  ThreadSummary, ThreadMessage, DistilledFactView, DistillationEventView, MemoryActionEventView,
+} from "./types.js";
 import {
   parseProvenance, shouldShowExpiry, shouldShowConfidence, eventLabel, formatTs,
 } from "./fact-view.js";
@@ -179,6 +181,33 @@ export function renderEvents(el: HTMLElement, events: DistillationEventView[]): 
     line.appendChild(count);
     const date = document.createElement("div");
     date.className = "event-date";
+    date.textContent = formatTs(e.created_at);
+    row.appendChild(line);
+    row.appendChild(date);
+    el.appendChild(row);
+  }
+}
+
+/** 2c chunk-04 (D9b): render-only agent memory-action audit trail. Distinct list from
+ *  renderEvents (the distiller's) — agent-vs-distiller attribution via the row's own `actor`
+ *  (audit rows carry `actor:"agent"`; `distilled_facts` has no actor column and is not ALTERed).
+ *  NO interaction affordances (q#015 Ruling 2) — display only, textContent-only. */
+export function renderAuditEvents(el: HTMLElement, events: MemoryActionEventView[]): void {
+  clear(el);
+  if (events.length === 0) { renderState(el, "No memory actions."); return; }
+  for (const e of events) {
+    const row = document.createElement("div");
+    row.className = "action-row";
+    const line = document.createElement("div");
+    const attribution = document.createElement("span");
+    attribution.textContent = `${e.actor || "?"}: ${e.action || "?"} · ${e.outcome || "?"} · `;
+    const fact = document.createElement("span");
+    fact.className = "action-fact";
+    fact.textContent = e.fact_text || "";
+    line.appendChild(attribution);
+    line.appendChild(fact);
+    const date = document.createElement("div");
+    date.className = "action-date";
     date.textContent = formatTs(e.created_at);
     row.appendChild(line);
     row.appendChild(date);

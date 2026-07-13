@@ -52,7 +52,8 @@ async function main(): Promise<void> {
     els: {
       listView: el("thread-list-view"), detailView: el("thread-view"),
       threadListEl: el("thread-list"), messagesEl: el("messages-container"),
-      factsEl: el("facts-container"), eventsEl: el("events-container"), backBtn: el("back-btn"),
+      factsEl: el("facts-container"), eventsEl: el("events-container"),
+      actionsEl: el("actions-container"), backBtn: el("back-btn"),
     },
   });
   controller.start();

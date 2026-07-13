@@ -78,7 +78,7 @@ import { createAnthropicApiProvider } from "../src/providers/anthropic-api-provi
 import type { ProviderSessionState } from "../src/providers/provider.js";
 import { resolveAnthropicKey } from "../src/secrets/cloud-secrets.js";
 import { MEMORY_ACTION_TOOLS_PARAM, serializeToolResult } from "../src/providers/memory-action-tools.js";
-import { COMPOSED_SYSTEM_PROMPT } from "../src/providers/system-prompt.js";
+import { composeSystemPrompt } from "../src/providers/system-prompt.js";
 
 function assert(condition: boolean, label: string, detail?: string): void {
   if (!condition) {
@@ -289,7 +289,7 @@ try {
       model: "claude-sonnet-4-6",
       max_tokens: 512,
       thinking: { type: "disabled" },
-      system: [{ type: "text", text: COMPOSED_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
+      system: [{ type: "text", text: composeSystemPrompt(true), cache_control: { type: "ephemeral" } }],
       messages: convoWithCompletedToolRound,
       tools: MEMORY_ACTION_TOOLS_PARAM,
       tool_choice: { type: "none" },

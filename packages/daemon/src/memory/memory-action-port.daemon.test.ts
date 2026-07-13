@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { MemoryStore } from "./store.js";
+import { applyFactOp } from "./apply-fact-op.js";
 import { WriteGate } from "./write-gate.js";
 import { RuleBasedScanner } from "./scanner/memory-scanner.js";
 import {
@@ -469,5 +470,47 @@ test("guardrail: 4th action in one shared turn context → cap_exceeded", () => 
   const events = store.readMemoryActionEvents(t);
   expect(events.some((e) => e.outcome === "refused-cap_exceeded")).toBe(true);
 
+  store.close();
+});
+
+// ─── chunk-05 (a): tool-remember then distiller re-derivation ⇒ ONE fact ─────
+
+test("chunk-05 (a): port.remember then distiller re-derivation (English canonical, case-variant display) ⇒ ONE fact", () => {
+  const { store, port } = freshHarness();
+  const t = store.createThread();
+
+  // Real tool path.
+  const r1 = port.remember(freshCtx(t), { fact: "Мій улюблений напій - чай" });
+  expect(r1.ok).toBe(true);
+  expect(store.readDistilledFacts(50).length).toBe(1);
+
+  // The exact per-op apply distiller-registration.ts:211 performs, with the smart
+  // distiller's ENGLISH canonical (smart-distiller-provider.ts:117).
+  const r2 = applyFactOp(store, {
+    op: "new",
+    fact: "мій улюблений напій - чай",
+    canonical: "user's favorite drink is tea",
+    topics: [],
+    provenance: `thread:${t}`,
+  }, "distiller-v2");
+
+  expect(r2.outcome).toBe("deduped");
+  expect(store.readDistilledFacts(50).length).toBe(1);
+  store.close();
+});
+
+// ─── chunk-05 (b): case-variant exact-dup via tool twice ⇒ duplicate no-op ───
+
+test("chunk-05 (b): remember twice differing only in first-letter case ⇒ second is duplicate no-op", () => {
+  const { store, port } = freshHarness();
+  const t = store.createThread();
+
+  const r1 = port.remember(freshCtx(t), { fact: "Мій улюблений напій - чай" });
+  expect(r1.ok).toBe(true);
+  expect(store.readDistilledFacts(50).length).toBe(1);
+
+  const r2 = port.remember(freshCtx(t), { fact: "мій улюблений напій - чай" }); // lowercase м
+  expect(r2).toMatchObject({ ok: false, code: "duplicate" });
+  expect(store.readDistilledFacts(50).length).toBe(1);
   store.close();
 });

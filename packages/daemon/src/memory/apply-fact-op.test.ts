@@ -4,6 +4,7 @@ import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { MemoryStore } from "./store.js";
 import { applyFactOp } from "./apply-fact-op.js";
+import { normalizeFactText } from "./normalize-fact-text.js";
 
 function freshStore() {
   const dir = mkdtempSync(join(tmpdir(), "2c01-apply-fact-op-"));
@@ -350,5 +351,38 @@ test("op:append over the append-list cap demotes to a competing insert", () => {
   expect(facts.length).toBe(2);
 
   assertNoDistillSideEffects(store, t);
+  store.close();
+});
+
+// ─── chunk-05 (D1): cross-path dedup — tool canonical (user-language) vs
+//     distiller canonical (English keyword) must still collapse to ONE fact ──
+test("chunk-05 D1: tool-remembered fact + distiller re-derivation (ENGLISH canonical, case-variant display) ⇒ ONE fact, not a sibling", () => {
+  const store = freshStore();
+  const t = store.createThread();
+
+  // 1. Tool-remember shape: the port has NO LLM, so canonical = normalizeFactText(display) — USER-LANGUAGE.
+  const toolFact = "Мій улюблений напій - чай";
+  applyFactOp(store, {
+    op: "new",
+    fact: toolFact,
+    canonical: normalizeFactText(toolFact), // "мій улюблений напій - чай"
+    topics: [],
+    provenance: `thread:${t}`,
+  }, "agent");
+  expect(store.readDistilledFacts(50).length).toBe(1);
+
+  // 2. Distiller re-derivation at dismiss: the smart distiller emits a LOWERCASED ENGLISH
+  //    canonical (smart-distiller-provider.ts:117) with a case-variant user-language display.
+  const r = applyFactOp(store, {
+    op: "new",
+    fact: "мій улюблений напій - чай",           // case-variant display (lowercase м)
+    canonical: "user's favorite drink is tea",   // ENGLISH keyword — the real distiller shape
+    topics: [],
+    provenance: `thread:${t}`,
+  }, "distiller-v2");
+
+  expect(r.outcome).toBe("deduped");                    // PRE-FIX: "inserted" (the D1 bug)
+  expect(store.readDistilledFacts(50).length).toBe(1);  // PRE-FIX: 2 (the case-dup)
+
   store.close();
 });

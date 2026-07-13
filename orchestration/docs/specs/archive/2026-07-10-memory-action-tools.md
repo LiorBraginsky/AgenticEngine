@@ -1,6 +1,8 @@
+> 🗄️ ARCHIVED 2026-07-13 — implemented. Historical record; do not edit.
+
 ---
 title: Memory action tools (2c) — conversational forget/remember via a daemon-internal agent tool plane
-status: accepted
+status: implemented — all chunks (01–05) merged; Lior's live §6.1 demo signed (run 2026-07-11, verdict 2026-07-13, §5 items 1–5 all PASS); demo-found D1 case-dup defect fixed in chunk-05 (root cause = canonical-language divergence, not case) (was: accepted 2026-07-10 by Lior)
 date: 2026-07-10
 deciders: [lior]
 feeds: memory-action-tools

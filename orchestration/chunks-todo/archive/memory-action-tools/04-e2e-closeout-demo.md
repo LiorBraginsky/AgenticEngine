@@ -1,6 +1,8 @@
+> 🗄️ ARCHIVED 2026-07-13 — done. Historical record; do not edit.
+
 # Chunk 4: Memory-window audit render + E2E closeout + Lior's live demo
 
-**Status:** in-progress
+**Status:** done
 **Created:** 2026-07-10
 **Phase:** memory-action-tools (2c)
 **Estimated size:** ~1 day (+ the live demo session)

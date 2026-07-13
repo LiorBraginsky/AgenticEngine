@@ -543,19 +543,40 @@ export class MemoryStore {
    * connector clause subsumes the base; both kept explicit for legibility. Scans the
    * bounded fact corpus (dogfood scale). READ-ONLY: callers use it to SUPPRESS a new
    * insert only — it never mutates a row (STABILITY untouched by construction).
+   *
+   * chunk-05 (D1): the above normalized/connector check now runs against TWO axes per
+   * stored fact — the canonical (distiller's English match-key) AND the display text
+   * (user-language fact text) — so a cross-write-path dup (tool canonical vs distiller
+   * canonical) still collapses. See the inline comment below for the axis rationale.
    */
   factExistsByDedupKey(text: string): boolean {
     const norm = normalizeFactText(text);
     if (norm === "") return false;
     const conn = dedupConnectorKey(text);
+    // TWO match axes per stored fact (chunk-05, spec §3.5 d6):
+    //   - canonical (f.canonical): the distiller's LOWERCASED-ENGLISH match key
+    //     (smart-distiller-provider.ts) — load-bearing for cross-LANGUAGE
+    //     distiller-vs-distiller dedup ("чай"/"tea" both → "user likes tea").
+    //   - display  (d.fact): the USER-LANGUAGE fact text — the ONE representation
+    //     BOTH write paths produce identically via normalizeFactText. The tool path
+    //     (MemoryActionPort.remember) has no LLM and stores a user-language canonical;
+    //     without the display axis, a tool fact and a distiller fact for the SAME
+    //     statement (English canonical) never match → dup spam (demo defect D1).
+    // A fact is a dup if EITHER axis matches. Bounded corpus (dogfood scale).
     const rows = this.db
       .query(
-        `SELECT COALESCE(f.canonical, d.fact) AS key
+        `SELECT f.canonical AS canonical, d.fact AS display
            FROM distilled_facts d
            LEFT JOIN fact_fts f ON f.fact_id = d.id`,
       )
-      .all() as { key: string }[];
-    return rows.some((r) => normalizeFactText(r.key) === norm || dedupConnectorKey(r.key) === conn);
+      .all() as { canonical: string | null; display: string }[];
+    return rows.some((r) => {
+      for (const key of [r.canonical, r.display]) {
+        if (key === null || key === "") continue;
+        if (normalizeFactText(key) === norm || dedupConnectorKey(key) === conn) return true;
+      }
+      return false;
+    });
   }
 
   /** Returns true if a tombstone mutation exists for the given messageId. */

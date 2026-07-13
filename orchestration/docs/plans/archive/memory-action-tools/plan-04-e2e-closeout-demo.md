@@ -1,3 +1,5 @@
+> 🗄️ ARCHIVED 2026-07-13 — shipped. Historical record; do not edit.
+
 # Memory Action Tools (2c) — Chunk 04 "E2E closeout + live demo" Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -177,4 +179,4 @@ export interface HatchView {
 
 **Deviation on record:** the probe pins `DumbTailProvider` as its background memory provider (3-arg `startDaemon`) — a pre-existing DI seam — to stay key-free/deterministic on a keyed machine; it does not touch the tool loop or read path under test (reviewer-confirmed).
 
-## Status: Review-complete (build pass GREEN, reviewer CLEAN); **behavioral gate OPEN — pending Lior's live §5 demo (§6.1)**. Merge + docs reconcile (Step 3.3–3.5) + §4.4 archival are DEFERRED to post-demo closeout.
+## Status: shipped — Lior's live §6.1 demo SIGNED 2026-07-13 (§5 items 1–5 all PASS); PR #89 closeout (docs reconcile + §4.4 archival) committed. Findings routed per §7.2 (D1→chunk-05 in-flight; O2/O3 backlog observations). Feature closes when chunk-05 merges.

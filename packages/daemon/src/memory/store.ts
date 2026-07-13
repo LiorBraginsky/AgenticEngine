@@ -543,6 +543,11 @@ export class MemoryStore {
    * connector clause subsumes the base; both kept explicit for legibility. Scans the
    * bounded fact corpus (dogfood scale). READ-ONLY: callers use it to SUPPRESS a new
    * insert only — it never mutates a row (STABILITY untouched by construction).
+   *
+   * chunk-05 (D1): the above normalized/connector check now runs against TWO axes per
+   * stored fact — the canonical (distiller's English match-key) AND the display text
+   * (user-language fact text) — so a cross-write-path dup (tool canonical vs distiller
+   * canonical) still collapses. See the inline comment below for the axis rationale.
    */
   factExistsByDedupKey(text: string): boolean {
     const norm = normalizeFactText(text);

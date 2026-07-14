@@ -332,6 +332,11 @@ export class MemoryStore {
   // that drops a connector word ("favorite color is blue" → "favorite color blue") would fail
   // the strict consult, and once the row is durably deleted the dedup has nothing left to
   // match either — the forgotten fact would silently re-enter one dismiss later.
+  //
+  // hybrid-retrieval R2: the display axis above is byte-carried unchanged; each of the three
+  // helpers below ALSO gained an optional, additive CANONICAL axis (op.canonical vs the
+  // forgotten row's stored fact_fts.canonical, captured at forget time) — closing the
+  // cross-language slip (UK display / EN canonical) the display-only match left open.
 
   /**
    * Record a durable fact-forget entry in `forgotten_facts`.
@@ -382,31 +387,53 @@ export class MemoryStore {
 
   /**
    * Returns true if ANY forgotten_facts row matches `text` on EITHER the strict normalized
-   * key OR the RELAXED connector-word key (FIX 1 — see block note above). `text` may be raw
-   * or already-normalized (dedupConnectorKey re-normalizes internally either way).
+   * key OR the RELAXED connector-word key (FIX 1 — see block note above), OR (hybrid-retrieval
+   * R2) the optional `canonical` matches the row's stored canonical on the same relaxed-key
+   * shape. `text` may be raw or already-normalized (dedupConnectorKey re-normalizes
+   * internally either way). The canonical clause is skipped when `canonical` is omitted or
+   * the row's canonical is NULL/empty (legacy row → display-only, no fabrication).
    */
-  isForgottenNormalizedText(text: string): boolean {
+  isForgottenNormalizedText(text: string, canonical?: string): boolean {
     const norm = normalizeFactText(text);
     if (norm === "") return false;
     const conn = dedupConnectorKey(text);
+    const canonNorm = canonical ? normalizeFactText(canonical) : "";
+    const canonConn = canonical ? dedupConnectorKey(canonical) : "";
     const rows = this.db
-      .query("SELECT normalized_text FROM forgotten_facts")
-      .all() as { normalized_text: string }[];
-    return rows.some((r) => r.normalized_text === norm || dedupConnectorKey(r.normalized_text) === conn);
+      .query("SELECT normalized_text, canonical FROM forgotten_facts")
+      .all() as { normalized_text: string; canonical: string | null }[];
+    return rows.some((r) => {
+      // display axis (byte-carried from 2c chunk-01 FIX 1)
+      if (r.normalized_text === norm || dedupConnectorKey(r.normalized_text) === conn) return true;
+      // canonical axis (hybrid-retrieval R2): only when BOTH sides carry a canonical.
+      // Legacy NULL-canonical rows fall through to display-only (honest — no backfill).
+      if (r.canonical !== null && r.canonical !== "" && canonNorm !== "") {
+        if (normalizeFactText(r.canonical) === canonNorm || dedupConnectorKey(r.canonical) === canonConn) return true;
+      }
+      return false;
+    });
   }
 
   /**
    * Remove all forgotten_facts rows matching `text` on EITHER the strict normalized key OR
-   * the RELAXED connector-word key (FIX 1 — see block note above). Returns the number of
-   * rows deleted.
+   * the RELAXED connector-word key (FIX 1 — see block note above), OR (hybrid-retrieval R2)
+   * the optional `canonical` axis. Returns the number of rows deleted.
    */
-  clearForgottenByNormalizedText(text: string): number {
+  clearForgottenByNormalizedText(text: string, canonical?: string): number {
     const norm = normalizeFactText(text);
     const conn = dedupConnectorKey(text);
+    const canonNorm = canonical ? normalizeFactText(canonical) : "";
+    const canonConn = canonical ? dedupConnectorKey(canonical) : "";
     const rows = this.db
-      .query("SELECT id, normalized_text FROM forgotten_facts")
-      .all() as { id: string; normalized_text: string }[];
-    const toDelete = rows.filter((r) => r.normalized_text === norm || dedupConnectorKey(r.normalized_text) === conn);
+      .query("SELECT id, normalized_text, canonical FROM forgotten_facts")
+      .all() as { id: string; normalized_text: string; canonical: string | null }[];
+    const toDelete = rows.filter((r) => {
+      if (r.normalized_text === norm || dedupConnectorKey(r.normalized_text) === conn) return true;
+      if (r.canonical !== null && r.canonical !== "" && canonNorm !== "") {
+        if (normalizeFactText(r.canonical) === canonNorm || dedupConnectorKey(r.canonical) === canonConn) return true;
+      }
+      return false;
+    });
     if (toDelete.length === 0) return 0;
     const del = this.db.query("DELETE FROM forgotten_facts WHERE id = ?");
     for (const r of toDelete) del.run(r.id);
@@ -450,15 +477,30 @@ export class MemoryStore {
    * normalized key OR the RELAXED connector-word key (2c chunk-01 review FIX 1 — this is the
    * D6b precedence guard: human ▷ un-forget ▷ forget-record ▷ machine re-derivation. A
    * strict-only match here let a connector-word rephrase of a HUMAN fact go undetected,
-   * wrongly letting the forgotten-record suppression fire over a human's pinned fact).
+   * wrongly letting the forgotten-record suppression fire over a human's pinned fact), OR
+   * (hybrid-retrieval R2) the optional `canonical` matches the human fact's fact_fts.canonical
+   * (LEFT JOINed — a human fact predating v2-02 may have no fact_fts row).
    */
-  hasHumanFactWithNormalizedText(text: string): boolean {
+  hasHumanFactWithNormalizedText(text: string, canonical?: string): boolean {
     const norm = normalizeFactText(text);
     const conn = dedupConnectorKey(text);
+    const canonNorm = canonical ? normalizeFactText(canonical) : "";
+    const canonConn = canonical ? dedupConnectorKey(canonical) : "";
     const rows = this.db
-      .query("SELECT fact FROM distilled_facts WHERE authored_by = 'human'")
-      .all() as { fact: string }[];
-    return rows.some((r) => normalizeFactText(r.fact) === norm || dedupConnectorKey(r.fact) === conn);
+      .query(
+        `SELECT d.fact AS fact, f.canonical AS canonical
+           FROM distilled_facts d
+           LEFT JOIN fact_fts f ON f.fact_id = d.id
+          WHERE d.authored_by = 'human'`,
+      )
+      .all() as { fact: string; canonical: string | null }[];
+    return rows.some((r) => {
+      if (normalizeFactText(r.fact) === norm || dedupConnectorKey(r.fact) === conn) return true;
+      if (r.canonical !== null && r.canonical !== "" && canonNorm !== "") {
+        if (normalizeFactText(r.canonical) === canonNorm || dedupConnectorKey(r.canonical) === canonConn) return true;
+      }
+      return false;
+    });
   }
 
   /**

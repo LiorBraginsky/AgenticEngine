@@ -6,6 +6,7 @@ import { MemoryStore } from "./store.js";
 import { applyFactOp } from "./apply-fact-op.js";
 import { WriteGate } from "./write-gate.js";
 import { RuleBasedScanner } from "./scanner/memory-scanner.js";
+import { normalizeFactText } from "./normalize-fact-text.js";
 import {
   MemoryActionPort,
   MEMORY_ACTIONS_MAX_PER_TURN,
@@ -346,6 +347,21 @@ test("FIX1: forget X ('...is blue') then remember a connector-word REPHRASE ('..
   }
   expect(store.isForgottenNormalizedText("user's favorite color is blue")).toBe(false);
 
+  store.close();
+});
+
+// ─── hybrid-retrieval R2: D6e wasForgotten/clear also matches on the CANONICAL axis ──
+
+test("R2 D6e: a cross-language remember re-asserting a forgotten fact fires 'reassert' + clears via the canonical axis", () => {
+  const { store, port } = freshHarness();
+  const t = store.createThread();
+  // A prior forget recorded UK display + EN canonical.
+  store.recordForgottenFact({ raw_text: "мій улюблений колір синій", canonical: "favorite color blue", provenance: `thread:${t}`, actor: "agent", authored_by: "machine" });
+  const ctx = freshCtx(t);
+  const result = port.remember(ctx, { fact: "favorite color blue" }); // EN — norm ≠ UK row display; tool canonical == norm
+  expect(result.ok).toBe(true);
+  expect((result as { action?: string }).action).toBe("reassert"); // was-forgotten detected via canonical axis
+  expect(store.isForgottenNormalizedText(normalizeFactText("мій улюблений колір синій"), "favorite color blue")).toBe(false); // cleared
   store.close();
 });
 

@@ -211,7 +211,7 @@ export class WriteGate {
     // D6c (human un-forget leg, spec §3.6): a human authoring/editing a fact whose normalized
     // text matches a forgotten_facts row clears that row — the explicit human re-assertion
     // beats a stale forget-suppression record (precedence: human ▷ un-forget ▷ forget-record).
-    if (applied) this.store.clearForgottenByNormalizedText(normalizeFactText(newText));
+    if (applied) this.store.clearForgottenByNormalizedText(normalizeFactText(newText), normalizeFactText(newText));
     return applied;
   }
 

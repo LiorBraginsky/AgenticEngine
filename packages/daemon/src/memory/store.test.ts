@@ -8,6 +8,7 @@ import { WriteGate } from "./write-gate.js";
 import { RuleBasedScanner } from "./scanner/memory-scanner.js";
 import { REDACTION_MARKER } from "./schema.js";
 import { normalizeFactText } from "./providers/smart-distiller-provider.js";
+import { ANCHOR, SAME_CANONICAL, DIFFERENT_CANONICAL_RESIDUAL, NEGATIVE_CONTROLS } from "./rephrase-matrix.fixture.js";
 
 function freshStore() {
   const dir = mkdtempSync(join(tmpdir(), "mf01-"));
@@ -600,6 +601,64 @@ test("FIX1: clearForgottenByNormalizedText removes a row via connector-word reph
   const removed = store.clearForgottenByNormalizedText(normalizeFactText("favorite color blue"));
   expect(removed).toBe(1);
   expect(store.isForgottenNormalizedText(normalizeFactText("favorite color is blue"))).toBe(false);
+  store.close();
+});
+
+// ── hybrid-retrieval R2: two-axis match (canonical OR display) in the three helpers ──
+
+test("R2: canonical axis — every SAME_CANONICAL rephrase is forgotten-matched against a UK-display/EN-canonical row", () => {
+  const { store } = freshStore();
+  store.recordForgottenFact({ raw_text: ANCHOR.display, canonical: ANCHOR.canonical, provenance: "thread:x", actor: "agent", authored_by: "machine" });
+  for (const c of SAME_CANONICAL) {
+    expect(store.isForgottenNormalizedText(normalizeFactText(c.text), c.canonical)).toBe(true); // caught via canonical (or display)
+  }
+  expect(store.isForgottenNormalizedText(normalizeFactText(DIFFERENT_CANONICAL_RESIDUAL.text), DIFFERENT_CANONICAL_RESIDUAL.canonical)).toBe(false); // named residual
+  for (const n of NEGATIVE_CONTROLS) {
+    expect(store.isForgottenNormalizedText(normalizeFactText(n.text), n.canonical)).toBe(false);
+  }
+  store.close();
+});
+
+test("R2: display axis byte-carried — EN display variants match with canonical OMITTED (display-only unchanged)", () => {
+  const { store } = freshStore();
+  // Recorded in EN display, EN canonical.
+  store.recordForgottenFact({ raw_text: "favorite color is blue", canonical: "favorite color blue", provenance: "thread:x", actor: "agent", authored_by: "machine" });
+  for (const c of SAME_CANONICAL.filter((x) => x.axis === "display")) {
+    expect(store.isForgottenNormalizedText(normalizeFactText(c.text))).toBe(true); // one-arg → display-only, still works
+  }
+  store.close();
+});
+
+test("R2: legacy NULL-canonical row matches display-only (honest, no over-reach) even when a canonical is passed", () => {
+  const { store } = freshStore();
+  // A legacy row: canonical omitted → stored NULL. Display is EN.
+  store.recordForgottenFact({ raw_text: "favorite color is blue", provenance: "thread:x", actor: "agent", authored_by: "machine" });
+  // A cross-language re-derivation carries a matching canonical but a non-matching display →
+  // must NOT be suppressed (the canonical clause is skipped for a NULL-canonical row).
+  expect(store.isForgottenNormalizedText(normalizeFactText("мій улюблений колір синій"), "favorite color blue")).toBe(false);
+  // Same-display EN still matches (display axis).
+  expect(store.isForgottenNormalizedText(normalizeFactText("favorite color blue"), "favorite color blue")).toBe(true);
+  store.close();
+});
+
+test("R2: hasHumanFactWithNormalizedText matches a human fact via the CANONICAL axis (displays differ)", () => {
+  const { store } = freshStore();
+  const hid = crypto.randomUUID();
+  store.rawDb().query(
+    "INSERT INTO distilled_facts (id, fact, provenance, scope, expiry, confidence, authored_by, derived_at, distiller_version) VALUES (?,?,?,?,?,?,?,?,?)",
+  ).run(hid, "мій улюблений колір синій", "human-pin", "cross-thread", null, 1, "human", Date.now(), "manual");
+  store.rawDb().query("INSERT INTO fact_fts (fact_id, canonical, topic) VALUES (?, ?, ?)").run(hid, "favorite color blue", "");
+  // EN display differs from the UK human display, but canonicals match.
+  expect(store.hasHumanFactWithNormalizedText(normalizeFactText("favorite color is blue"), "favorite color blue")).toBe(true);
+  store.close();
+});
+
+test("R2: clearForgottenByNormalizedText clears a cross-language row via the CANONICAL axis", () => {
+  const { store } = freshStore();
+  store.recordForgottenFact({ raw_text: ANCHOR.display, canonical: ANCHOR.canonical, provenance: "thread:x", actor: "agent", authored_by: "machine" });
+  const removed = store.clearForgottenByNormalizedText(normalizeFactText("favorite color is blue"), "favorite color blue"); // EN display ≠ UK row display
+  expect(removed).toBe(1);
+  expect(store.isForgottenNormalizedText(normalizeFactText(ANCHOR.display), ANCHOR.canonical)).toBe(false);
   store.close();
 });
 

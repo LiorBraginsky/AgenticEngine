@@ -514,3 +514,18 @@ test("2C: human editFact to text X clears a matching forgotten_facts row (D6c un
   expect(store.isForgottenNormalizedText(normalizeFactText("the new text"))).toBe(false);
   store.close();
 });
+
+// ── hybrid-retrieval R2: D6c human un-forget clear widened to the canonical axis ──
+test("R2 D6c: a human editFact re-assertion clears a forgotten row on the display axis (human canonical == display)", () => {
+  const store = new MemoryStore({ dataDir: mkdtempSync(join(tmpdir(), "hr02-wg-")) });
+  const gate = new WriteGate(store, new RuleBasedScanner());
+  const id = store.insertFact({
+    fact: "placeholder", canonical: "placeholder", topics: [],
+    provenance: "thread:t", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine",
+  }, "seed");
+  store.recordForgottenFact({ raw_text: "favorite color is blue", canonical: "favorite color blue", provenance: "thread:t", actor: "agent", authored_by: "machine" });
+  const applied = gate.editFact(id, "favorite color blue", { actor: "user", authored_by: "human" });
+  expect(applied).toBe(true);
+  expect(store.isForgottenNormalizedText(normalizeFactText("favorite color is blue"))).toBe(false); // cleared via relaxed display key
+  store.close();
+});

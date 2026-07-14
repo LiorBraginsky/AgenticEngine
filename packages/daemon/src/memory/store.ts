@@ -1339,6 +1339,10 @@ export class MemoryStore {
    */
   async fetchCandidatesRanked(query: string): Promise<FactCandidate[]> {
     const total = (this.db.query("SELECT COUNT(*) AS n FROM distilled_facts").get() as { n: number }).n;
+    // NOTE (reviewer NIT-A1): the `!this.factRanker` half of this guard is production-DEAD —
+    // index.ts always constructs + injects a HybridRanker via setFactRanker at startup. It
+    // stays live for the migration script (no store wiring) and for tests exercising
+    // fetchCandidatesRanked without an injected ranker (below-cap delegation proof).
     if (total <= ALL_FACTS_CAP || !this.factRanker) return this.fetchCandidates(query);
     const hits = await this.factRanker.searchFacts(query, CANDIDATE_TOP_K);
     const out: FactCandidate[] = [];

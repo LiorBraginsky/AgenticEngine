@@ -66,7 +66,19 @@ export class HybridRanker implements FactCandidateRanker {
     const q = embedded?.[0];
     if (!q) return [];
     const rows = readVectors();
-    const scored = rows.map((r) => ({ id: r.id, rowid: r.rowid, sim: cosine(q, decodeVector(r.vector, r.dims)) }));
+    // NIT-5 (reviewer): a corrupt/truncated vector BLOB (on-disk corruption) would otherwise
+    // throw a RangeError out of decodeVector and fail the WHOLE distill; skip that one row
+    // (defensive, degrade-in-place) rather than let one bad row take down the cosine leg.
+    const scored: { id: string; rowid: number; sim: number }[] = [];
+    for (const r of rows) {
+      let vec: Float32Array;
+      try {
+        vec = decodeVector(r.vector, r.dims);
+      } catch {
+        continue;
+      }
+      scored.push({ id: r.id, rowid: r.rowid, sim: cosine(q, vec) });
+    }
     scored.sort((a, b) => (b.sim - a.sim) || (b.rowid - a.rowid)); // cosine DESC, rowid DESC (total order)
     return scored.slice(0, legK).map((s) => ({ id: s.id, rowid: s.rowid }));
   }

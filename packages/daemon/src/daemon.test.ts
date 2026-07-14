@@ -14,6 +14,9 @@ beforeAll(() => {
   topDataDir = mkdtempSync(join(tmpdir(), "daemon-top-"));
   process.env.AGENTIC_DATA_DIR = topDataDir;
   process.env.LLM_PROVIDER = process.env.LLM_PROVIDER ?? "mock";
+  // hybrid-retrieval chunk-03 (reviewer MINOR fix): pin lexical-only so this daemon boot
+  // never constructs a real LocalWasmEmbeddingProvider (ENOENT noise; CI never has the model).
+  process.env.EMBEDDING_PROVIDER = process.env.EMBEDDING_PROVIDER ?? "none";
   server = startDaemon(0); // ephemeral port — avoids clashing with a running dev daemon
   PORT = server.port!;
   topToken = new TokenStore(topDataDir).token();
@@ -93,6 +96,7 @@ describe("WS token gate (step 1)", () => {
     gateDataDir = mkdtempSync(join(tmpdir(), "daemon-gate-"));
     process.env.AGENTIC_DATA_DIR = gateDataDir;
     process.env.LLM_PROVIDER = "mock";
+    process.env.EMBEDDING_PROVIDER = process.env.EMBEDDING_PROVIDER ?? "none";
     gateServer = startDaemon(0);
     GATE_PORT = gateServer.port!;
     token = new TokenStore(gateDataDir).token();

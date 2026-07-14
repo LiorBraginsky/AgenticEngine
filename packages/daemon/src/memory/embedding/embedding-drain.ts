@@ -57,6 +57,21 @@ export class EmbeddingDrain {
   }
 
   /**
+   * Cancel any pending debounced `kick()` timer — idempotent, safe to call even when
+   * nothing is scheduled (including on a `null`-provider drain, where `kick()` never
+   * schedules one in the first place). Does NOT cancel an in-flight `drain()` call
+   * already running to completion; it only prevents a FUTURE scheduled drain from
+   * firing after this call. Wired into the daemon's shutdown path (reviewer MINOR fix)
+   * so no dangling `setTimeout` outlives a stopped server.
+   */
+  stop(): void {
+    if (this.timer !== null) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+  }
+
+  /**
    * Run the drain to completion: embed every currently-pending fact, then every
    * currently-pending message, for the provider's `modelId`. Single-flight — a `drain()`
    * call while one is already running does not run a second pass concurrently; it flags

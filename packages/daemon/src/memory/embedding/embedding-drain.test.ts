@@ -195,3 +195,34 @@ test("kick() coalesces rapid calls into one debounced drain that eventually embe
   expect(store.pendingFactEmbeddings(provider.modelId, 10)).toEqual([]);
   store.close();
 });
+
+// ── stop() — cancels a pending debounced kick (reviewer MINOR: drain teardown) ─────────
+
+test("stop() cancels a pending debounced kick() before it fires — the scheduled drain never runs", async () => {
+  const { store } = fresh();
+  const id = store.insertFact(baseFact(), "dumb-tail");
+  const provider = new FixtureEmbeddingProvider();
+  const drain = new EmbeddingDrain(store, provider, { debounceMs: 10 });
+
+  drain.kick();
+  drain.stop();
+
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  // The kicked drain never fired — the fact is still pending (stop() actually cancelled it,
+  // not just "happened to not run yet").
+  expect(store.pendingFactEmbeddings(provider.modelId, 10).map((r) => r.id)).toContain(id);
+  store.close();
+});
+
+test("stop() is idempotent and safe: no-op when nothing is scheduled, safe on a null-provider drain, safe to call twice", () => {
+  const { store } = fresh();
+
+  const nullDrain = new EmbeddingDrain(store, null);
+  expect(() => nullDrain.stop()).not.toThrow();
+  expect(() => nullDrain.stop()).not.toThrow();
+
+  const provider = new FixtureEmbeddingProvider();
+  const idleDrain = new EmbeddingDrain(store, provider);
+  expect(() => idleDrain.stop()).not.toThrow(); // nothing scheduled yet — still safe
+  store.close();
+});

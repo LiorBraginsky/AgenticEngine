@@ -335,6 +335,15 @@ export function startDaemon(
   // T2.3a: update boundPort to the actual OS-assigned port (matters when port=0).
   // server.port is number | undefined per Bun types; port=0 always resolves to a real port.
   if (server.port !== undefined) boundPort = server.port;
+  // hybrid-retrieval chunk-03 (reviewer MINOR fix): wrap server.stop so a debounced
+  // embeddingDrain.kick() timer never outlives the daemon. Bun's Server has no separate
+  // teardown hook, so wrapping .stop() is the seam — every caller (tests + the real
+  // process) already goes through it. Idempotent: drain.stop() clears at most one timer.
+  const rawStop = server.stop.bind(server);
+  server.stop = (closeActiveConnections?: boolean): Promise<void> => {
+    embeddingDrain.stop();
+    return rawStop(closeActiveConnections);
+  };
   return server;
 }
 

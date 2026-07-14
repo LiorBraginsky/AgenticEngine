@@ -46,6 +46,9 @@ beforeAll(async () => {
   sharedDataDir = mkdtempSync(join(tmpdir(), "mf05-t21a-"));
   process.env.AGENTIC_DATA_DIR = sharedDataDir;
   process.env.LLM_PROVIDER = "mock";
+  // hybrid-retrieval chunk-03 (reviewer MINOR fix): pin lexical-only so this daemon boot
+  // never constructs a real LocalWasmEmbeddingProvider (ENOENT noise; CI never has the model).
+  process.env.EMBEDDING_PROVIDER = process.env.EMBEDDING_PROVIDER ?? "none";
 
   // Seed a thread into the store BEFORE the daemon boots — same dataDir means
   // the daemon's MemoryStore will see this row without any race.

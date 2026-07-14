@@ -15,6 +15,9 @@ beforeAll(async () => {
   dataDir = mkdtempSync(join(tmpdir(), "cm02-multiturn-"));
   process.env.AGENTIC_DATA_DIR = dataDir;
   process.env.LLM_PROVIDER = "mock";
+  // hybrid-retrieval chunk-03 (reviewer MINOR fix): pin lexical-only so this daemon boot
+  // never constructs a real LocalWasmEmbeddingProvider (ENOENT noise; CI never has the model).
+  process.env.EMBEDDING_PROVIDER = process.env.EMBEDDING_PROVIDER ?? "none";
   const { startDaemon } = await import("./index.js");
   server = startDaemon(0);
   PORT = server.port!;

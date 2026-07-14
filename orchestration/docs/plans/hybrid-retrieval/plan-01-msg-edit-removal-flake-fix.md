@@ -1,6 +1,6 @@
 # Plan — hybrid-retrieval chunk 01: message-edit removal + D6c flake fix
 
-## Status: implementation complete (mechanical gate green; behavioral item rides chunk-06 demo)
+## Status: review-complete — ready-to-merge (reviewer-clean 0/0/0; mechanical gate green; behavioral item rides chunk-06 demo)
 
 **Chunk:** `orchestration/chunks-todo/hybrid-retrieval/01-message-edit-removal-and-flake-fix.md`
 **Spec:** `orchestration/docs/specs/2026-07-13-hybrid-retrieval.md` §3.7 R1 (message-edit removal) + §3.7 R3 (D6c flake + rowid hardening).
@@ -115,3 +115,16 @@ End state: **archive = read-only immutable history; memory (facts) = the editabl
 - **Verification:** `bun test` 702 pass / 0 fail (70 files); `bun run typecheck` 0 errors;
   `bun run lint:strict` 0 warnings/errors; `git diff main -- packages/protocol` and the
   mock-provider/test files both empty.
+- **Review (engine-reviewer vs main), commit `9a56796`:** VERDICT 0 blockers / 0 majors /
+  0 minors / 1 nit. All four frozen guardrails PASS (fact-edit untouched; `buildEditControl`
+  intact — only the 4-line doc comment changed; ADR-0015 B1 machinery unchanged; removal
+  complete + consistent, message body → 400). R3 direction-matching confirmed on all three
+  reads; RED-first re-proven by the reviewer (revert tie-break → D6c returns oldest rows).
+  The nit (stale `history-page.ts` write-actions comment implying a fact-edit affordance
+  history.html never had) fixed in `9a56796`.
+- **Orchestrator independent gate (final branch state):** re-ran typecheck 0 / lint:strict 0 /
+  `bun test` 702 pass·0 fail / frozen byte-diff 0 — not trusting the worker paste (§6.2).
+  Tree clean. **Verified-done (mechanical tier) satisfied.**
+- **Merge posture (crawl §11.4):** DONE ready-to-merge — do NOT self-merge; the conductor
+  re-verifies on a clean checkout + independent reviewer, then merges. Behavioral DoD (item 6)
+  is NOT closed here — it rides chunk-06's live demo (spec §5 item 4).

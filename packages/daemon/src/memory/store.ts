@@ -1124,7 +1124,7 @@ export class MemoryStore {
   readCanonicalForFact(id: string): string | null {
     const row = this.db
       .query("SELECT canonical FROM fact_fts WHERE fact_id = ?")
-      .get(id) as { canonical: string } | null;
+      .get(id) as { canonical: string | null } | null;
     return row?.canonical ?? null;
   }
 

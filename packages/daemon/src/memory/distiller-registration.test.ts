@@ -1905,6 +1905,9 @@ describe("hybrid-retrieval chunk-02 R2: two-axis D6b consult (canonical closes t
   });
 
   test("R2(iv) precedence byte-carry: a HUMAN fact matching on the CANONICAL axis blocks suppression (op lands)", async () => {
+    // NOTE: this does not RED on baseline (display-only isForgotten is already false for the UK
+    // row, so suppression never fires pre-impl). Post-impl it guards the CANONICAL-axis widening of
+    // hasHumanFactWithNormalizedText — it fails if that call drops back to one-arg (display-only).
     const { store } = freshStore();
     const hook = new ConsolidationHook(store);
     const scanner = new RuleBasedScanner();

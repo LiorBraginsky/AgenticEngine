@@ -1,6 +1,6 @@
 ---
 title: Hybrid retrieval (2d) — BM25 + embeddings via RRF, memory_search read tool, and the committed riders
-status: draft
+status: accepted — Lior 2026-07-14 (§5.2 one-event package via AskUserQuestion, ALL FOUR §0 points AS RECOMMENDED: 0.1 local-first WASM + spike ladder · 0.2 memory_search read-only · 0.3 ADR-0016 d7 rider · 0.4 ADR-0017 accepted)
 date: 2026-07-13
 deciders: [lior]
 feeds: hybrid-retrieval

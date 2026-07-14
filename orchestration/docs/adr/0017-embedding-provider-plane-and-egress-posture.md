@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-07-13
 deciders: [lior]
 tags: [adr, memory, retrieval, embeddings, provider-plane, privacy, egress, hybrid]
@@ -9,9 +9,9 @@ tags: [adr, memory, retrieval, embeddings, provider-plane, privacy, egress, hybr
 
 ## Status
 
-`proposed` — **hard-to-reverse tier (PIPELINE Finding #5): full §5.2 gate, no async shortcut.**
-Rides the hybrid-retrieval (2d) decompose PR together with
-[[../specs/2026-07-13-hybrid-retrieval]]; **Lior accepts BOTH at the same gate event** (spec §0.4).
+`accepted` — **by Lior 2026-07-14 at the decompose-PR gate** (spec §0.4 of the one-event package
+via AskUserQuestion; hard-to-reverse tier honored — full §5.2, no async shortcut), together with
+[[../specs/2026-07-13-hybrid-retrieval]] (accepted same event, all four §0 points as recommended).
 *History: agent-authored during work (the hybrid-retrieval frontier decompose pass, PIPELINE §11,
 2026-07-13; conductor ruling of record: bus q#017 — all-as-recommended + 4 riders). Tier rationale:
 a NEW provider plane + a NAMED future egress lane for personal memory content is closer to

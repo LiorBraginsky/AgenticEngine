@@ -174,17 +174,16 @@ test("deleteMessageDerived removes both message_embeddings and message_fts rows 
   const afterFts = store.rawDb().query("SELECT COUNT(*) AS n FROM message_fts WHERE message_id = ?").get(mid!) as { n: number };
   expect(afterEmb.n).toBe(0);
   expect(afterFts.n).toBe(0);
-  // NOTE: WriteGate.forget's scrub tx does not yet CALL deleteMessageDerived — that wiring
-  // is Task 5 (write-gate.ts). This test proves the primitive itself; the count-invariant
-  // through an actual WriteGate.forget scrub belongs in Task 5's suite (plan Step 4.4
-  // cross-reference: "the scrub-path assertion can be added here after Task 5, or lives in
-  // Task 5's suite").
+  // This test proves the primitive itself, called directly. The count-invariant through an
+  // ACTUAL WriteGate.forget scrub (Task 5 wired deleteMessageDerived into forget's scrub tx)
+  // is covered by the "in-tx re-check" test below (updated for Task 5) and by
+  // embedding-drain.test.ts's scrub-mid-drain-interleave test.
   store.close();
 });
 
 // ── In-tx re-check (the RED-without-recheck proof, spec [grill #1]) ──────────────────
 
-test("upsertMessageEmbedding re-checks tombstone status INSIDE its own tx — a scrubbed message is skipped, not written", () => {
+test("upsertMessageEmbedding re-checks tombstone status INSIDE its own tx — a scrubbed message is skipped, not written (Task 5 update: gate.forget's scrub tx now ALSO cleans the pre-existing row via deleteMessageDerived — the count-invariant is 0, both legs)", () => {
   const { store, gate } = fresh();
   const t = store.createThread();
   const [mid] = gate.appendTurn(t, [{ role: "user", content: "secret token abc" }], "s1", CTX);
@@ -194,20 +193,24 @@ test("upsertMessageEmbedding re-checks tombstone status INSIDE its own tx — a 
   const before = store.rawDb().query("SELECT COUNT(*) AS n FROM message_embeddings WHERE message_id = ?").get(mid!) as { n: number };
   expect(before.n).toBe(1);
 
-  // Scrub lands (simulating the drain's scan having read the row BEFORE this scrub).
+  // Scrub lands (simulating the drain's scan having read the row BEFORE this scrub). As of
+  // Task 5's write-gate wiring, this scrub tx ALSO calls deleteMessageDerived — the
+  // pre-existing message_embeddings/message_fts rows are gone atomically with the tombstone.
   gate.forget(mid!, CTX, "user requested");
 
   // A second upsert attempt (as if the drain's stale scan result reached the upsert AFTER
-  // the scrub) must be refused — this is the guard that closes the scrub-mid-drain race.
-  // Without the in-tx re-check (i.e. an implementation that only did a blind INSERT OR
-  // REPLACE), this call would incorrectly re-write a vector of now-scrubbed content and
-  // this assertion would fail.
+  // the scrub) must STILL be refused independently — this is the guard that closes the
+  // scrub-mid-drain race even in a hypothetical where cleanup didn't run. Without the in-tx
+  // re-check (i.e. an implementation that only did a blind INSERT OR REPLACE), this call
+  // would incorrectly re-write a vector of now-scrubbed content and this assertion would fail.
   expect(store.upsertMessageEmbedding(mid!, MODEL_A, DIMS, vec(2))).toBe("skipped");
   const after = store.rawDb().query("SELECT COUNT(*) AS n FROM message_embeddings WHERE message_id = ?").get(mid!) as { n: number };
-  // The pre-scrub vector is untouched by the refused second call (still 1, not 0 — this
-  // test only proves the RE-CHECK refuses new writes; the scrub's own cleanup of the
-  // pre-existing row is deleteMessageDerived's job, wired in Task 5).
-  expect(after.n).toBe(1);
+  const afterFts = store.rawDb().query("SELECT COUNT(*) AS n FROM message_fts WHERE message_id = ?").get(mid!) as { n: number };
+  // Count-invariant (now that write-gate wiring exists, Task 5): zero orphan rows in EITHER
+  // leg — deleteMessageDerived's cleanup removed the pre-existing row, and the re-check
+  // independently refused the second call from resurrecting one.
+  expect(after.n).toBe(0);
+  expect(afterFts.n).toBe(0);
   store.close();
 });
 

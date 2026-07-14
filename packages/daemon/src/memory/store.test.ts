@@ -910,6 +910,16 @@ test("hybrid-04: searchFactsFts returns ranked ids+rowid with a total tie-break"
   store.close();
 });
 
+test("hybrid-04 MINOR-A3: searchMessagesFts returns ranked ids+rowid with a total tie-break (archive leg, CI coverage)", () => {
+  const { store } = freshStore();
+  const t = store.createThread();
+  const [mid] = store.appendMessages(t, [{ role: "user", content: "my favorite color is blue" }], "s1");
+  const hits = store.searchMessagesFts(toFtsOrQuery("favorite color blue"), 20);
+  expect(hits.some((h) => h.id === mid)).toBe(true);
+  expect(typeof hits[0]!.rowid).toBe("number");
+  store.close();
+});
+
 test("hybrid-04: fetchCandidatesRanked below-cap delegates to the sync all-facts path (byte-identical)", async () => {
   const { store } = freshStore();
   const id = store.insertFact({ fact: "user name is lior", canonical: "user name lior", topics: [], provenance: "thread:t", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" }, "seed");

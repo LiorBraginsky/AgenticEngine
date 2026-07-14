@@ -11,6 +11,7 @@
     "keychain-prod-probe": "bun run scripts/keychain-prod-probe.ts",
     "smart-distiller-probe": "bun run scripts/smart-distiller-probe.ts",
     "migrate-distiller-v2": "bun run scripts/migrate-distiller-v2.ts",
+    "backfill-embeddings": "AGENTIC_EMBED_AUTODOWNLOAD=1 bun run scripts/backfill-embeddings.ts",
     "memory-demo-harness": "bun run scripts/memory-demo-harness.ts",
     "embed-probe": "AGENTIC_EMBED_AUTODOWNLOAD=1 bun run scripts/embed-probe.ts"
   },

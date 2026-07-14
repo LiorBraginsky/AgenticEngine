@@ -529,6 +529,44 @@ test("hasHumanFactWithNormalizedText returns true only when a human fact matches
   store.close();
 });
 
+// ── hybrid-retrieval R2 (chunk-02): forgotten_facts.canonical column + write path ──
+
+test("R2: fresh store has forgotten_facts.canonical; recordForgottenFact round-trips it", () => {
+  const { store } = freshStore();
+  const cols = store.rawDb().query("PRAGMA table_info(forgotten_facts)").all() as { name: string }[];
+  expect(cols.some((c) => c.name === "canonical")).toBe(true);
+  store.recordForgottenFact({
+    raw_text: "мій улюблений колір синій", canonical: "favorite color blue",
+    provenance: "thread:x", actor: "agent", authored_by: "machine",
+  });
+  const row = store.rawDb().query("SELECT canonical FROM forgotten_facts").get() as { canonical: string | null };
+  expect(row.canonical).toBe("favorite color blue");
+  store.close();
+});
+
+test("R2: an existing pre-R2 store gains canonical on construction (PRAGMA-guarded, idempotent, no backfill)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "hr02-legacy-"));
+  const legacy = new Database(join(dir, "memory.sqlite"));
+  legacy.exec(`CREATE TABLE forgotten_facts (
+    id TEXT PRIMARY KEY, normalized_text TEXT NOT NULL, raw_text TEXT NOT NULL,
+    provenance TEXT, actor TEXT, reason TEXT, authored_by TEXT NOT NULL, created_at INTEGER NOT NULL);`);
+  legacy.query("INSERT INTO forgotten_facts (id, normalized_text, raw_text, provenance, actor, reason, authored_by, created_at) VALUES (?,?,?,?,?,?,?,?)")
+    .run(crypto.randomUUID(), normalizeFactText("legacy fact"), "legacy fact", "thread:x", "agent", null, "machine", Date.now());
+  legacy.close();
+
+  const store = new MemoryStore({ dataDir: dir });
+  const cols = store.rawDb().query("PRAGMA table_info(forgotten_facts)").all() as { name: string }[];
+  expect(cols.filter((c) => c.name === "canonical").length).toBe(1);
+  const row = store.rawDb().query("SELECT canonical FROM forgotten_facts WHERE raw_text = 'legacy fact'").get() as { canonical: string | null };
+  expect(row.canonical).toBeNull(); // no fabricated backfill
+  store.close();
+
+  const store2 = new MemoryStore({ dataDir: dir }); // idempotent: second construct must not throw / must not double-add
+  const cols2 = store2.rawDb().query("PRAGMA table_info(forgotten_facts)").all() as { name: string }[];
+  expect(cols2.filter((c) => c.name === "canonical").length).toBe(1);
+  store2.close();
+});
+
 // ── 2c chunk-01 review FIX 1: d5 consult must match on the SAME relaxed key
 // (dedupConnectorKey) the dedup that runs one line later already uses — a
 // connector-word rephrase ("favorite color is blue" vs "favorite color blue")

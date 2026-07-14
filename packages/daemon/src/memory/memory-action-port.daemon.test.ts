@@ -79,6 +79,21 @@ test("forget: durably deletes the row, cleans fact_fts/fact_topics, records forg
   store.close();
 });
 
+test("R2: forget writes the fact's fact_fts.canonical into forgotten_facts.canonical (captured before the delete)", () => {
+  const { store, port } = freshHarness();
+  const t = store.createThread();
+  const id = store.insertFact({
+    fact: "мій улюблений колір синій", canonical: "favorite color blue", topics: ["#about-user"],
+    provenance: `thread:${t}`, scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine",
+  }, "seed");
+  const ctx = freshCtx(t, new Map([[1, id]]));
+  const result = port.forget(ctx, { ordinal: 1, expected_text: "мій улюблений колір синій" });
+  expect(result.ok).toBe(true);
+  const row = store.rawDb().query("SELECT canonical FROM forgotten_facts").get() as { canonical: string | null };
+  expect(row.canonical).toBe("favorite color blue");
+  store.close();
+});
+
 // ─── nit-fold: normalizeExpectedText must not strip a digit-leading fact ───
 
 test("nit-fold: forget a digit-LEADING fact ('3.14 is pi') with its exact text → ok:true, row gone", () => {

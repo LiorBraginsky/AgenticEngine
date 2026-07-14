@@ -91,8 +91,10 @@ CREATE INDEX IF NOT EXISTS idx_quarantine_target ON quarantine_markers(target_id
 
 CREATE TABLE IF NOT EXISTS forgotten_facts (
   id               TEXT PRIMARY KEY,
-  normalized_text  TEXT NOT NULL,   -- normalizeFactText(raw) — the load-bearing match key (Layer-T)
+  normalized_text  TEXT NOT NULL,   -- normalizeFactText(raw) — the DISPLAY match key (Layer-T)
   raw_text         TEXT NOT NULL,   -- what the user saw + forgot (Layer-X exclusion + display)
+  canonical        TEXT,            -- hybrid-retrieval R2: the fact's fact_fts.canonical at forget time
+                                     --   (nullable; legacy rows = NULL → display-only match, no backfill)
   provenance       TEXT,            -- as-forgotten (opportunistic Layer-P + audit)
   actor            TEXT,
   reason           TEXT,

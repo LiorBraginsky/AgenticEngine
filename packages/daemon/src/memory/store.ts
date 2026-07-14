@@ -72,6 +72,9 @@ export interface QuarantineMarkerInput {
 /** Minimal input to record a forgotten fact (chunk 04 — ADR-0015 decision 2). */
 export interface ForgottenFactInput {
   raw_text: string;
+  /** hybrid-retrieval R2: the fact's fact_fts.canonical (English match-key) at forget time.
+   *  Omitted/undefined → stored NULL (legacy / no canonical known → display-only match). */
+  canonical?: string | null;
   provenance: string | null;
   actor: string;
   reason?: string;
@@ -180,6 +183,7 @@ export class MemoryStore {
     this.db = new Database(join(opts.dataDir, "memory.sqlite"));
     this.db.exec("PRAGMA journal_mode = WAL;");
     this.db.exec(SCHEMA_DDL);
+    this.ensureForgottenFactsCanonicalColumn(); // hybrid-retrieval R2 [grill #5]: always-run guarded add for existing stores
   }
 
   /**
@@ -339,12 +343,13 @@ export class MemoryStore {
     const normalized = normalizeFactText(e.raw_text);
     this.db
       .query(
-        "INSERT INTO forgotten_facts (id, normalized_text, raw_text, provenance, actor, reason, authored_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO forgotten_facts (id, normalized_text, raw_text, canonical, provenance, actor, reason, authored_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .run(
         crypto.randomUUID(),
         normalized,
         e.raw_text,
+        e.canonical ?? null,
         e.provenance ?? null,
         e.actor,
         e.reason ?? null,
@@ -1071,6 +1076,16 @@ export class MemoryStore {
     ).get(id) as DistilledFactRow | null;
   }
 
+  /** hybrid-retrieval R2: read the fact_fts.canonical match key for a fact id (null if no
+   *  fact_fts row — a legacy fact predating v2-02). MUST be read BEFORE any delete: the
+   *  trg_distilled_facts_ad AFTER DELETE trigger removes the fact_fts row. */
+  readCanonicalForFact(id: string): string | null {
+    const row = this.db
+      .query("SELECT canonical FROM fact_fts WHERE fact_id = ?")
+      .get(id) as { canonical: string } | null;
+    return row?.canonical ?? null;
+  }
+
   /**
    * v2-05 migration (§3.8): rebuild fact_fts + fact_topics for every SURVIVING
    * human-authored fact. Human facts predate v2-02's derived tables, so they may
@@ -1115,6 +1130,21 @@ export class MemoryStore {
     this.db.exec("ALTER TABLE thread_distill_state ADD COLUMN distilled_through_turn INTEGER NOT NULL DEFAULT -1;");
     this._distilledThroughTurnColumnPresent = null;
     return true;
+  }
+
+  /**
+   * hybrid-retrieval R2 wiring [grill #5]: add the nullable `canonical` column to a pre-R2
+   * live `forgotten_facts`. Mirrors ensureDistilledThroughTurnColumn's PRAGMA mechanics BUT is
+   * wired to run ALWAYS from the constructor (that precedent is migration-script-only) — one
+   * nullable column needs no separate script. Idempotent: a fresh store already has the column
+   * via SCHEMA_DDL (PRAGMA finds it → no-op); an existing store lacks it → one cheap ALTER.
+   * NOT NULL/DEFAULT deliberately omitted so legacy rows read back NULL (honest "no canonical
+   * known" marker — no backfill fabrication).
+   */
+  private ensureForgottenFactsCanonicalColumn(): void {
+    const cols = this.db.query("PRAGMA table_info(forgotten_facts)").all() as { name: string }[];
+    if (cols.some((c) => c.name === "canonical")) return;
+    this.db.exec("ALTER TABLE forgotten_facts ADD COLUMN canonical TEXT;");
   }
 
   /** Delete one fact by id. The AFTER DELETE trigger cleans fact_fts + fact_topics.

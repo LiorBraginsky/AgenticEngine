@@ -94,6 +94,11 @@ export class MemoryActionPort {
       });
     }
 
+    // hybrid-retrieval R2: capture the fact's canonical BEFORE the forget delete — the
+    // trg_distilled_facts_ad AFTER DELETE trigger removes the fact_fts row, so it is
+    // unreadable after gate.forgetFactById below.
+    const canonical = this.store.readCanonicalForFact(factId);
+
     this.gate.forgetFactById(factId, { actor: "agent", authored_by: "machine" }, input.reason);
 
     if (this.store.readFactById(factId) !== null) {
@@ -107,6 +112,7 @@ export class MemoryActionPort {
 
     this.store.recordForgottenFact({
       raw_text: row.fact,
+      canonical,
       provenance: row.provenance,
       actor: "agent",
       authored_by: "machine",

@@ -20,7 +20,7 @@ import type { ShellState } from "../memory-liveness.js";
 import type { MemoryApiDeps } from "./memory-api.js";
 import { fetchThreads, fetchThread } from "./memory-api.js";
 import { renderThreadList, renderMessages, renderFacts, renderEvents, renderAuditEvents, renderState } from "./render.js";
-import { forgetFact, editMessage, editFact, type WriteResult } from "./memory-write.js";
+import { forgetFact, editFact, type WriteResult } from "./memory-write.js";
 
 export interface MemoryControllerEls {
   listView: HTMLElement;
@@ -55,11 +55,6 @@ export function createMemoryController(deps: MemoryControllerDeps): MemoryContro
   // observed state so repeated same-state polls are a no-op (never re-fetch every 3s).
   let currentView: ViewState = { kind: "list" };
   let lastLiveness: ShellState | undefined;
-
-  // chunk-03 (ACT): messages the user edited THIS session → an "edited by you" tag on re-render.
-  // The wire has no persistent per-message correction flag (plan "## Reality check" §2); the
-  // corrected TEXT is persistent via the daemon's readThreadArchive COALESCE.
-  const editedIds = new Set<string>();
 
   // Generation guard (reviewer minor, Demo-1 fix follow-up): loads are async but
   // applyDownState writes synchronously. Without this, a stale loadThread/loadList that
@@ -99,10 +94,7 @@ export function createMemoryController(deps: MemoryControllerDeps): MemoryContro
       renderState(els.eventsEl, DOWN); renderState(els.actionsEl, DOWN);
       return;
     }
-    renderMessages(els.messagesEl, r.data.messages ?? [], {
-      onEdit: (messageId, newText) => void editAction(messageId, newText),
-      editedIds,
-    });
+    renderMessages(els.messagesEl, r.data.messages ?? []);
     renderFacts(els.factsEl, r.data.distilledFacts ?? [], openThread, {
       onForget: (factId) => void forgetAction(factId),
       onEditFact: (factId, newText) => void editFactAction(factId, newText), // chunk-05
@@ -174,15 +166,10 @@ export function createMemoryController(deps: MemoryControllerDeps): MemoryContro
     handleWriteResult(await forgetFact(deps.api, factId));
   }
 
-  async function editAction(messageId: string, newText: string): Promise<void> {
-    const r = await editMessage(deps.api, messageId, newText);
-    if (r.kind === "ok") editedIds.add(messageId); // mark THIS session's edit for the tag
-    handleWriteResult(r);
-  }
-
   // chunk-05 (FACT-EDIT): NO session set for the badge — data-driven. On `ok`, refreshCurrentView()
   // re-fetches and the fact returns authored_by:"human" from the daemon, so the "yours" badge is
-  // durable (survives restart), unlike the session-local message editedIds tag above.
+  // durable (survives restart). Facts are the ONLY editable surface post message-edit-removal
+  // (hybrid-retrieval chunk-01, spec §3.7 R1).
   async function editFactAction(factId: string, newText: string): Promise<void> {
     handleWriteResult(await editFact(deps.api, factId, newText));
   }

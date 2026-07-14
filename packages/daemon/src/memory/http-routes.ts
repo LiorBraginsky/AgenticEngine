@@ -10,8 +10,14 @@
  * T2.1c: write routes — POST /memory/edit + POST /memory/forget, bearer-token gated.
  * chunk-05 FACT-EDIT: POST /memory/edit gained an additive `target_type:"fact"` branch
  *   (mirrors the forget route's uuid `fact_id` discriminator) — updates a distilled_facts
- *   row's TEXT and stamps authored_by:"human" (ADR-0012 5a). The message-edit path
- *   (target_type absent) is byte-preserved.
+ *   row's TEXT and stamps authored_by:"human" (ADR-0012 5a).
+ * hybrid-retrieval chunk-01 (spec §3.7 R1, ADR-0012 rider Ruling 1 removal-note): the
+ *   message-edit branch (target_type absent or "message") is REMOVED — a message-shaped body
+ *   now returns 400 bad_body (same posture as the forget route's removed message branch).
+ *   `target_type:"fact"` is the ONLY accepted shape; the underlying `WriteGate.edit` /
+ *   `mutations` kind `'correction'` / `readThreadArchive` COALESCE machinery is UNCHANGED
+ *   (ADR-0015 B1) — only this HTTP entry point + the Hatch.edit façade (retired, dead code)
+ *   are gone.
  * GET /history.html is T2.2a: static shell open on loopback (Host-guard only); all data
  *   rendering is gated in-page (token in a JS var, paste-UX).
  *
@@ -22,8 +28,8 @@
  *
  * 409 (refused) is reserved-but-unreachable on this human-only path. The 5e guard only
  * refuses machine ctx, which we never send from HTTP. A 409 path goes live the moment a
- * non-human HTTP actor is introduced (a later ADR); Hatch.edit/forget signatures will need
- * to surface the boolean refusal at that point. Per plan §217-244 BINDING decision.
+ * non-human HTTP actor is introduced (a later ADR); Hatch.editFact/forgetFactById signatures
+ * will need to surface the boolean refusal at that point. Per plan §217-244 BINDING decision.
  *
  * CORS seam (chunk-01, memory-transparency-ui): the exported `handleMemoryHttp` now wraps
  * `route()` (the original dispatch body, unchanged) with a narrow CORS layer so the overlay
@@ -231,12 +237,17 @@ async function handleEdit(req: Request, deps: MemoryHttpDeps): Promise<Response>
   const parsed = await parseBody(req);
   if (!parsed.ok) return Response.json({ error: "bad_body" }, { status: 400 });
 
-  const { target_type, target, replacement, reason, fact_id } = parsed.data;
+  const { target_type, replacement, reason, fact_id } = parsed.data;
   const reasonStr = typeof reason === "string" ? reason : undefined;
 
   // chunk-05 FACT-EDIT: target_type:"fact" edits a distilled_facts row's TEXT + stamps
   // authored_by='human' (ADR-0012 5a). Mirrors the forget route's uuid fact_id discriminator.
   // Security-adjacent: sits INSIDE the token gate above, reuses HTTP_CTX (fixed human).
+  //
+  // hybrid-retrieval chunk-01 (spec §3.7 R1, ADR-0012 rider Ruling 1 removal-note): the
+  // MESSAGE-edit branch (target_type absent or "message") is REMOVED. Archive is read-only
+  // immutable history; facts are the ONLY editable surface. Same posture as the forget route's
+  // removed message branch (:216-217 above) — target_type:"fact" is the ONLY accepted shape.
   if (target_type === "fact") {
     if (typeof replacement !== "string" || replacement === "") {
       return Response.json({ error: "bad_body" }, { status: 400 });
@@ -255,19 +266,8 @@ async function handleEdit(req: Request, deps: MemoryHttpDeps): Promise<Response>
     }
   }
 
-  // MESSAGE-edit (blessed as-is, chunk-03): target_type absent or "message". UNCHANGED.
-  if (typeof target !== "string" || !target) {
-    return Response.json({ error: "bad_body" }, { status: 400 });
-  }
-  if (typeof replacement !== "string") {
-    return Response.json({ error: "bad_body" }, { status: 400 });
-  }
-  try {
-    deps.hatch.edit(target, replacement, HTTP_CTX, reasonStr);
-    return new Response(null, { status: 204 });
-  } catch (err: unknown) {
-    return mapWriteError(err);
-  }
+  // target_type:"message", missing, or any unrecognised value → 400 bad_body
+  return Response.json({ error: "bad_body" }, { status: 400 });
 }
 
 // ─── Shared utilities ─────────────────────────────────────────────────────────
@@ -291,12 +291,15 @@ async function parseBody(req: Request): Promise<ParseResult> {
 /**
  * Map thrown errors from Hatch write operations to HTTP responses.
  *
- * Real error conditions:
- *   1. "not found" throw from WriteGate.threadOf → 404 target_not_found
- *      (handleEdit path, when the target message UUID is not in the messages table)
+ * Error conditions:
+ *   1. "not found" throw from WriteGate.threadOf → 404 target_not_found. hybrid-retrieval
+ *      chunk-01 (spec §3.7 R1): the message-edit HTTP branch (the one production path that
+ *      could reach this via threadOf) is REMOVED; `hatch.editFact`/`hatch.forgetFactById`
+ *      (the surviving callers below) never throw it — kept as defense-in-depth, not
+ *      currently reachable from either write route.
  *   2. UUID-shape seam invariant throw from store.tombstoneFact → 400 bad_target_shape
  *      (defensive — normally unreachable via intent-dispatch: the fact path never calls
- *      tombstoneFact; the message path routes through WriteGate.forget which calls threadOf)
+ *      tombstoneFact; kept as defense-in-depth for the same reason as (1)).
  *   3. Everything else → log + 500 internal
  *
  * NOTE: these regexes are coupled to the exact throw messages in write-gate.ts / store.ts:

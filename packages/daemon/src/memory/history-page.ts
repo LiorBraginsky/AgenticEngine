@@ -103,14 +103,10 @@ export const HISTORY_HTML = `<!DOCTYPE html>
     .btn-forget:hover { background: #fff0f0; }
     .btn-forget[disabled] { border-color: #ddd; color: #aaa; cursor: default; }
     .btn-forget[disabled]:hover { background: #fff; }
-    .btn-edit { border-color: #70a0e0; color: #2060b0; }
-    .btn-edit:hover { background: #f0f4ff; }
     .btn-danger { border-color: #c03030; color: #c03030; background: #fff0f0; }
     .btn-danger:hover { background: #ffe0e0; }
     .btn-cancel { border-color: #999; color: #555; }
     .btn-cancel:hover { background: #f0f0f0; }
-    .btn-save { border-color: #2a7a2a; color: #2a7a2a; }
-    .btn-save:hover { background: #f0fff0; }
     .inline-confirm { display: inline; margin-left: 4px; }
     .inline-hint { font-size: 12px; color: #c03030; margin-left: 6px; }
     .inline-unlock-hint {
@@ -123,20 +119,6 @@ export const HISTORY_HTML = `<!DOCTYPE html>
       padding: 2px 8px;
       margin-left: 6px;
     }
-    .inline-editor {
-      margin-top: 6px;
-    }
-    .inline-editor textarea {
-      width: 100%;
-      min-height: 60px;
-      font-family: system-ui, -apple-system, sans-serif;
-      font-size: 13px;
-      padding: 5px 8px;
-      border: 1px solid #70a0e0;
-      border-radius: 4px;
-      resize: vertical;
-    }
-    .inline-editor-actions { margin-top: 4px; }
     .unlock-panel { background: #fffbe6; border-color: #f0d060; }
     .unlock-hint { font-size: 12px; color: #888; margin-top: 6px; }
     .token-input {
@@ -166,7 +148,7 @@ export const HISTORY_HTML = `<!DOCTYPE html>
   <!-- Unlock writes section: token is held in a JS variable only, never web storage -->
   <div class="panel unlock-panel" id="unlock-section">
     <h2>Unlock writes</h2>
-    <p>Paste your auth token to enable edit and forget actions.</p>
+    <p>Paste your auth token to enable forget actions.</p>
     <input
       type="password"
       class="token-input"
@@ -361,23 +343,11 @@ export const HISTORY_HTML = `<!DOCTYPE html>
         contentEl.className = "message-content";
         contentEl.textContent = m.content || "";
 
-        var actions = document.createElement("div");
-        actions.style.marginTop = "4px";
-
-        // v2-04: per-message "Forget" button removed (D-V6a-bis). Fact-forget is the
-        // user's ONLY forget handle. The source conversation stays in the lossless archive.
-        var editBtn = document.createElement("button");
-        editBtn.className = "btn btn-edit";
-        editBtn.textContent = "Edit";
-        editBtn.addEventListener("click", (function (msgId, curContent, btn, r) {
-          return function () { doEdit(msgId, curContent, threadId, btn, r); };
-        })(m.id, m.content, editBtn, row));
-
-        actions.appendChild(editBtn);
-
+        // v2-04: per-message "Forget" button removed (D-V6a-bis). hybrid-retrieval chunk-01
+        // (spec §3.7 R1): the per-message "Edit" button is ALSO removed — archive is read-only
+        // immutable history; fact-forget/fact-edit (below) are the ONLY write actions left.
         row.appendChild(roleEl);
         row.appendChild(contentEl);
-        row.appendChild(actions);
         messagesContainer.appendChild(row);
       });
     }
@@ -544,76 +514,9 @@ export const HISTORY_HTML = `<!DOCTYPE html>
 
     // v2-04: option-B (also-delete-source-messages) removed end-to-end (D-V6a-bis).
     // The "Forget fact" button uses doForget with target_type:"fact" only.
-
-    // doEdit: inline textarea editor.
-    // Clicking Edit reveals a textarea pre-filled with current content + Save/Cancel.
-    function doEdit(msgId, currentContent, threadId, editBtn, row) {
-      if (!_authToken) {
-        showUnlockHint(editBtn);
-        return;
-      }
-      // If editor already open for this row, ignore
-      if (row.querySelector(".inline-editor")) return;
-
-      editBtn.disabled = true;
-
-      var editorDiv = document.createElement("div");
-      editorDiv.className = "inline-editor";
-
-      var ta = document.createElement("textarea");
-      ta.textContent = currentContent || "";
-
-      var actionsDiv = document.createElement("div");
-      actionsDiv.className = "inline-editor-actions";
-
-      var saveBtn = document.createElement("button");
-      saveBtn.className = "btn btn-save";
-      saveBtn.textContent = "Save";
-
-      var cancelBtn = document.createElement("button");
-      cancelBtn.className = "btn btn-cancel";
-      cancelBtn.style.marginLeft = "6px";
-      cancelBtn.textContent = "Cancel";
-
-      actionsDiv.appendChild(saveBtn);
-      actionsDiv.appendChild(cancelBtn);
-      editorDiv.appendChild(ta);
-      editorDiv.appendChild(actionsDiv);
-      row.appendChild(editorDiv);
-      ta.focus();
-
-      var closeEditor = function () {
-        editBtn.disabled = false;
-        if (editorDiv.parentNode) editorDiv.parentNode.removeChild(editorDiv);
-      };
-
-      cancelBtn.addEventListener("click", closeEditor);
-
-      saveBtn.addEventListener("click", function () {
-        var replacement = ta.value;
-        saveBtn.disabled = true;
-        saveBtn.textContent = "Saving…";
-
-        fetch("/memory/edit", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": "Bearer " + _authToken,
-          },
-          body: JSON.stringify({ target: msgId, replacement: replacement, reason: "hatch-edit" }),
-        }).then(function (r) {
-          if (r.status === 204) {
-            loadThread(threadId);
-          } else if (r.status === 401) {
-            setStatus("401 — unlock first or bad token.", false);
-            closeEditor();
-          } else {
-            setStatus("Error: " + r.status, false);
-            closeEditor();
-          }
-        });
-      });
-    }
+    // hybrid-retrieval chunk-01 (spec §3.7 R1): doEdit (the message-edit inline textarea
+    // editor) is REMOVED — archive is read-only immutable history; fact-forget above is
+    // the ONLY write action left in history.html.
 
     // showUnlockHint: non-blocking inline message when writes are locked.
     // Highlights the unlock section + shows a transient message near the button.

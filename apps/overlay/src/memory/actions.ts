@@ -7,7 +7,9 @@
  * agent releasing its reference to the fact — the source conversation is UNTOUCHED (ADR-0015
  * durable fact-delete; decision 5 "also forget sources" is SUPERSEDED — no such option here).
  * Durable by design; no undo window — the confirm IS the safety.
- * Edit = an inline textarea over a MESSAGE → Save/Cancel (MUTATION-AS-APPEND human correction).
+ * Edit = an inline textarea → Save/Cancel. Generic over its caller's text/id; used by fact-edit
+ * (render.ts, ADR-0012 5a). The message-edit call site was REMOVED (hybrid-retrieval chunk-01,
+ * spec §3.7 R1) — this builder itself stays (shared primitive; do not remove).
  */
 
 const RELEASE_LABEL = "Release the reference? (the agent forgets this — your conversation stays)";

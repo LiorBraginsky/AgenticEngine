@@ -77,17 +77,11 @@ test("chunk-03: renderFacts with onForget appends a forget control; arm→confir
   expect(forgot).toBe("F1");
 });
 
-test("chunk-03: renderMessages with onEdit appends an edit control; editedIds shows the tag", () => {
-  const el = document.createElement("div");
-  renderMessages(el, [{ id: "M1", role: "user", content: "hi" }], { onEdit: () => { /* noop */ }, editedIds: new Set(["M1"]) });
-  expect(el.querySelector(".act-edit")).not.toBeNull();
-  expect(el.textContent).toContain("edited by you");
-});
-
-test("chunk-03: no actions param → read-only rows (chunk-02 behavior preserved)", () => {
+test("hybrid-retrieval chunk-01: renderMessages never renders an edit control (message-edit removed; archive is read-only)", () => {
   const el = document.createElement("div");
   renderMessages(el, [{ id: "M1", role: "user", content: "hi" }]);
   expect(el.querySelector(".act-edit")).toBeNull();
+  expect(el.textContent).not.toContain("edited by you");
 });
 
 test("renderFacts: onEditFact attaches an Edit control that saves the fact id + new text", () => {

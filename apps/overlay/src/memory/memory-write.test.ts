@@ -4,7 +4,7 @@
  * NON-DOM by construction (Response/RequestInit/AbortController only) → root tsconfig coverage.
  */
 import { test, expect } from "bun:test";
-import { forgetFact, editMessage, editFact } from "./memory-write.js";
+import { forgetFact, editFact } from "./memory-write.js";
 import type { MemoryApiDeps } from "./memory-api.js";
 
 function fakeFetch(status: number, calls: { url: string; init?: RequestInit }[]) {
@@ -24,11 +24,9 @@ function deps(fetchFn: MemoryApiDeps["fetchFn"]): MemoryApiDeps {
 test("forgetFact 204 → ok", async () => {
   expect((await forgetFact(deps(fakeFetch(204, [])), "F1")).kind).toBe("ok");
 });
-test("status mapping: 401→unauthorized, 404→stale, 400→bad_request, 500→unreachable", async () => {
+test("forgetFact status mapping: 401→unauthorized, 400→bad_request", async () => {
   expect((await forgetFact(deps(fakeFetch(401, [])), "F1")).kind).toBe("unauthorized");
-  expect((await editMessage(deps(fakeFetch(404, [])), "M1", "x")).kind).toBe("stale");
   expect((await forgetFact(deps(fakeFetch(400, [])), "F1")).kind).toBe("bad_request");
-  expect((await editMessage(deps(fakeFetch(500, [])), "M1", "x")).kind).toBe("unreachable");
 });
 test("network error → unreachable", async () => {
   expect((await forgetFact(deps(fakeFetch(0, [])), "F1")).kind).toBe("unreachable");
@@ -46,15 +44,6 @@ test("forget POSTs target_type:fact + fact_id; token in Authorization header, ne
   expect(body.target_type).toBe("fact");
   expect(body.fact_id).toBe("FACT-UUID");
 });
-test("edit POSTs target(messageId) + replacement", async () => {
-  const calls: { url: string; init?: RequestInit }[] = [];
-  await editMessage(deps(fakeFetch(204, calls)), "MSG-ID", "new text");
-  const body = JSON.parse(calls[0]!.init!.body as string) as { target: string; replacement: string };
-  expect(calls[0]!.url).toBe("http://127.0.0.1:7777/memory/edit");
-  expect(body.target).toBe("MSG-ID");
-  expect(body.replacement).toBe("new text");
-});
-
 test("editFact 204 → ok; sends target_type:fact + fact_id + replacement (Bearer only)", async () => {
   const calls: { url: string; init?: RequestInit }[] = [];
   const r = await editFact(deps(fakeFetch(204, calls)), "F1", "new text");

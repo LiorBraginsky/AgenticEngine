@@ -1,6 +1,6 @@
 # Chunk 2: forgotten_facts canonical axis (d5 two-axis consult)
 
-**Status:** todo
+**Status:** in-progress
 **Created:** 2026-07-13
 **Phase:** hybrid-retrieval (2d) — riders-first
 **Estimated size:** ~0.5–1 day

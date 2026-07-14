@@ -8,6 +8,7 @@ import { WriteGate } from "./write-gate.js";
 import { RuleBasedScanner } from "./scanner/memory-scanner.js";
 import { REDACTION_MARKER } from "./schema.js";
 import { normalizeFactText } from "./providers/smart-distiller-provider.js";
+import { ANCHOR, SAME_CANONICAL, DIFFERENT_CANONICAL_RESIDUAL, NEGATIVE_CONTROLS } from "./rephrase-matrix.fixture.js";
 
 function freshStore() {
   const dir = mkdtempSync(join(tmpdir(), "mf01-"));
@@ -529,6 +530,44 @@ test("hasHumanFactWithNormalizedText returns true only when a human fact matches
   store.close();
 });
 
+// ── hybrid-retrieval R2 (chunk-02): forgotten_facts.canonical column + write path ──
+
+test("R2: fresh store has forgotten_facts.canonical; recordForgottenFact round-trips it", () => {
+  const { store } = freshStore();
+  const cols = store.rawDb().query("PRAGMA table_info(forgotten_facts)").all() as { name: string }[];
+  expect(cols.some((c) => c.name === "canonical")).toBe(true);
+  store.recordForgottenFact({
+    raw_text: "мій улюблений колір синій", canonical: "favorite color blue",
+    provenance: "thread:x", actor: "agent", authored_by: "machine",
+  });
+  const row = store.rawDb().query("SELECT canonical FROM forgotten_facts").get() as { canonical: string | null };
+  expect(row.canonical).toBe("favorite color blue");
+  store.close();
+});
+
+test("R2: an existing pre-R2 store gains canonical on construction (PRAGMA-guarded, idempotent, no backfill)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "hr02-legacy-"));
+  const legacy = new Database(join(dir, "memory.sqlite"));
+  legacy.exec(`CREATE TABLE forgotten_facts (
+    id TEXT PRIMARY KEY, normalized_text TEXT NOT NULL, raw_text TEXT NOT NULL,
+    provenance TEXT, actor TEXT, reason TEXT, authored_by TEXT NOT NULL, created_at INTEGER NOT NULL);`);
+  legacy.query("INSERT INTO forgotten_facts (id, normalized_text, raw_text, provenance, actor, reason, authored_by, created_at) VALUES (?,?,?,?,?,?,?,?)")
+    .run(crypto.randomUUID(), normalizeFactText("legacy fact"), "legacy fact", "thread:x", "agent", null, "machine", Date.now());
+  legacy.close();
+
+  const store = new MemoryStore({ dataDir: dir });
+  const cols = store.rawDb().query("PRAGMA table_info(forgotten_facts)").all() as { name: string }[];
+  expect(cols.filter((c) => c.name === "canonical").length).toBe(1);
+  const row = store.rawDb().query("SELECT canonical FROM forgotten_facts WHERE raw_text = 'legacy fact'").get() as { canonical: string | null };
+  expect(row.canonical).toBeNull(); // no fabricated backfill
+  store.close();
+
+  const store2 = new MemoryStore({ dataDir: dir }); // idempotent: second construct must not throw / must not double-add
+  const cols2 = store2.rawDb().query("PRAGMA table_info(forgotten_facts)").all() as { name: string }[];
+  expect(cols2.filter((c) => c.name === "canonical").length).toBe(1);
+  store2.close();
+});
+
 // ── 2c chunk-01 review FIX 1: d5 consult must match on the SAME relaxed key
 // (dedupConnectorKey) the dedup that runs one line later already uses — a
 // connector-word rephrase ("favorite color is blue" vs "favorite color blue")
@@ -562,6 +601,64 @@ test("FIX1: clearForgottenByNormalizedText removes a row via connector-word reph
   const removed = store.clearForgottenByNormalizedText(normalizeFactText("favorite color blue"));
   expect(removed).toBe(1);
   expect(store.isForgottenNormalizedText(normalizeFactText("favorite color is blue"))).toBe(false);
+  store.close();
+});
+
+// ── hybrid-retrieval R2: two-axis match (canonical OR display) in the three helpers ──
+
+test("R2: canonical axis — every SAME_CANONICAL rephrase is forgotten-matched against a UK-display/EN-canonical row", () => {
+  const { store } = freshStore();
+  store.recordForgottenFact({ raw_text: ANCHOR.display, canonical: ANCHOR.canonical, provenance: "thread:x", actor: "agent", authored_by: "machine" });
+  for (const c of SAME_CANONICAL) {
+    expect(store.isForgottenNormalizedText(normalizeFactText(c.text), c.canonical)).toBe(true); // caught via canonical (or display)
+  }
+  expect(store.isForgottenNormalizedText(normalizeFactText(DIFFERENT_CANONICAL_RESIDUAL.text), DIFFERENT_CANONICAL_RESIDUAL.canonical)).toBe(false); // named residual
+  for (const n of NEGATIVE_CONTROLS) {
+    expect(store.isForgottenNormalizedText(normalizeFactText(n.text), n.canonical)).toBe(false);
+  }
+  store.close();
+});
+
+test("R2: display axis byte-carried — EN display variants match with canonical OMITTED (display-only unchanged)", () => {
+  const { store } = freshStore();
+  // Recorded in EN display, EN canonical.
+  store.recordForgottenFact({ raw_text: "favorite color is blue", canonical: "favorite color blue", provenance: "thread:x", actor: "agent", authored_by: "machine" });
+  for (const c of SAME_CANONICAL.filter((x) => x.axis === "display")) {
+    expect(store.isForgottenNormalizedText(normalizeFactText(c.text))).toBe(true); // one-arg → display-only, still works
+  }
+  store.close();
+});
+
+test("R2: legacy NULL-canonical row matches display-only (honest, no over-reach) even when a canonical is passed", () => {
+  const { store } = freshStore();
+  // A legacy row: canonical omitted → stored NULL. Display is EN.
+  store.recordForgottenFact({ raw_text: "favorite color is blue", provenance: "thread:x", actor: "agent", authored_by: "machine" });
+  // A cross-language re-derivation carries a matching canonical but a non-matching display →
+  // must NOT be suppressed (the canonical clause is skipped for a NULL-canonical row).
+  expect(store.isForgottenNormalizedText(normalizeFactText("мій улюблений колір синій"), "favorite color blue")).toBe(false);
+  // Same-display EN still matches (display axis).
+  expect(store.isForgottenNormalizedText(normalizeFactText("favorite color blue"), "favorite color blue")).toBe(true);
+  store.close();
+});
+
+test("R2: hasHumanFactWithNormalizedText matches a human fact via the CANONICAL axis (displays differ)", () => {
+  const { store } = freshStore();
+  const hid = crypto.randomUUID();
+  store.rawDb().query(
+    "INSERT INTO distilled_facts (id, fact, provenance, scope, expiry, confidence, authored_by, derived_at, distiller_version) VALUES (?,?,?,?,?,?,?,?,?)",
+  ).run(hid, "мій улюблений колір синій", "human-pin", "cross-thread", null, 1, "human", Date.now(), "manual");
+  store.rawDb().query("INSERT INTO fact_fts (fact_id, canonical, topic) VALUES (?, ?, ?)").run(hid, "favorite color blue", "");
+  // EN display differs from the UK human display, but canonicals match.
+  expect(store.hasHumanFactWithNormalizedText(normalizeFactText("favorite color is blue"), "favorite color blue")).toBe(true);
+  store.close();
+});
+
+test("R2: clearForgottenByNormalizedText clears a cross-language row via the CANONICAL axis", () => {
+  const { store } = freshStore();
+  store.recordForgottenFact({ raw_text: ANCHOR.display, canonical: ANCHOR.canonical, provenance: "thread:x", actor: "agent", authored_by: "machine" });
+  const removed = store.clearForgottenByNormalizedText(normalizeFactText("favorite color is blue"), "favorite color blue"); // EN display ≠ UK row display
+  expect(removed).toBe(1);
+  expect(store.isForgottenNormalizedText(normalizeFactText(ANCHOR.display), ANCHOR.canonical)).toBe(false);
   store.close();
 });
 

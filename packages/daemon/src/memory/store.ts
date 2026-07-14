@@ -72,6 +72,9 @@ export interface QuarantineMarkerInput {
 /** Minimal input to record a forgotten fact (chunk 04 — ADR-0015 decision 2). */
 export interface ForgottenFactInput {
   raw_text: string;
+  /** hybrid-retrieval R2: the fact's fact_fts.canonical (English match-key) at forget time.
+   *  Omitted/undefined → stored NULL (legacy / no canonical known → display-only match). */
+  canonical?: string | null;
   provenance: string | null;
   actor: string;
   reason?: string;
@@ -180,6 +183,7 @@ export class MemoryStore {
     this.db = new Database(join(opts.dataDir, "memory.sqlite"));
     this.db.exec("PRAGMA journal_mode = WAL;");
     this.db.exec(SCHEMA_DDL);
+    this.ensureForgottenFactsCanonicalColumn(); // hybrid-retrieval R2 [grill #5]: always-run guarded add for existing stores
   }
 
   /**
@@ -328,6 +332,11 @@ export class MemoryStore {
   // that drops a connector word ("favorite color is blue" → "favorite color blue") would fail
   // the strict consult, and once the row is durably deleted the dedup has nothing left to
   // match either — the forgotten fact would silently re-enter one dismiss later.
+  //
+  // hybrid-retrieval R2: the display axis above is byte-carried unchanged; each of the three
+  // helpers below ALSO gained an optional, additive CANONICAL axis (op.canonical vs the
+  // forgotten row's stored fact_fts.canonical, captured at forget time) — closing the
+  // cross-language slip (UK display / EN canonical) the display-only match left open.
 
   /**
    * Record a durable fact-forget entry in `forgotten_facts`.
@@ -339,12 +348,13 @@ export class MemoryStore {
     const normalized = normalizeFactText(e.raw_text);
     this.db
       .query(
-        "INSERT INTO forgotten_facts (id, normalized_text, raw_text, provenance, actor, reason, authored_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO forgotten_facts (id, normalized_text, raw_text, canonical, provenance, actor, reason, authored_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
       )
       .run(
         crypto.randomUUID(),
         normalized,
         e.raw_text,
+        e.canonical ?? null,
         e.provenance ?? null,
         e.actor,
         e.reason ?? null,
@@ -377,31 +387,53 @@ export class MemoryStore {
 
   /**
    * Returns true if ANY forgotten_facts row matches `text` on EITHER the strict normalized
-   * key OR the RELAXED connector-word key (FIX 1 — see block note above). `text` may be raw
-   * or already-normalized (dedupConnectorKey re-normalizes internally either way).
+   * key OR the RELAXED connector-word key (FIX 1 — see block note above), OR (hybrid-retrieval
+   * R2) the optional `canonical` matches the row's stored canonical on the same relaxed-key
+   * shape. `text` may be raw or already-normalized (dedupConnectorKey re-normalizes
+   * internally either way). The canonical clause is skipped when `canonical` is omitted or
+   * the row's canonical is NULL/empty (legacy row → display-only, no fabrication).
    */
-  isForgottenNormalizedText(text: string): boolean {
+  isForgottenNormalizedText(text: string, canonical?: string): boolean {
     const norm = normalizeFactText(text);
     if (norm === "") return false;
     const conn = dedupConnectorKey(text);
+    const canonNorm = canonical ? normalizeFactText(canonical) : "";
+    const canonConn = canonical ? dedupConnectorKey(canonical) : "";
     const rows = this.db
-      .query("SELECT normalized_text FROM forgotten_facts")
-      .all() as { normalized_text: string }[];
-    return rows.some((r) => r.normalized_text === norm || dedupConnectorKey(r.normalized_text) === conn);
+      .query("SELECT normalized_text, canonical FROM forgotten_facts")
+      .all() as { normalized_text: string; canonical: string | null }[];
+    return rows.some((r) => {
+      // display axis (byte-carried from 2c chunk-01 FIX 1)
+      if (r.normalized_text === norm || dedupConnectorKey(r.normalized_text) === conn) return true;
+      // canonical axis (hybrid-retrieval R2): only when BOTH sides carry a canonical.
+      // Legacy NULL-canonical rows fall through to display-only (honest — no backfill).
+      if (r.canonical !== null && r.canonical !== "" && canonNorm !== "") {
+        if (normalizeFactText(r.canonical) === canonNorm || dedupConnectorKey(r.canonical) === canonConn) return true;
+      }
+      return false;
+    });
   }
 
   /**
    * Remove all forgotten_facts rows matching `text` on EITHER the strict normalized key OR
-   * the RELAXED connector-word key (FIX 1 — see block note above). Returns the number of
-   * rows deleted.
+   * the RELAXED connector-word key (FIX 1 — see block note above), OR (hybrid-retrieval R2)
+   * the optional `canonical` axis. Returns the number of rows deleted.
    */
-  clearForgottenByNormalizedText(text: string): number {
+  clearForgottenByNormalizedText(text: string, canonical?: string): number {
     const norm = normalizeFactText(text);
     const conn = dedupConnectorKey(text);
+    const canonNorm = canonical ? normalizeFactText(canonical) : "";
+    const canonConn = canonical ? dedupConnectorKey(canonical) : "";
     const rows = this.db
-      .query("SELECT id, normalized_text FROM forgotten_facts")
-      .all() as { id: string; normalized_text: string }[];
-    const toDelete = rows.filter((r) => r.normalized_text === norm || dedupConnectorKey(r.normalized_text) === conn);
+      .query("SELECT id, normalized_text, canonical FROM forgotten_facts")
+      .all() as { id: string; normalized_text: string; canonical: string | null }[];
+    const toDelete = rows.filter((r) => {
+      if (r.normalized_text === norm || dedupConnectorKey(r.normalized_text) === conn) return true;
+      if (r.canonical !== null && r.canonical !== "" && canonNorm !== "") {
+        if (normalizeFactText(r.canonical) === canonNorm || dedupConnectorKey(r.canonical) === canonConn) return true;
+      }
+      return false;
+    });
     if (toDelete.length === 0) return 0;
     const del = this.db.query("DELETE FROM forgotten_facts WHERE id = ?");
     for (const r of toDelete) del.run(r.id);
@@ -445,15 +477,30 @@ export class MemoryStore {
    * normalized key OR the RELAXED connector-word key (2c chunk-01 review FIX 1 — this is the
    * D6b precedence guard: human ▷ un-forget ▷ forget-record ▷ machine re-derivation. A
    * strict-only match here let a connector-word rephrase of a HUMAN fact go undetected,
-   * wrongly letting the forgotten-record suppression fire over a human's pinned fact).
+   * wrongly letting the forgotten-record suppression fire over a human's pinned fact), OR
+   * (hybrid-retrieval R2) the optional `canonical` matches the human fact's fact_fts.canonical
+   * (LEFT JOINed — a human fact predating v2-02 may have no fact_fts row).
    */
-  hasHumanFactWithNormalizedText(text: string): boolean {
+  hasHumanFactWithNormalizedText(text: string, canonical?: string): boolean {
     const norm = normalizeFactText(text);
     const conn = dedupConnectorKey(text);
+    const canonNorm = canonical ? normalizeFactText(canonical) : "";
+    const canonConn = canonical ? dedupConnectorKey(canonical) : "";
     const rows = this.db
-      .query("SELECT fact FROM distilled_facts WHERE authored_by = 'human'")
-      .all() as { fact: string }[];
-    return rows.some((r) => normalizeFactText(r.fact) === norm || dedupConnectorKey(r.fact) === conn);
+      .query(
+        `SELECT d.fact AS fact, f.canonical AS canonical
+           FROM distilled_facts d
+           LEFT JOIN fact_fts f ON f.fact_id = d.id
+          WHERE d.authored_by = 'human'`,
+      )
+      .all() as { fact: string; canonical: string | null }[];
+    return rows.some((r) => {
+      if (normalizeFactText(r.fact) === norm || dedupConnectorKey(r.fact) === conn) return true;
+      if (r.canonical !== null && r.canonical !== "" && canonNorm !== "") {
+        if (normalizeFactText(r.canonical) === canonNorm || dedupConnectorKey(r.canonical) === canonConn) return true;
+      }
+      return false;
+    });
   }
 
   /**
@@ -1071,6 +1118,16 @@ export class MemoryStore {
     ).get(id) as DistilledFactRow | null;
   }
 
+  /** hybrid-retrieval R2: read the fact_fts.canonical match key for a fact id (null if no
+   *  fact_fts row — a legacy fact predating v2-02). MUST be read BEFORE any delete: the
+   *  trg_distilled_facts_ad AFTER DELETE trigger removes the fact_fts row. */
+  readCanonicalForFact(id: string): string | null {
+    const row = this.db
+      .query("SELECT canonical FROM fact_fts WHERE fact_id = ?")
+      .get(id) as { canonical: string | null } | null;
+    return row?.canonical ?? null;
+  }
+
   /**
    * v2-05 migration (§3.8): rebuild fact_fts + fact_topics for every SURVIVING
    * human-authored fact. Human facts predate v2-02's derived tables, so they may
@@ -1115,6 +1172,21 @@ export class MemoryStore {
     this.db.exec("ALTER TABLE thread_distill_state ADD COLUMN distilled_through_turn INTEGER NOT NULL DEFAULT -1;");
     this._distilledThroughTurnColumnPresent = null;
     return true;
+  }
+
+  /**
+   * hybrid-retrieval R2 wiring [grill #5]: add the nullable `canonical` column to a pre-R2
+   * live `forgotten_facts`. Mirrors ensureDistilledThroughTurnColumn's PRAGMA mechanics BUT is
+   * wired to run ALWAYS from the constructor (that precedent is migration-script-only) — one
+   * nullable column needs no separate script. Idempotent: a fresh store already has the column
+   * via SCHEMA_DDL (PRAGMA finds it → no-op); an existing store lacks it → one cheap ALTER.
+   * NOT NULL/DEFAULT deliberately omitted so legacy rows read back NULL (honest "no canonical
+   * known" marker — no backfill fabrication).
+   */
+  private ensureForgottenFactsCanonicalColumn(): void {
+    const cols = this.db.query("PRAGMA table_info(forgotten_facts)").all() as { name: string }[];
+    if (cols.some((c) => c.name === "canonical")) return;
+    this.db.exec("ALTER TABLE forgotten_facts ADD COLUMN canonical TEXT;");
   }
 
   /** Delete one fact by id. The AFTER DELETE trigger cleans fact_fts + fact_topics.

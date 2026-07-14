@@ -94,6 +94,11 @@ export class MemoryActionPort {
       });
     }
 
+    // hybrid-retrieval R2: capture the fact's canonical BEFORE the forget delete — the
+    // trg_distilled_facts_ad AFTER DELETE trigger removes the fact_fts row, so it is
+    // unreadable after gate.forgetFactById below.
+    const canonical = this.store.readCanonicalForFact(factId);
+
     this.gate.forgetFactById(factId, { actor: "agent", authored_by: "machine" }, input.reason);
 
     if (this.store.readFactById(factId) !== null) {
@@ -107,6 +112,7 @@ export class MemoryActionPort {
 
     this.store.recordForgottenFact({
       raw_text: row.fact,
+      canonical,
       provenance: row.provenance,
       actor: "agent",
       authored_by: "machine",
@@ -154,7 +160,7 @@ export class MemoryActionPort {
     }
 
     const norm = normalizeFactText(input.fact);
-    const wasForgotten = this.store.isForgottenNormalizedText(norm);
+    const wasForgotten = this.store.isForgottenNormalizedText(norm, norm); // R2: tool canonical == norm
     const provenance = `thread:${ctx.threadId}`;
 
     const outcome = input.replaces_ordinal !== undefined
@@ -164,7 +170,7 @@ export class MemoryActionPort {
     // D6e: an insert/replace whose normalized text matches a forgotten_facts row is a
     // prompted re-assertion — clears the record and reports its OWN event type ('reassert').
     if (outcome.ok && wasForgotten) {
-      this.store.clearForgottenByNormalizedText(norm);
+      this.store.clearForgottenByNormalizedText(norm, norm); // R2: clear on either axis
       return this.audit(ctx, "reassert", input.fact, { ...outcome, action: "reassert" });
     }
     return this.audit(ctx, "remember", input.fact, outcome);

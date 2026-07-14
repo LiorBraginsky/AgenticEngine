@@ -6,6 +6,7 @@ import { MemoryStore } from "./store.js";
 import { applyFactOp } from "./apply-fact-op.js";
 import { WriteGate } from "./write-gate.js";
 import { RuleBasedScanner } from "./scanner/memory-scanner.js";
+import { normalizeFactText } from "./normalize-fact-text.js";
 import {
   MemoryActionPort,
   MEMORY_ACTIONS_MAX_PER_TURN,
@@ -76,6 +77,21 @@ test("forget: durably deletes the row, cleans fact_fts/fact_topics, records forg
   expect(countRows(store, "messages")).toBe(messagesBefore);
   expect(countRows(store, "mutations")).toBe(mutationsBefore);
 
+  store.close();
+});
+
+test("R2: forget writes the fact's fact_fts.canonical into forgotten_facts.canonical (captured before the delete)", () => {
+  const { store, port } = freshHarness();
+  const t = store.createThread();
+  const id = store.insertFact({
+    fact: "мій улюблений колір синій", canonical: "favorite color blue", topics: ["#about-user"],
+    provenance: `thread:${t}`, scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine",
+  }, "seed");
+  const ctx = freshCtx(t, new Map([[1, id]]));
+  const result = port.forget(ctx, { ordinal: 1, expected_text: "мій улюблений колір синій" });
+  expect(result.ok).toBe(true);
+  const row = store.rawDb().query("SELECT canonical FROM forgotten_facts").get() as { canonical: string | null };
+  expect(row.canonical).toBe("favorite color blue");
   store.close();
 });
 
@@ -331,6 +347,21 @@ test("FIX1: forget X ('...is blue') then remember a connector-word REPHRASE ('..
   }
   expect(store.isForgottenNormalizedText("user's favorite color is blue")).toBe(false);
 
+  store.close();
+});
+
+// ─── hybrid-retrieval R2: D6e wasForgotten/clear also matches on the CANONICAL axis ──
+
+test("R2 D6e: a cross-language remember re-asserting a forgotten fact fires 'reassert' + clears via the canonical axis", () => {
+  const { store, port } = freshHarness();
+  const t = store.createThread();
+  // A prior forget recorded UK display + EN canonical.
+  store.recordForgottenFact({ raw_text: "мій улюблений колір синій", canonical: "favorite color blue", provenance: `thread:${t}`, actor: "agent", authored_by: "machine" });
+  const ctx = freshCtx(t);
+  const result = port.remember(ctx, { fact: "favorite color blue" }); // EN — norm ≠ UK row display; tool canonical == norm
+  expect(result.ok).toBe(true);
+  expect((result as { action?: string }).action).toBe("reassert"); // was-forgotten detected via canonical axis
+  expect(store.isForgottenNormalizedText(normalizeFactText("мій улюблений колір синій"), "favorite color blue")).toBe(false); // cleared
   store.close();
 });
 

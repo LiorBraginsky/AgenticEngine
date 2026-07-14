@@ -16,6 +16,8 @@
   "dependencies": {
     "@agentic/protocol": "workspace:*",
     "@anthropic-ai/sdk": "^0.100.1",
+    "@lenml/tokenizers": "3.7.2",
+    "onnxruntime-web": "1.27.0",
     "zod": "^3.23.0"
   }
 }

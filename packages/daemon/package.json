@@ -13,7 +13,9 @@
     "migrate-distiller-v2": "bun run scripts/migrate-distiller-v2.ts",
     "backfill-embeddings": "AGENTIC_EMBED_AUTODOWNLOAD=1 bun run scripts/backfill-embeddings.ts",
     "memory-demo-harness": "bun run scripts/memory-demo-harness.ts",
-    "embed-probe": "AGENTIC_EMBED_AUTODOWNLOAD=1 bun run scripts/embed-probe.ts"
+    "embed-probe": "AGENTIC_EMBED_AUTODOWNLOAD=1 bun run scripts/embed-probe.ts",
+    "fts5-check": "bun run scripts/fts5-unicode61-check.ts",
+    "retrieval-golden-eval": "EMBEDDING_PROVIDER=local-wasm AGENTIC_EMBED_AUTODOWNLOAD=1 bun run scripts/retrieval-golden-eval.ts"
   },
   "dependencies": {
     "@agentic/protocol": "workspace:*",

@@ -1,10 +1,21 @@
 # Chunk 3: EmbeddingProvider port + vector/archive-lexical storage
 
-**Status:** todo
+**Status:** in-progress
 **Created:** 2026-07-13
 **Phase:** hybrid-retrieval (2d)
 **Estimated size:** ~1–1.5 days
 **Depends on:** none (03→04→05 chain) — GATED on spec acceptance (+ ADR-0017 if ruled)
+
+> 🔓 **UNBLOCKED 2026-07-14 — Lior ruled q#018 = Lane A** (`.conveyor/bus/a/018-wasm-spike-fail.md`).
+> Opening spike-1 proved transformers.js (v4 AND v2) unusable for WASM-only on Bun 1.3.4 (native
+> `onnxruntime-node` / stub; #46 still OPEN). Lior authorized a **bounded `onnxruntime-web`-DIRECT
+> spike** (manual tokenizer + mean-pool against a real WASM `InferenceSession`, bypassing
+> transformers.js) — preserves the accepted §0.1 posture (no egress, zero-infra), no spec/ADR change.
+> **Spike-2 in progress.** If spike-2 ALSO fails ⇒ STOP + re-escalate with measured data — **Lior
+> declined to pre-authorize any fallback** (no B/Ollama or C/Voyage on the worker's own; he decides
+> on spike-2's evidence). No `process.release.name` spoofing in product code (and if a hack is needed
+> even to *test* viability, that is itself a finding to report). On spike-2 success: build chunk-03
+> as specced (default adapter = direct-WASM) + a one-line §0.1 implementation note (q#018).
 
 ## Scope
 

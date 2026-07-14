@@ -201,6 +201,31 @@ and both lose the scope-guard that ordinal-over-injected-slice provides for free
 **Why not:** blocks the top queued memory lever on unrelated UI vocabulary work; the audit trail +
 caps + 5e + scan bound the risk at dogfood scale, and the confirm tier remains an additive revisit.
 
+## Rider 2026-07-13 (proposed): the d7 ceiling under 2d's read tool — archive search names a new second-order injection READ channel
+
+> **Status:** `proposed` — rides the hybrid-retrieval (2d) decompose PR
+> ([[../specs/2026-07-13-hybrid-retrieval]] §0.3) through the same §5.2 acceptance as that spec
+> (conductor ruling bus q#017, rider 4). **⚠️ Agent-authored during work** (the 2d frontier
+> decompose pass, 2026-07-13). Follows this file's sibling convention (ADR-0012's dated in-file
+> riders). It records a WIDENED READ surface; every WRITE-side guardrail (d1–d7) is UNCHANGED.
+
+**What changes:** decision 2's reserved `kind:read` slot is consumed — `memory_search` lets the
+agent pull non-quarantined, non-tombstoned archive/fact content into its context mid-turn. The
+d7 ceiling statement ("a fully successful prompt-injection buys ONE scanned fact or ≤3 in-view
+deletions") was written when the agent could READ only the injected slice + the current turn; a
+poisoned PAST message (benign as history, injection as a search result) can now re-enter the
+context via search — a **second-order injection READ channel** that steers replies (and, only
+within the unchanged d2/d7 write bounds, same-turn actions).
+
+**The recorded posture:** (a) search results carry NO ordinals and never join the forget/replace
+targetable map — the WRITE blast radius is byte-unchanged (spec §0.2); (b) search-result snippets
+pass the existing `RuleBasedScanner` (flagged ⇒ withheld with a typed note — defense-in-depth,
+honestly NOT a guarantee); (c) results are framed as quoted UNTRUSTED data in the `tool_result`,
+never as instructions. **Ceiling restated under 2d:** a fully successful prompt-injection still
+buys at most one scanned machine fact or ≤3 in-view deletions — plus, NEW, the ability to steer
+the current reply with scanner-surviving archive text. Widening the *targetable* set remains a
+deliberate future ADR-0016 amendment (full §5.2; trigger recorded in the 2d spec §0.2).
+
 ## Related
 
 - [[../specs/2026-07-10-memory-action-tools]] — the mechanics, guardrail package, verification model, decomposition (rides the same PR; Lior signs both).

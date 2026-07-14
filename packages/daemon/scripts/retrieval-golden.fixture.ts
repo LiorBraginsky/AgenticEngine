@@ -26,10 +26,31 @@ export const REPHRASE: GoldenPositive[] = SAME_CANONICAL.map((c) => ({
 }));
 
 // (3) cross-language PARAPHRASE (not literal translation) — UA↔EN plus ≥2 non-UA (es, de).
+//
+// hybrid-04 MAJOR-1 fix (frontier review): the ORIGINAL xl-es/xl-de below (a) reused
+// ANCHOR.canonical ("favorite color blue") for xl-es, which the eval's one-per-canonical
+// seeding dedup silently DROPPED — xl-es never actually seeded a fact, and its reported
+// GREEN=HIT was a phantom re-probe of the UA anchor row; (b) were both lexically ANCHORED to
+// their own canonical (xl-es shared "color", xl-de shared "Berlin"), so BM25-only (RED)
+// already found them — the embedding mechanism was never isolated for a non-UA language, so
+// the "≥2 non-UA cross-language pairs" claim was cosmetic (a model that only does UA↔EN would
+// pass this bar identically), violating Lior's 2026-07-14 ruling (protect the GENERAL
+// user-language↔canonical-language property, not one language).
+//
+// Fixed: each non-UA pair now has its OWN distinct canonical (actually seeds) AND is lexically
+// DISJOINT — the query shares ZERO tokens with its canonical, and the non-English seed text
+// shares ZERO tokens with the query (verified by inspection: canonical/query token sets below
+// are disjoint) — so BM25-only (RED) MISSES on BOTH the facts leg (canonical vs query) and the
+// archive leg (seed text vs query), mirroring how the UA cases already isolate via script
+// (Cyrillic vs Latin can never share a token). Only the embedding leg (GREEN) can carry them.
 export const CROSS_LANGUAGE: GoldenPositive[] = [
-  { klass: "xl-ua",  seedDisplay: "мій улюблений напій — кава",  canonical: "favorite drink coffee", query: "I really love drinking coffee" },
-  { klass: "xl-es",  seedDisplay: "mi color favorito es el azul", canonical: "favorite color blue",   query: "the color I like most is blue" },
-  { klass: "xl-de",  seedDisplay: "ich wohne in Berlin",          canonical: "lives in Berlin",        query: "my home city is Berlin" },
+  { klass: "xl-ua", seedDisplay: "мій улюблений напій — кава", canonical: "favorite drink coffee", query: "I really love drinking coffee" },
+  // Spanish, hobby domain — canonical/query token sets: {enjoys,cycling,on,weekends} vs
+  // {riding,a,bike,outdoors,is,my,cherished,way,to,relax} — disjoint.
+  { klass: "xl-es", seedDisplay: "los fines de semana me gusta pasear en bicicleta por el parque", canonical: "enjoys cycling on weekends", query: "riding a bike outdoors is my cherished way to relax" },
+  // German, hobby domain — canonical/query token sets: {enjoys,playing,chess} vs
+  // {board,games,are,something,i,truly,value} — disjoint.
+  { klass: "xl-de", seedDisplay: "Jeden Samstag spiele ich mit meinem Vater eine Partie Schach", canonical: "enjoys playing chess", query: "board games are something I truly value" },
 ];
 
 // (4) negative controls — genuinely UNRELATED to "favorite color blue": share NO core token

@@ -8,7 +8,7 @@
  * Each case: `query` (the fresh tail statement) must surface `expectCanonical`'s fact/message
  * within the consumer cutoff. Negatives must NOT rank in the top-3.
  */
-import { SAME_CANONICAL, ANCHOR, NEGATIVE_CONTROLS } from "../src/memory/rephrase-matrix.fixture.js";
+import { SAME_CANONICAL, ANCHOR } from "../src/memory/rephrase-matrix.fixture.js";
 
 export interface GoldenPositive { klass: string; seedDisplay: string; canonical: string; query: string; }
 export interface GoldenNegative { klass: string; seedDisplay: string; canonical: string; query: string; }
@@ -32,9 +32,19 @@ export const CROSS_LANGUAGE: GoldenPositive[] = [
   { klass: "xl-de",  seedDisplay: "ich wohne in Berlin",          canonical: "lives in Berlin",        query: "my home city is Berlin" },
 ];
 
-// (4) negative controls — unrelated pairs that must NOT rank top-3.
-export const NEGATIVES: GoldenNegative[] = NEGATIVE_CONTROLS.map((n) => ({
-  klass: `neg-${n.klass}`, seedDisplay: n.text, canonical: n.canonical, query: "favorite color blue",
-}));
+// (4) negative controls — genuinely UNRELATED to "favorite color blue": share NO core token
+// (favorite/color/blue), NO "favorite X is Y" preference frame, and a canonical distinct from
+// EVERY positive canonical. Retrieval-calibrated, deliberately NOT reused from chunk-02's
+// NEGATIVE_CONTROLS (rephrase-matrix.fixture.ts) — "favorite food pizza" is a CORRECT
+// near-miss for chunk-02's DEDUP/canonical-axis test (store.test.ts:619-621; shares the
+// "favorite X" frame, on purpose, to prove dedup doesn't over-collapse) but is the WRONG
+// instrument for THIS retrieval-suppression test (a hybrid ranker correctly ranking a
+// shared-frame/shared-token fact high is not a suppression defect). A schedule/logistics
+// domain avoids both the shared frame AND (architect note) an "I live in X"-style collision
+// with the xl-de positive ("lives in Berlin").
+export const NEGATIVES: GoldenNegative[] = [
+  { klass: "neg-schedule-en", seedDisplay: "the team standup is at 9am", canonical: "standup at 9am", query: "favorite color blue" },
+  { klass: "neg-schedule-de", seedDisplay: "das Meeting ist um 15 Uhr",  canonical: "meeting at 3pm",  query: "favorite color blue" },
+];
 
 export const ALL_POSITIVES: GoldenPositive[] = [...DEMO3, ...REPHRASE, ...CROSS_LANGUAGE];

@@ -1,14 +1,15 @@
-import { test, expect } from "bun:test";
+import { test, expect, spyOn } from "bun:test";
 import { tmpdir } from "node:os";
 import { mkdtempSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
-import { MemoryStore, CANDIDATE_TOP_K, ALL_FACTS_CAP } from "./store.js";
+import { MemoryStore, CANDIDATE_TOP_K, ALL_FACTS_CAP, toFtsOrQuery } from "./store.js";
 import { WriteGate } from "./write-gate.js";
 import { RuleBasedScanner } from "./scanner/memory-scanner.js";
 import { REDACTION_MARKER } from "./schema.js";
 import { normalizeFactText } from "./providers/smart-distiller-provider.js";
 import { ANCHOR, SAME_CANONICAL, DIFFERENT_CANONICAL_RESIDUAL, NEGATIVE_CONTROLS } from "./rephrase-matrix.fixture.js";
+import { encodeVector } from "./embedding/vector-codec.js";
 
 function freshStore() {
   const dir = mkdtempSync(join(tmpdir(), "mf01-"));
@@ -868,6 +869,52 @@ test("v2-09 fetchCandidates returns the FULL fact set below the cap — a cross-
   // All-facts-below-cap: the colour fact MUST be present so the distiller can op:replace it.
   expect(candidates.some((c) => c.fact.includes("синій"))).toBe(true);
   expect(candidates.length).toBe(2); // ALL facts returned (corpus is below the cap)
+  store.close();
+});
+
+// ── hybrid-retrieval chunk-04: store seams (rowid, BM25-leg reads, ranker injection) ──
+
+test("hybrid-04: readFactVectors/readMessageVectors now carry the corpus rowid (tie-break source)", () => {
+  const { store } = freshStore();
+  const id = store.insertFact({ fact: "a", canonical: "a", topics: [], provenance: "thread:t", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" }, "seed");
+  store.upsertFactEmbedding(id, "m1", 4, encodeVector(new Float32Array([1, 0, 0, 0])));
+  const rows = store.readFactVectors("m1");
+  expect(rows.length).toBe(1);
+  expect(typeof rows[0]!.rowid).toBe("number");
+  store.close();
+});
+
+test("hybrid-04: mixed-model warn is throttled to once per store per table", () => {
+  const { store } = freshStore();
+  const a = store.insertFact({ fact: "a", canonical: "a", topics: [], provenance: "thread:t", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" }, "seed");
+  const b = store.insertFact({ fact: "b", canonical: "b", topics: [], provenance: "thread:t", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" }, "seed");
+  store.upsertFactEmbedding(a, "m1", 4, encodeVector(new Float32Array([1, 0, 0, 0])));
+  store.upsertFactEmbedding(b, "other", 4, encodeVector(new Float32Array([0, 1, 0, 0])));
+  const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+  store.readFactVectors("m1");
+  store.readFactVectors("m1");
+  store.readFactVectors("m1");
+  expect(warnSpy).toHaveBeenCalledTimes(1); // throttled: excluded rows exist, but the warn fires ONCE
+  warnSpy.mockRestore();
+  store.close();
+});
+
+test("hybrid-04: searchFactsFts returns ranked ids+rowid with a total tie-break", () => {
+  const { store } = freshStore();
+  const id = store.insertFact({ fact: "мій улюблений колір синій", canonical: "favorite color blue", topics: [], provenance: "thread:t", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" }, "seed");
+  const hits = store.searchFactsFts(toFtsOrQuery("favorite color blue"), 20);
+  expect(hits.some((h) => h.id === id)).toBe(true);
+  expect(typeof hits[0]!.rowid).toBe("number");
+  store.close();
+});
+
+test("hybrid-04: fetchCandidatesRanked below-cap delegates to the sync all-facts path (byte-identical)", async () => {
+  const { store } = freshStore();
+  const id = store.insertFact({ fact: "user name is lior", canonical: "user name lior", topics: [], provenance: "thread:t", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" }, "seed");
+  const ranked = await store.fetchCandidatesRanked("anything");
+  const sync = store.fetchCandidates("anything");
+  expect(ranked.map((c) => c.id)).toEqual(sync.map((c) => c.id)); // no ranker + below cap → identical
+  expect(ranked.some((c) => c.id === id)).toBe(true);
   store.close();
 });
 

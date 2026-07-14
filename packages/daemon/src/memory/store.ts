@@ -14,11 +14,13 @@ export interface MemoryStoreOptions {
 /** Named build-time constants (spec §9 — dogfood scale). */
 export const CANDIDATE_TOP_K = 10;
 /**
- * v2-09: at single-user (dogfood) scale the distilled-fact corpus is a handful of
- * rows, so the contradiction-candidate pool is the WHOLE corpus (spec §3.4 D-V4b —
- * "full corpus, never reduced"). Below this cap fetchCandidates returns ALL facts;
- * above it, it falls back to the BM25 MATCH path (the future large-corpus /
- * archive-summarization-tier trigger — roadmap 2d supersedes both with embeddings).
+ * v2-09/2d: at single-user (dogfood) scale the corpus is a handful of rows, so the
+ * candidate pool is the WHOLE corpus below ALL_FACTS_CAP (spec §3.4 D-V4b, "full corpus,
+ * never reduced"). fetchCandidates returns ALL facts below the cap; above it, BM25-only.
+ * As of hybrid-retrieval 2d (chunk-04) the DISTILLER calls fetchCandidatesRanked: below-cap
+ * is unchanged; ABOVE the cap the hybrid ranker (BM25 ∪ embedding-cosine, RRF-fused)
+ * REPLACES BM25-only — closing the cross-language miss (Ukrainian tail vs English canonical).
+ * The BM25-only above-cap branch in fetchCandidates is retained as the no-ranker fallback.
  */
 export const ALL_FACTS_CAP = 50;
 export const APPEND_LIST_CAP = 8;
@@ -55,6 +57,15 @@ export interface FactCandidate {
   id: string;        // the stable distilled_facts.id
   fact: string;      // user-language display text (from distilled_facts)
   topics: string[];  // the fact's tags (from fact_topics)
+}
+
+// hybrid-retrieval chunk-04 (spec §3.5 D5a — Approach A1): the ranker-injection seam. This is
+// STRUCTURAL (no import of the concrete ranker) so store.ts never imports the embedding module
+// — the store keeps "stores+matches, never computes" (see fetchCandidatesRanked below).
+export interface RankedCandidateHit { id: string; score: number; }
+export interface FactCandidateRanker {
+  /** Async because the cosine leg embeds the query. Returns the fused top-k fact ids. */
+  searchFacts(query: string, k: number): Promise<RankedCandidateHit[]>;
 }
 
 export interface ThreadDistillState {
@@ -180,6 +191,13 @@ export class MemoryStore {
    *  ("stores+matches, never computes", :26-28) — this is purely a notification hook; the
    *  embedding drain (owned by the embedding module) is the sole subscriber. */
   private writeObserver?: () => void;
+  /** hybrid-retrieval chunk-04 (spec §3.5 D5a): the injected hybrid ranker. Mirrors
+   *  writeObserver — the store delegates COMPUTATION to the ranker, never owns it. */
+  private factRanker: FactCandidateRanker | null = null;
+  /** hybrid-retrieval chunk-04 handoff (b): per-store, per-table throttle so the mixed-model
+   *  exclusion warn fires at most once per store per table (the ranker reads vectors on
+   *  every call — un-throttled would spam). */
+  private mixedModelWarned = new Set<string>();
 
   constructor(opts: MemoryStoreOptions) {
     mkdirSync(opts.dataDir, { recursive: true });
@@ -197,6 +215,11 @@ export class MemoryStore {
   setWriteObserver(fn: () => void): void {
     this.writeObserver = fn;
   }
+
+  /** hybrid-retrieval chunk-04 (spec §3.5 D5a): inject the hybrid ranker (embedding module).
+   *  The store keeps "stores+matches, never computes" (:26-28) — it delegates the cosine
+   *  computation to the ranker, which owns the EmbeddingProvider. Mirrors setWriteObserver. */
+  setFactRanker(ranker: FactCandidateRanker | null): void { this.factRanker = ranker; }
 
   /** Fire the write-observer, if any. Called AFTER a write tx commits — NEVER from inside
    *  one (bun:sqlite forbids tx nesting; the drain's own debounce lives on the subscriber
@@ -1258,8 +1281,11 @@ export class MemoryStore {
    *
    * BM25 MATCH above-cap fallback (large-corpus path):
    *   When total > ALL_FACTS_CAP, falls back to the FTS5/BM25 MATCH path, returning
-   *   the top CANDIDATE_TOP_K rows. This is the pre-v2-09 mechanism, preserved for the
-   *   future archive-summarization tier (roadmap 2d supersedes both with embeddings).
+   *   the top CANDIDATE_TOP_K rows. This is the pre-v2-09 mechanism; as of hybrid-retrieval
+   *   2d (chunk-04) it is the NO-RANKER FALLBACK only — the DISTILLER calls
+   *   fetchCandidatesRanked, whose above-cap lane replaces this with the hybrid ranker
+   *   (BM25 ∪ embedding-cosine, RRF-fused) when one is injected (setFactRanker). This method
+   *   itself is UNCHANGED / byte-identical (frozen sync surface, v2 suite call sites).
    *   `query` is sanitized into a safe OR-of-quoted-terms (toFtsOrQuery) so punctuation
    *   can never produce a MATCH syntax error.
    *
@@ -1299,6 +1325,62 @@ export class MemoryStore {
       fact: r.fact,
       topics: (this.db.query("SELECT topic FROM fact_topics WHERE fact_id = ? ORDER BY topic").all(r.id) as { topic: string }[]).map((t) => t.topic),
     }));
+  }
+
+  /**
+   * hybrid-retrieval chunk-04 (spec §3.5 D5a — Approach A1): the DISTILLER's candidate-fetch.
+   * Async because the above-cap hybrid path embeds the query (cosine leg). Behavior:
+   *  - total <= ALL_FACTS_CAP, OR no ranker injected  → delegate to the frozen sync
+   *    fetchCandidates (all-facts below cap; BM25-only above cap w/o ranker) — BYTE-IDENTICAL.
+   *  - total > ALL_FACTS_CAP AND ranker injected       → the hybrid ranker REPLACES BM25-only
+   *    (spec §3.5 D5a; D-V4b UNION-then-rank; supersedes distiller-v2 D-V4a for this lane only).
+   * The frozen sync fetchCandidates is UNCHANGED (v2 suite byte-identical); this is the
+   * behavior change §4 note 1 warns about — the reviewer diffs the DISTILLER integration tests.
+   */
+  async fetchCandidatesRanked(query: string): Promise<FactCandidate[]> {
+    const total = (this.db.query("SELECT COUNT(*) AS n FROM distilled_facts").get() as { n: number }).n;
+    if (total <= ALL_FACTS_CAP || !this.factRanker) return this.fetchCandidates(query);
+    const hits = await this.factRanker.searchFacts(query, CANDIDATE_TOP_K);
+    const out: FactCandidate[] = [];
+    for (const h of hits) {
+      const row = this.db.query("SELECT fact FROM distilled_facts WHERE id = ?").get(h.id) as { fact: string } | null;
+      if (!row) continue; // guard a rank↔hydrate race (a fact deleted mid-turn); negligible at scale
+      out.push({
+        id: h.id,
+        fact: row.fact,
+        topics: (this.db.query("SELECT topic FROM fact_topics WHERE fact_id = ? ORDER BY topic").all(h.id) as { topic: string }[]).map((t) => t.topic),
+      });
+    }
+    return out;
+  }
+
+  /** hybrid-retrieval chunk-04 (spec §3.4): the FACTS BM25 leg — matches fact_fts.canonical.
+   *  Returns ranked ids + the distilled_facts.rowid (the ranker's total tie-break source).
+   *  `matchExpr` must be pre-sanitized via toFtsOrQuery (caller). "" ⇒ no rows. */
+  searchFactsFts(matchExpr: string, k: number): { id: string; rowid: number }[] {
+    if (matchExpr === "") return [];
+    return this.db.query(
+      `SELECT f.fact_id AS id, d.rowid AS rowid
+         FROM fact_fts f JOIN distilled_facts d ON d.id = f.fact_id
+        WHERE fact_fts MATCH ?
+        ORDER BY bm25(fact_fts), d.rowid DESC
+        LIMIT ?`,
+    ).all(matchExpr, k) as { id: string; rowid: number }[];
+  }
+
+  /** hybrid-retrieval chunk-04 (spec §3.4): the ARCHIVE BM25 leg — matches message_fts.content.
+   *  message_fts already excludes tombstoned/scrubbed rows by construction (chunk-03
+   *  deleteMessageDerived). Quarantine/correction read-filtering is chunk-05's memory_search
+   *  responsibility (spec §3.6) — NOT applied here. */
+  searchMessagesFts(matchExpr: string, k: number): { id: string; rowid: number }[] {
+    if (matchExpr === "") return [];
+    return this.db.query(
+      `SELECT f.message_id AS id, m.rowid AS rowid
+         FROM message_fts f JOIN messages m ON m.id = f.message_id
+        WHERE message_fts MATCH ?
+        ORDER BY bm25(message_fts), m.rowid DESC
+        LIMIT ?`,
+    ).all(matchExpr, k) as { id: string; rowid: number }[];
   }
 
   // ── v2-02: thread mutation marker ─────────────────────────────────────────
@@ -1511,29 +1593,42 @@ export class MemoryStore {
   /** Raw fact vectors for `modelId` — chunk-04's cosine leg consumes this (chunk-03 only
    *  provides + tests it). Rows stamped with a DIFFERENT model_id are EXCLUDED (vectors
    *  from different models are never compared — ADR-0017 dec.3); a loud console.warn
-   *  fires when any are excluded. */
-  readFactVectors(modelId: string): { id: string; vector: Uint8Array; dims: number }[] {
-    const rows = this.db
-      .query("SELECT fact_id AS id, vector, dims FROM fact_embeddings WHERE model_id = ?")
-      .all(modelId) as { id: string; vector: Uint8Array; dims: number }[];
-    const excluded = (this.db.query("SELECT COUNT(*) AS n FROM fact_embeddings WHERE model_id != ?").get(modelId) as { n: number }).n;
-    if (excluded > 0) {
-      console.warn(`[embedding] excluding ${excluded} fact_embeddings row(s) from a different model_id (mixed-model exclusion)`);
-    }
+   *  fires when any are excluded. hybrid-retrieval chunk-04: also carries the corpus
+   *  `rowid` (distilled_facts.rowid) — the ranker's total tie-break source (D4b) — and the
+   *  warn is throttled to once per store per table (handoff (b): the ranker reads vectors on
+   *  every call; an un-throttled warn would spam). */
+  readFactVectors(modelId: string): { id: string; rowid: number; vector: Uint8Array; dims: number }[] {
+    const rows = this.db.query(
+      `SELECT e.fact_id AS id, d.rowid AS rowid, e.vector AS vector, e.dims AS dims
+         FROM fact_embeddings e JOIN distilled_facts d ON d.id = e.fact_id
+        WHERE e.model_id = ?`,
+    ).all(modelId) as { id: string; rowid: number; vector: Uint8Array; dims: number }[];
+    this.warnMixedModelOnce("fact_embeddings", modelId);
     return rows;
   }
 
-  /** Raw message vectors for `modelId` — same mixed-model exclusion contract as
-   *  readFactVectors. */
-  readMessageVectors(modelId: string): { id: string; vector: Uint8Array; dims: number }[] {
-    const rows = this.db
-      .query("SELECT message_id AS id, vector, dims FROM message_embeddings WHERE model_id = ?")
-      .all(modelId) as { id: string; vector: Uint8Array; dims: number }[];
-    const excluded = (this.db.query("SELECT COUNT(*) AS n FROM message_embeddings WHERE model_id != ?").get(modelId) as { n: number }).n;
-    if (excluded > 0) {
-      console.warn(`[embedding] excluding ${excluded} message_embeddings row(s) from a different model_id (mixed-model exclusion)`);
-    }
+  /** Raw message vectors for `modelId` — same mixed-model exclusion contract + rowid/throttle
+   *  as readFactVectors. */
+  readMessageVectors(modelId: string): { id: string; rowid: number; vector: Uint8Array; dims: number }[] {
+    const rows = this.db.query(
+      `SELECT e.message_id AS id, m.rowid AS rowid, e.vector AS vector, e.dims AS dims
+         FROM message_embeddings e JOIN messages m ON m.id = e.message_id
+        WHERE e.model_id = ?`,
+    ).all(modelId) as { id: string; rowid: number; vector: Uint8Array; dims: number }[];
+    this.warnMixedModelOnce("message_embeddings", modelId);
     return rows;
+  }
+
+  /** hybrid-retrieval chunk-04 handoff (b): warn AT MOST once per store per table when
+   *  rows stamped with a different model_id are being excluded from the cosine leg
+   *  (ranker reads vectors on every call — an un-throttled warn would spam). */
+  private warnMixedModelOnce(table: "fact_embeddings" | "message_embeddings", modelId: string): void {
+    if (this.mixedModelWarned.has(table)) return;
+    const excluded = (this.db.query(`SELECT COUNT(*) AS n FROM ${table} WHERE model_id != ?`).get(modelId) as { n: number }).n;
+    if (excluded > 0) {
+      this.mixedModelWarned.add(table);
+      console.warn(`[embedding] excluding ${excluded} ${table} row(s) from a different model_id (mixed-model exclusion)`);
+    }
   }
 
   /**

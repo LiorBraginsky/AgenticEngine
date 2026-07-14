@@ -175,6 +175,11 @@ export function toFtsOrQuery(raw: string): string {
 export class MemoryStore {
   private readonly db: Database;
   private readonly threadsDir: string;
+  /** hybrid-retrieval chunk-03: fired AFTER commit at every embeddable write site (append/
+   *  insert/update/edit/append-to-fact). The store never computes embeddings itself
+   *  ("stores+matches, never computes", :26-28) — this is purely a notification hook; the
+   *  embedding drain (owned by the embedding module) is the sole subscriber. */
+  private writeObserver?: () => void;
 
   constructor(opts: MemoryStoreOptions) {
     mkdirSync(opts.dataDir, { recursive: true });
@@ -184,6 +189,20 @@ export class MemoryStore {
     this.db.exec("PRAGMA journal_mode = WAL;");
     this.db.exec(SCHEMA_DDL);
     this.ensureForgottenFactsCanonicalColumn(); // hybrid-retrieval R2 [grill #5]: always-run guarded add for existing stores
+  }
+
+  /** Subscribe to the write-observer hook (hybrid-retrieval chunk-03). Exactly one
+   *  subscriber in practice (the daemon's EmbeddingDrain, wired in Task 5) — a later call
+   *  replaces the earlier one, matching the single-drain-per-store production shape. */
+  setWriteObserver(fn: () => void): void {
+    this.writeObserver = fn;
+  }
+
+  /** Fire the write-observer, if any. Called AFTER a write tx commits — NEVER from inside
+   *  one (bun:sqlite forbids tx nesting; the drain's own debounce lives on the subscriber
+   *  side, not here). */
+  private notifyWrite(): void {
+    this.writeObserver?.();
   }
 
   /**
@@ -219,10 +238,15 @@ export class MemoryStore {
     const insert = this.db.query(
       "INSERT INTO messages (id, thread_id, turn_index, role, content, created_at, session_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
     );
+    // hybrid-retrieval chunk-03 (spec §3.3 D3b): message_fts is written SYNCHRONOUSLY in
+    // the same tx (cheap, no I/O — mirrors writeFactDerived); the embedding leg is async
+    // (kicked via notifyWrite() below, after commit).
+    const insertFts = this.db.query("INSERT INTO message_fts (message_id, content) VALUES (?, ?)");
     const tx = this.db.transaction(() => {
       messages.forEach((m, i) => {
         const id = crypto.randomUUID();
         insert.run(id, threadId, base + i, m.role, m.content, now, sessionId);
+        insertFts.run(id, m.content);
         ids.push(id);
         this.mirror(threadId, { event: "message", id, turn_index: base + i, role: m.role, content: m.content, session_id: sessionId, created_at: now });
       });
@@ -238,6 +262,9 @@ export class MemoryStore {
       ).run(threadId);
     });
     tx();
+    // hybrid-retrieval chunk-03: notify AFTER commit, never from inside the tx above —
+    // the drain's debounce lives on the subscriber side (Task 5's EmbeddingDrain.kick()).
+    this.notifyWrite();
     return ids;
   }
 
@@ -986,6 +1013,9 @@ export class MemoryStore {
       this.writeFactDerived(id, f.canonical, f.topics);
     });
     tx();
+    // hybrid-retrieval chunk-03: notify AFTER commit — a new fact is pending (no vector
+    // to delete; there was never one). Never called from inside the tx above.
+    this.notifyWrite();
     return id;
   }
 
@@ -1014,10 +1044,16 @@ export class MemoryStore {
       ).run(u.fact, u.confidence, distillerVersion, Date.now(), id);
       this.db.query("DELETE FROM fact_fts WHERE fact_id = ?").run(id);
       this.db.query("DELETE FROM fact_topics WHERE fact_id = ?").run(id);
+      // hybrid-retrieval chunk-03: the fact's text just changed — its stored vector (if
+      // any) no longer matches, so delete it; the row becomes pending again (spec §3.3 D3b).
+      this.db.query("DELETE FROM fact_embeddings WHERE fact_id = ?").run(id);
       this.writeFactDerived(id, u.canonical, u.topics);
       return true;
     });
-    return tx();
+    const applied = tx();
+    // notify AFTER commit, never from inside the tx above; no-op kick if id was absent.
+    if (applied) this.notifyWrite();
+    return applied;
   }
 
   /**
@@ -1048,10 +1084,15 @@ export class MemoryStore {
         .run(newText, Date.now(), id);
       this.db.query("DELETE FROM fact_fts WHERE fact_id = ?").run(id);
       this.db.query("DELETE FROM fact_topics WHERE fact_id = ?").run(id);
+      // hybrid-retrieval chunk-03: text changed — stale vector deleted, row pending again.
+      this.db.query("DELETE FROM fact_embeddings WHERE fact_id = ?").run(id);
       this.writeFactDerived(id, normalizeFactText(newText), []);
       return true;
     });
-    return tx();
+    const applied = tx();
+    // notify AFTER commit, never from inside the tx above; no-op kick if id was absent.
+    if (applied) this.notifyWrite();
+    return applied;
   }
 
   /**
@@ -1072,9 +1113,17 @@ export class MemoryStore {
       const merged = `${row.fact}; ${item}`;
       this.db.query("UPDATE distilled_facts SET fact = ?, derived_at = ? WHERE id = ?").run(merged, Date.now(), id);
       this.db.query("UPDATE fact_fts SET canonical = ? WHERE fact_id = ?").run(appendedCanonical, id);
+      // hybrid-retrieval chunk-03: the display text just changed (merged list) — the
+      // stored vector (if any) no longer matches, so delete it; the row becomes pending
+      // again (spec §3.3 D3b). No existing fact_fts/fact_topics DELETE here (this method
+      // UPDATEs fact_fts.canonical in place) — the embedding leg still needs its own delete.
+      this.db.query("DELETE FROM fact_embeddings WHERE fact_id = ?").run(id);
       return true;
     });
-    return tx();
+    const applied = tx();
+    // notify AFTER commit, never from inside the tx above; no-op kick if id/cap-refused.
+    if (applied) this.notifyWrite();
+    return applied;
   }
 
   /**
@@ -1381,6 +1430,134 @@ export class MemoryStore {
       .run(id, canonical, topics.join(" "));
     const insTopic = this.db.query("INSERT INTO fact_topics (fact_id, topic) VALUES (?, ?)");
     for (const t of topics) insTopic.run(id, t);
+  }
+
+  // ── hybrid-retrieval chunk-03: embedding storage (spec §3.3 D3a/D3b) ───────────────────
+  // "Pending = a query" — a row lacking a fact_embeddings/message_embeddings row for the
+  // CURRENT model_id is pending. No persisted queue; restart-safe by construction. All SQL
+  // for the embedding lifecycle lives HERE (the store owns SQL; the drain only orchestrates).
+
+  /** Distilled facts with no `fact_embeddings` row for `modelId` — the drain's fact-side
+   *  pending scan. Stably ordered by insertion (rowid ASC) so a paginated drain makes
+   *  monotonic progress across restarts. */
+  pendingFactEmbeddings(modelId: string, limit: number): { id: string; fact: string }[] {
+    return this.db.query(
+      `SELECT d.id, d.fact FROM distilled_facts d
+       LEFT JOIN fact_embeddings e ON e.fact_id = d.id AND e.model_id = ?
+       WHERE e.fact_id IS NULL
+       ORDER BY d.rowid LIMIT ?`,
+    ).all(modelId, limit) as { id: string; fact: string }[];
+  }
+
+  /** Messages with no `message_embeddings` row for `modelId`, EXCLUDING scrubbed
+   *  (REDACTION_MARKER content) and tombstoned rows — the drain's message-side pending
+   *  scan. This is the scrub-race guard's SCAN half (the other half is the in-tx re-check
+   *  inside upsertMessageEmbedding — spec [grill #1]). */
+  pendingMessageEmbeddings(modelId: string, limit: number): { id: string; content: string }[] {
+    return this.db.query(
+      `SELECT m.id, m.content FROM messages m
+       LEFT JOIN message_embeddings e ON e.message_id = m.id AND e.model_id = ?
+       WHERE e.message_id IS NULL
+         AND m.content != ?
+         AND NOT EXISTS (SELECT 1 FROM mutations x WHERE x.target_message_id = m.id AND x.kind = 'tombstone')
+       ORDER BY m.rowid LIMIT ?`,
+    ).all(modelId, REDACTION_MARKER, limit) as { id: string; content: string }[];
+  }
+
+  /** Upsert one fact's vector, RE-CHECKING the fact still exists inside the write tx
+   *  (a fact could have been deleted between the drain's scan and this call). Returns
+   *  "skipped" (no-op) if absent — the AFTER DELETE trigger already cleaned up otherwise. */
+  upsertFactEmbedding(factId: string, modelId: string, dims: number, vector: Uint8Array): "written" | "skipped" {
+    const tx = this.db.transaction((): "written" | "skipped" => {
+      const exists = this.db.query("SELECT 1 FROM distilled_facts WHERE id = ?").get(factId);
+      if (exists === null) return "skipped";
+      this.db.query(
+        "INSERT OR REPLACE INTO fact_embeddings (fact_id, model_id, dims, vector, created_at) VALUES (?, ?, ?, ?, ?)",
+      ).run(factId, modelId, dims, vector, Date.now());
+      return "written";
+    });
+    return tx();
+  }
+
+  /** Upsert one message's vector, RE-CHECKING inside the write tx that the message is
+   *  neither absent, scrubbed (REDACTION_MARKER), nor tombstoned since the drain's scan —
+   *  THIS in-tx re-check is the scrub-race guard (spec [grill #1]); do not move it outside
+   *  the tx. Returns "skipped" (no-op, no vector persisted) in any of those cases. */
+  upsertMessageEmbedding(messageId: string, modelId: string, dims: number, vector: Uint8Array): "written" | "skipped" {
+    const tx = this.db.transaction((): "written" | "skipped" => {
+      const row = this.db.query("SELECT content FROM messages WHERE id = ?").get(messageId) as { content: string } | null;
+      if (row === null) return "skipped";
+      if (row.content === REDACTION_MARKER) return "skipped";
+      const tombstoned = this.db
+        .query("SELECT 1 FROM mutations WHERE target_message_id = ? AND kind = 'tombstone' LIMIT 1")
+        .get(messageId);
+      if (tombstoned !== null) return "skipped";
+      this.db.query(
+        "INSERT OR REPLACE INTO message_embeddings (message_id, model_id, dims, vector, created_at) VALUES (?, ?, ?, ?, ?)",
+      ).run(messageId, modelId, dims, vector, Date.now());
+      return "written";
+    });
+    return tx();
+  }
+
+  /** Delete a message's derived embedding-plane rows (message_embeddings + message_fts).
+   *  NO own transaction — call this WITHIN an existing tx (WriteGate.forget's scrub tx,
+   *  Task 5), so the scrub and the derived-row cleanup commit atomically. */
+  deleteMessageDerived(messageId: string): void {
+    this.db.query("DELETE FROM message_embeddings WHERE message_id = ?").run(messageId);
+    this.db.query("DELETE FROM message_fts WHERE message_id = ?").run(messageId);
+  }
+
+  /** Raw fact vectors for `modelId` — chunk-04's cosine leg consumes this (chunk-03 only
+   *  provides + tests it). Rows stamped with a DIFFERENT model_id are EXCLUDED (vectors
+   *  from different models are never compared — ADR-0017 dec.3); a loud console.warn
+   *  fires when any are excluded. */
+  readFactVectors(modelId: string): { id: string; vector: Uint8Array; dims: number }[] {
+    const rows = this.db
+      .query("SELECT fact_id AS id, vector, dims FROM fact_embeddings WHERE model_id = ?")
+      .all(modelId) as { id: string; vector: Uint8Array; dims: number }[];
+    const excluded = (this.db.query("SELECT COUNT(*) AS n FROM fact_embeddings WHERE model_id != ?").get(modelId) as { n: number }).n;
+    if (excluded > 0) {
+      console.warn(`[embedding] excluding ${excluded} fact_embeddings row(s) from a different model_id (mixed-model exclusion)`);
+    }
+    return rows;
+  }
+
+  /** Raw message vectors for `modelId` — same mixed-model exclusion contract as
+   *  readFactVectors. */
+  readMessageVectors(modelId: string): { id: string; vector: Uint8Array; dims: number }[] {
+    const rows = this.db
+      .query("SELECT message_id AS id, vector, dims FROM message_embeddings WHERE model_id = ?")
+      .all(modelId) as { id: string; vector: Uint8Array; dims: number }[];
+    const excluded = (this.db.query("SELECT COUNT(*) AS n FROM message_embeddings WHERE model_id != ?").get(modelId) as { n: number }).n;
+    if (excluded > 0) {
+      console.warn(`[embedding] excluding ${excluded} message_embeddings row(s) from a different model_id (mixed-model exclusion)`);
+    }
+    return rows;
+  }
+
+  /**
+   * Idempotent one-time indexing: insert `message_fts` rows for every non-tombstoned,
+   * non-scrubbed message that doesn't already have one. Used by the backfill script
+   * (Task 6) and by any live store that predates chunk-03. Returns the number of rows
+   * actually inserted.
+   *
+   * NOTE: deliberately NOT `INSERT ... .run(...).changes` — sqlite's changes() count on an
+   * FTS5 virtual table reflects its internal shadow-table writes (empirically ~5x the
+   * logical row count), not the logical row count the caller wants. A before/after
+   * COUNT(*) diff on message_fts itself is the correct, deterministic measure.
+   */
+  backfillMessageFts(): number {
+    const before = (this.db.query("SELECT COUNT(*) AS n FROM message_fts").get() as { n: number }).n;
+    this.db.query(
+      `INSERT INTO message_fts (message_id, content)
+       SELECT m.id, m.content FROM messages m
+       WHERE m.content != ?
+         AND NOT EXISTS (SELECT 1 FROM mutations x WHERE x.target_message_id = m.id AND x.kind = 'tombstone')
+         AND NOT EXISTS (SELECT 1 FROM message_fts f WHERE f.message_id = m.id)`,
+    ).run(REDACTION_MARKER);
+    const after = (this.db.query("SELECT COUNT(*) AS n FROM message_fts").get() as { n: number }).n;
+    return after - before;
   }
 
   private nextTurnIndex(threadId: string): number {

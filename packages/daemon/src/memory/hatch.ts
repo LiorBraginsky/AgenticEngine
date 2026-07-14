@@ -68,18 +68,15 @@ export class Hatch {
   }
 
   /**
-   * Edit a message (correction record, authored_by:human).
-   * Delegates to the existing WriteGate.edit — no new write path.
-   */
-  edit(messageId: string, replacement: string, ctx: WriteContext, reason?: string): void {
-    this.gate.edit(messageId, replacement, ctx, reason);
-  }
-
-  /**
    * Edit a FACT's text (chunk-05 FACT-EDIT; ADR-0012 5a "edit what the agent remembers").
    * Delegates to WriteGate.editFact — updates the text + stamps authored_by='human' (5e-protected),
    * never scrubs messages (B1). Returns true iff applied (false → 404 at the route).
-   * Distinct from edit(messageId) above, which is the MESSAGE correction (blessed as-is, chunk-03).
+   *
+   * hybrid-retrieval chunk-01 (spec §3.7 R1): the MESSAGE-correction facade `edit(messageId, ...)`
+   * (a thin passthrough to `WriteGate.edit`) is RETIRED — dead-code check confirmed http-routes.ts
+   * was its sole production caller, and that HTTP branch is removed. `WriteGate.edit` itself,
+   * the `mutations` kind `'correction'`, and the `readThreadArchive` COALESCE are UNCHANGED
+   * (ADR-0015 B1) — only this now-unreachable façade wrapper is gone.
    */
   editFact(factId: string, newText: string, ctx: WriteContext, reason?: string): boolean {
     return this.gate.editFact(factId, newText, ctx, reason);

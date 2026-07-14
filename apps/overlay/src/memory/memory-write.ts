@@ -6,13 +6,14 @@
  * maps to a discriminated WriteResult so the UI renders an honest state — never a fake success.
  *
  * ctx { actor:"user", authored_by:"human" } is FIXED server-side (http-routes.ts HTTP_CTX) — the
- * client sends NO ctx. forget targets a FACT by its stable uuid (target_type:"fact" + fact_id);
- * edit targets a MESSAGE by its id (MUTATION-AS-APPEND human correction — WriteGate.edit). See the
- * plan's "## Reality check" §2 for why message-edit is message-scoped.
+ * client sends NO ctx. forget targets a FACT by its stable uuid (target_type:"fact" + fact_id).
  *
- * chunk-05 (FACT-EDIT): `/memory/edit` also accepts a `target_type:"fact"` discriminator (mirrors
+ * chunk-05 (FACT-EDIT): `/memory/edit` accepts a `target_type:"fact"` discriminator (mirrors
  * the forget route's `fact_id` shape) — `editFact` below is that variant (ADR-0012 5a "correct
- * what the agent remembers"). `editMessage` is unchanged.
+ * what the agent remembers"). `editMessage` (the MESSAGE-scoped variant) is REMOVED
+ * (hybrid-retrieval chunk-01, spec §3.7 R1, ADR-0012 rider Ruling 1): archive = read-only
+ * immutable history, memory (facts) = the ONLY editable surface. The daemon route now returns
+ * 400 `bad_body` for a message-shaped body (no `target_type:"fact"`).
  */
 import type { MemoryApiDeps } from "./memory-api.js";
 
@@ -52,13 +53,6 @@ async function post(deps: MemoryApiDeps, path: string, body: unknown): Promise<W
  *  stable uuid; the daemon deletes exactly that row and never scrubs the source messages. */
 export function forgetFact(deps: MemoryApiDeps, factId: string): Promise<WriteResult> {
   return post(deps, "/memory/forget", { target_type: "fact", fact_id: factId, reason: "hatch-forget" });
-}
-
-/** Edit a MESSAGE — MUTATION-AS-APPEND human correction (WriteGate.edit; ADR-0012 5e). The daemon
- *  fixes authored_by:"human" server-side; the correction wins in the archive view and cannot be
- *  machine-clobbered. `messageId` is a messages.id (a 404 means the message is gone → stale). */
-export function editMessage(deps: MemoryApiDeps, messageId: string, replacement: string): Promise<WriteResult> {
-  return post(deps, "/memory/edit", { target: messageId, replacement, reason: "hatch-edit" });
 }
 
 /** Edit a FACT's text — "correct what the agent remembers" (ADR-0012 5a). Keys on the fact's

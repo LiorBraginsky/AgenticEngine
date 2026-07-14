@@ -456,9 +456,15 @@ describe("delta distill contract (v2-03 incremental)", () => {
     const messages = params["messages"] as Array<{ content: string }>;
     const userContent = messages[messages.length - 1]?.content ?? "";
 
-    const mentionedCount = Array.from({ length: 15 }, (_, i) => i)
-      .filter((i) => userContent.includes(`forgotten-fact-${i}`)).length;
-    expect(mentionedCount).toBe(10);
+    // hybrid-retrieval chunk-01 R3: match with a non-digit boundary so "forgotten-fact-1"
+    // does NOT collide with "forgotten-fact-10".."forgotten-fact-14" (a plain .includes()
+    // substring check double-counts those and masked the D6c flake — de-collided here).
+    const mentioned = Array.from({ length: 15 }, (_, i) => i)
+      .filter((i) => new RegExp(`forgotten-fact-${i}(?!\\d)`).test(userContent));
+
+    // The store's tie-break (rowid DESC) makes "most-recent 10" deterministic: the LAST 10
+    // inserted (indices 5..14), not an arbitrary 10 of the 15 same-millisecond rows.
+    expect(mentioned).toEqual([5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
 
     store.close();
   });

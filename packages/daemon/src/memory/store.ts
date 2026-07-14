@@ -359,6 +359,10 @@ export class MemoryStore {
    * most-recent `limit` rows (2c-01 review FIX 3 — the smart-distiller's soft nudge joins
    * `raw_text` into every distill prompt; unbounded would grow the prompt monotonically as
    * the corpus of forgotten facts grows). Omitted ⇒ unbounded (unchanged default behavior).
+   * Ties (rows landing in the same millisecond — `recordForgottenFact` stamps `Date.now()`,
+   * and a fast loop-insert routinely collides) break on `rowid DESC` (hybrid-retrieval
+   * chunk-01 R3 — the D6c flake root; a monotonic secondary so "most-recent `limit`" is
+   * actually the most-recently-INSERTED rows, not an arbitrary same-key scan order).
    */
   readForgottenFacts(limit?: number): ForgottenFactRow[] {
     if (limit === undefined) {
@@ -367,7 +371,7 @@ export class MemoryStore {
         .all() as ForgottenFactRow[];
     }
     return this.db
-      .query("SELECT normalized_text, raw_text, provenance FROM forgotten_facts ORDER BY created_at DESC LIMIT ?")
+      .query("SELECT normalized_text, raw_text, provenance FROM forgotten_facts ORDER BY created_at DESC, rowid DESC LIMIT ?")
       .all(limit) as ForgottenFactRow[];
   }
 
@@ -777,10 +781,15 @@ export class MemoryStore {
       .run(crypto.randomUUID(), threadId, trigger, factsProduced, distillerVersion, Date.now());
   }
 
-  /** SELECT distillation_events for a thread, ordered by created_at ASC. */
+  /**
+   * SELECT distillation_events for a thread, ordered by created_at ASC. Ties (same-millisecond
+   * events) break on `rowid ASC` (hybrid-retrieval chunk-01 R3 — direction-matched to the ASC
+   * read per the FIX-7 precedent `readMemoryActionEvents`; a DESC rowid on an ASC read would
+   * interleave inconsistently).
+   */
   readDistillationEvents(threadId: string): DistillationEventRow[] {
     return this.db
-      .query("SELECT facts_produced, trigger, distiller_version, created_at FROM distillation_events WHERE thread_id = ? ORDER BY created_at ASC")
+      .query("SELECT facts_produced, trigger, distiller_version, created_at FROM distillation_events WHERE thread_id = ? ORDER BY created_at ASC, rowid ASC")
       .all(threadId) as DistillationEventRow[];
   }
 
@@ -1021,10 +1030,15 @@ export class MemoryStore {
     return tx();
   }
 
-  /** Read the durable replaced-text audit trail for a fact id (spec §3.2 m4). */
+  /**
+   * Read the durable replaced-text audit trail for a fact id (spec §3.2 m4). Ties (same-
+   * millisecond replacements) break on `rowid ASC` (hybrid-retrieval chunk-01 R3 —
+   * direction-matched ASC tie-break, same class of fix as `readForgottenFacts`/
+   * `readDistillationEvents`).
+   */
   readReplacedFacts(factId: string): ReplacedFactRow[] {
     return this.db.query(
-      "SELECT replaced_text, actor, reason, created_at FROM replaced_facts WHERE fact_id = ? ORDER BY created_at ASC",
+      "SELECT replaced_text, actor, reason, created_at FROM replaced_facts WHERE fact_id = ? ORDER BY created_at ASC, rowid ASC",
     ).all(factId) as ReplacedFactRow[];
   }
 

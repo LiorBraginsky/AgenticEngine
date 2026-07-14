@@ -121,25 +121,19 @@ test("T1.1: view distilledFacts includes facts from the real store", async () =>
   expect(result.distilledFacts.some((f) => f.fact === "deploy is yeet.sh")).toBe(true);
 });
 
-// ─── T1.2: Hatch.forgetFact + edit ───────────────────────────────────────────
+// ─── T1.2: Hatch.forgetFact ───────────────────────────────────────────────────
 //
 // v2-04: T1.2(c) (Hatch.forgetMessage) removed — Hatch.forgetMessage removed (Ruling 2).
 // WriteGate.forget scrub+tombstone coverage lives in write-gate.test.ts (intact).
-
-test("T1.2(b): Hatch.edit → authored_by:human correction reflected in within-thread tail", async () => {
-  const hatch = new Hatch(store, gate);
-
-  const threadId = store.createThread();
-  const [mid] = store.appendMessages(threadId, [{ role: "user", content: "original content" }], "s1");
-
-  // Edit via Hatch
-  hatch.edit(mid!, "corrected content", { actor: "user", authored_by: "human" });
-
-  // Tail should reflect the human correction
-  const tail = store.readThreadTail(threadId, 50);
-  expect(tail.some((m) => m.content === "corrected content")).toBe(true);
-  expect(tail.some((m) => m.content === "original content")).toBe(false);
-});
+//
+// hybrid-retrieval chunk-01 (spec §3.7 R1): T1.2(b) (Hatch.edit → correction reflected in
+// within-thread tail) removed — Hatch.edit itself is retired (dead code, sole caller was
+// the now-removed HTTP message-edit branch). The identical WriteGate.edit-level behavior
+// (correction appended, original NOT mutated, readThreadTail surfaces it — the COALESCE
+// machinery, ADR-0015 B1, kept) is already covered directly in write-gate.test.ts
+// ("edit appends a correction; the original message row is NOT mutated in place") and
+// memory-integration.daemon.test.ts ("edit appends a correction; original message row is
+// unchanged in place") — both untouched.
 
 // ─── T1.2 LOAD-BEARING: projection-tombstone (S1 gap fill) ───────────────────
 //
@@ -217,9 +211,13 @@ test("T1.2(d) regression: WriteGate.forget(messageId) still tombstones and purge
 // This test closes the EDIT case honestly: seed thread A with a fact, edit it,
 // distill thread A, retrieve for a NEW thread B — assert the CORRECTED content
 // appears (not the original). Uses the real on-disk store + real provider; no mocks.
+//
+// hybrid-retrieval chunk-01 (spec §3.7 R1): edits via `gate.edit` directly (WriteGate.edit —
+// the KEPT machinery, ADR-0015 B1), not the retired `Hatch.edit` façade. The behavior under
+// test (a human correction propagates through distill into a DIFFERENT thread's injection
+// slice) is unique coverage — preserved, just decoupled from the now-dead Hatch wrapper.
 
-test("Fix-2: Hatch.edit → distill → retrieve in new thread B reflects corrected content, not original", async () => {
-  const hatch = new Hatch(store, gate);
+test("edit (WriteGate.edit) → distill → retrieve in new thread B reflects corrected content, not original", async () => {
   const hook = new ConsolidationHook(store);
   const dumbTail = new DumbTailProvider();
   registerDistiller(hook, store, dumbTail, new RuleBasedScanner());
@@ -229,7 +227,7 @@ test("Fix-2: Hatch.edit → distill → retrieve in new thread B reflects correc
   const [mid] = store.appendMessages(threadA, [{ role: "user", content: "original fact for cross-thread" }], "sA");
 
   // Edit the message (human correction — authoritatively replaces original)
-  hatch.edit(mid!, "corrected fact for cross-thread", { actor: "user", authored_by: "human" });
+  gate.edit(mid!, "corrected fact for cross-thread", { actor: "user", authored_by: "human" });
 
   // Distill thread A — distiller reads the corrected content via readThreadMessagesForDistill
   await hook.dismiss([threadA]);

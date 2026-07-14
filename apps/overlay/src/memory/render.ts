@@ -11,15 +11,6 @@ import {
 } from "./fact-view.js";
 import { buildForgetControl, buildEditControl } from "./actions.js";
 
-/** chunk-03 (ACT): optional per-row actions. Absent → chunk-02 read-only behavior (existing callers). */
-export interface MessageActions {
-  /** Attach an inline Edit control per message → POST /memory/edit (WriteGate.edit human correction). */
-  onEdit?: (messageId: string, newText: string) => void;
-  /** Message ids edited THIS session → shown with an "edited by you" tag. The wire carries no
-   *  persistent per-message correction flag (see plan "## Reality check" §2), so this is an honest
-   *  optimistic marker; the corrected TEXT itself is persistent via readThreadArchive COALESCE. */
-  editedIds?: ReadonlySet<string>;
-}
 export interface FactActions {
   /** Attach a "release the reference" Forget control per fact → POST /memory/forget (durable delete). */
   onForget?: (factId: string) => void;
@@ -58,7 +49,12 @@ export function renderThreadList(listEl: HTMLElement, threads: ThreadSummary[], 
   }
 }
 
-export function renderMessages(el: HTMLElement, messages: ThreadMessage[], actions?: MessageActions): void {
+/**
+ * Message rows are permanently READ-ONLY (hybrid-retrieval chunk-01, spec §3.7 R1 — the
+ * message-edit affordance is REMOVED end-to-end; archive = read-only immutable history,
+ * memory (facts) = the editable surface). No actions param — never render an edit control here.
+ */
+export function renderMessages(el: HTMLElement, messages: ThreadMessage[]): void {
   clear(el);
   if (messages.length === 0) { renderState(el, "No messages."); return; }
   messages.forEach((m, i) => {
@@ -67,21 +63,11 @@ export function renderMessages(el: HTMLElement, messages: ThreadMessage[], actio
     const role = document.createElement("div");
     role.className = "message-role";
     role.textContent = `${m.role || "?"} · turn ${i + 1}`;
-    if (actions?.editedIds?.has(m.id)) {
-      const tag = document.createElement("span");
-      tag.className = "edited-tag";
-      tag.textContent = " · edited by you";
-      role.appendChild(tag);
-    }
     const content = document.createElement("div");
     content.className = "message-content";
     content.textContent = m.content || ""; // may be "[forgotten]" for a tombstoned message
     row.appendChild(role);
     row.appendChild(content);
-    if (actions?.onEdit) {
-      const onEdit = actions.onEdit;
-      row.appendChild(buildEditControl(m.content || "", (newText) => onEdit(m.id, newText)));
-    }
     el.appendChild(row);
   });
 }

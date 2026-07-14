@@ -17,8 +17,10 @@
  *   4. POST /memory/forget without token → 403
  *   5. POST /memory/forget WITH token on seeded human message → 204 + disk shows REDACTION_MARKER
  *   6. POST /memory/forget WITH token, unknown UUID-shaped target → 404 (not 500)
- *   7. POST /memory/edit WITH token → 204 + correction row on disk (authored_by:human)
- *   8. POST /memory/edit with bad body (missing replacement) → 400
+ *
+ * hybrid-retrieval chunk-01 (spec §3.7 R1): tests 7/8 (POST /memory/edit MESSAGE-shaped body)
+ * removed — the message-edit HTTP branch is retired; a message-shaped body now → 400 bad_body
+ * (see "message-edit REMOVED" test below). target_type:"fact" (chunk-05 FACT-EDIT) is untouched.
  */
 import { test, expect, beforeAll, afterAll } from "bun:test";
 import { tmpdir } from "node:os";
@@ -211,62 +213,11 @@ test("T2.1c-7: POST /memory/forget with missing target_type → 400 bad_body", a
 // v2-04: T2.1c-8 GET /memory/cofed test removed. countFactsFedByMessages was removed
 // in v2-04 along with option B. The /memory/cofed route was removed in Task 2 (2.2); the → 404 test passes.
 
-// Test 7: POST /memory/edit with token → 204 and correction row on disk (authored_by:human).
-// The T1 hatch tests already prove edit→distill→retrieve injection (Fix-2 cross-thread test
-// in hatch.daemon.test.ts). The HTTP leg verifies the mutation row lands on disk with the
-// correct authored_by so the write-gate's 5e semantics are honoured end-to-end.
-// Option taken: verify mutation row on disk (authored_by:human + replacement_content) +
-// cite Fix-2 in hatch.daemon.test.ts for the injection leg.
-test("T2.1c-4: POST /memory/edit with Bearer token → 204 and correction row on disk authored_by:human", async () => {
-  // Seed a fresh message for editing (the seeded message may be tombstoned after test 5).
-  const setupStore = new MemoryStore({ dataDir: sharedDataDir });
-  const editThreadId = setupStore.createThread("edit-test-thread");
-  const [editMsgId] = setupStore.appendMessages(editThreadId, [{ role: "user", content: "original content" }], "edit-session");
-  setupStore.close();
-
-  const token = readToken();
-  const res = await fetch(`http://127.0.0.1:${PORT}/memory/edit`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({ target: editMsgId!, replacement: "corrected content", reason: "test-edit" }),
-  });
-  expect(res.status).toBe(204);
-
-  // Verify on disk: the mutations table has a correction row authored_by:human.
-  const verifyStore = new MemoryStore({ dataDir: sharedDataDir });
-  const db = verifyStore.rawDb();
-  const row = db.query(
-    "SELECT kind, replacement_content, authored_by FROM mutations WHERE target_message_id = ? AND kind = 'correction'",
-  ).get(editMsgId!) as { kind: string; replacement_content: string; authored_by: string } | null;
-  verifyStore.close();
-
-  expect(row).not.toBeNull();
-  expect(row!.kind).toBe("correction");
-  expect(row!.replacement_content).toBe("corrected content");
-  expect(row!.authored_by).toBe("human");
-  // The edit→distill→retrieve injection leg is covered by Fix-2 in hatch.daemon.test.ts
-  // (real store + real DumbTailProvider; no re-proof needed at the HTTP layer).
-});
-
-// Test 8: POST /memory/edit with bad body (missing replacement) → 400.
-test("T2.1c-5: POST /memory/edit with bad body (missing replacement) → 400 bad_body", async () => {
-  const token = readToken();
-  const res = await fetch(`http://127.0.0.1:${PORT}/memory/edit`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    // target present but replacement missing → bad shape
-    body: JSON.stringify({ target: seededMessageId }),
-  });
-  expect(res.status).toBe(400);
-  const body = await res.json() as { error: string };
-  expect(body.error).toBe("bad_body");
-});
+// hybrid-retrieval chunk-01 (spec §3.7 R1): T2.1c-4 (POST /memory/edit message-shaped body
+// → 204 + correction row on disk) and T2.1c-5 (message-shaped bad body → 400) REMOVED — the
+// message-edit HTTP branch is retired end-to-end. See "message-edit removed" test below
+// (the new 400 assertion for a message-shaped body) and the fact-edit tests further down
+// (untouched — target_type:"fact" is the ONLY accepted shape now).
 
 // ─── Guard: malformed percent-sequence in thread-id path → 400, not 500 ──────
 //
@@ -593,6 +544,8 @@ test("fact-edit: no token → 401", async () => {
   expect((await editPost({ target_type: "fact", fact_id: seededFactId, replacement: "x" }, false)).status).toBe(401);
 });
 
-test("message-edit regression: {target,replacement} (no target_type) still → 204", async () => {
-  expect((await editPost({ target: seededMessageId, replacement: "corrected msg" })).status).toBe(204);
+test("hybrid-retrieval chunk-01: message-edit REMOVED — {target,replacement} (no target_type) → 400 bad_body", async () => {
+  const res = await editPost({ target: seededMessageId, replacement: "corrected msg" });
+  expect(res.status).toBe(400);
+  expect((await res.json() as { error: string }).error).toBe("bad_body");
 });

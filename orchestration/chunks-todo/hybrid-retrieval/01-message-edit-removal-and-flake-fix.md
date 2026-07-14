@@ -1,6 +1,6 @@
 # Chunk 1: message-edit removal + D6c flake fix
 
-**Status:** todo
+**Status:** in-progress
 **Created:** 2026-07-13
 **Phase:** hybrid-retrieval (2d) — riders-first
 **Estimated size:** ~1 day

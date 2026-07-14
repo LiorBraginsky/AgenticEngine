@@ -321,12 +321,10 @@ test("chunk-05 fact-edit: POST rejected (daemon down) → DOWN, never a fake suc
   expect(els.factsEl.textContent).toContain("Daemon unreachable"); // honest, no "colour green"/fake success
 });
 
-test("chunk-03 edit: 204 → re-fetch, corrected text shown + 'edited by you' tag", async () => {
-  let content = "hi";
-  const fetchFn = (url: string, init?: RequestInit): Promise<Response> => {
-    if (init?.method === "POST") { content = "corrected"; return Promise.resolve(new Response(null, { status: 204 })); }
+test("hybrid-retrieval chunk-01: message rows render with NO edit control (message-edit removed)", async () => {
+  const fetchFn = (url: string): Promise<Response> => {
     const body = url.includes("/memory/thread/")
-      ? { messages: [{ id: "M1", role: "user", content }], distilledFacts: [], distillationEvents: [] }
+      ? { messages: [{ id: "M1", role: "user", content: "hi" }], distilledFacts: [], distillationEvents: [] }
       : { threads: [{ thread_id: "T1", title: "One", last_active_at: 1, status: "active" }] };
     return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
   };
@@ -334,12 +332,8 @@ test("chunk-03 edit: 204 → re-fetch, corrected text shown + 'edited by you' ta
   const c = createMemoryController({ api: { fetchFn, baseUrl: "http://127.0.0.1:7777", token: "TOK" }, els });
   c.start(); await flush();
   els.threadListEl.querySelector<HTMLElement>(".thread-list-item")!.click(); await flush();
-  els.messagesEl.querySelector<HTMLButtonElement>(".act-edit")!.click(); // open editor
-  const ta = els.messagesEl.querySelector("textarea")!;
-  ta.value = "corrected";
-  els.messagesEl.querySelector<HTMLButtonElement>(".act-save")!.click(); await flush(); // POST → re-fetch
-  expect(els.messagesEl.textContent).toContain("corrected"); // new text visible on reload
-  expect(els.messagesEl.textContent).toContain("edited by you"); // session marker
+  expect(els.messagesEl.querySelector(".act-edit")).toBeNull();
+  expect(els.messagesEl.textContent).not.toContain("edited by you");
 });
 
 // chunk-04 (2c D9b): the audit list reads the DECLARED HatchView.memoryActionEvents field.

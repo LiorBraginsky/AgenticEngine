@@ -1087,3 +1087,26 @@ test("FIX7: readMemoryActionEvents breaks same-created_at ties by insertion orde
   expect(events.map((e) => e.fact_text)).toEqual(["first", "second", "third"]);
   store.close();
 });
+
+// ── hybrid-retrieval chunk-01 R3: the D6c flake root — readForgottenFacts orders
+// by created_at DESC with NO tie-break; recordForgottenFact stamps Date.now(), so
+// a fast loop-insert can land many rows in the same millisecond and the LIMITed
+// top-N becomes arbitrary (in practice: the OLDEST N, not the most-recent N).
+// Fix: ORDER BY created_at DESC, rowid DESC (rowid = insertion order). ─────────
+
+test("R3: readForgottenFacts breaks same-created_at ties by insertion order (rowid DESC)", () => {
+  const { store } = freshStore();
+  const db = store.rawDb();
+  const now = Date.now();
+  const insert = db.query(
+    "INSERT INTO forgotten_facts (id, normalized_text, raw_text, provenance, actor, reason, authored_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+  );
+  insert.run(crypto.randomUUID(), "first", "first", "thread:x", "agent", null, "machine", now);
+  insert.run(crypto.randomUUID(), "second", "second", "thread:x", "agent", null, "machine", now);
+  insert.run(crypto.randomUUID(), "third", "third", "thread:x", "agent", null, "machine", now);
+
+  const rows = store.readForgottenFacts(2);
+  // DESC order + rowid DESC tie-break: the two MOST-RECENTLY-inserted rows, most-recent-first.
+  expect(rows.map((r) => r.raw_text)).toEqual(["third", "second"]);
+  store.close();
+});

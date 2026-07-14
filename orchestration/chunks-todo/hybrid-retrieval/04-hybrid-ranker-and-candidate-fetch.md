@@ -1,6 +1,6 @@
 # Chunk 4: hybrid ranker (RRF) + distiller candidate-fetch + golden-set eval
 
-**Status:** todo
+**Status:** in-progress
 **Created:** 2026-07-13
 **Phase:** hybrid-retrieval (2d)
 **Estimated size:** ~1–1.5 days
@@ -19,6 +19,11 @@
 - **The golden-set eval (spec §3.8) — this chunk's acceptance instrument:**
   - fixture file: demo-3 UK/EN colour pair + change case; the 16-rephrase classes (from chunk-02's
     fixture); UA↔EN paraphrase (not-translation) pairs; negative controls.
+  - **CONDUCTOR ANNOTATION (Lior ruling 2026-07-14, ledger): the product is NOT positioned as
+    Ukrainian-language — frame the eval LANGUAGE-AGNOSTIC.** The UA↔EN pairs stay (they are the
+    real dogfood defect cases), but ADD at least 2 non-UA cross-language paraphrase pairs (e.g.
+    es↔EN, de↔EN) so the acceptance protects the GENERAL user-language↔canonical-language
+    property, not one language. No UA-specific machinery (stemming/tokenizers) anywhere.
   - CI layer: fusion/tie-break determinism on fixture vectors.
   - EXECUTED probe `scripts/retrieval-golden-eval.ts` **on a seeded >`ALL_FACTS_CAP`(=50) store**
     (below the cap the lane under test never runs — spec D5b/[grill #4]): **RED BM25-only baseline

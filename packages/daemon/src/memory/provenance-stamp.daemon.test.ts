@@ -73,6 +73,9 @@ let sourceThreadId: string;
 beforeAll(async () => {
   dataDir = mkdtempSync(join(tmpdir(), "mf05-t23a-"));
   process.env.AGENTIC_DATA_DIR = dataDir;
+  // hybrid-retrieval chunk-03 (reviewer MINOR fix): pin lexical-only so this daemon boot
+  // never constructs a real LocalWasmEmbeddingProvider (ENOENT noise; CI never has the model).
+  process.env.EMBEDDING_PROVIDER = process.env.EMBEDDING_PROVIDER ?? "none";
 
   // Seed: create a source thread and insert a cross-thread distilled fact into it
   // so the DumbTailProvider's retrieve() returns ≥1 prior message on every new-thread
@@ -391,6 +394,9 @@ test("T2.3a-E: known-thread turn with EMPTY memory → NOT stamped (tail-only hy
   const dir2 = mkdtempSync(join(tmpdir(), "mf05-t23a-e-"));
   const prevDataDir = process.env.AGENTIC_DATA_DIR;
   process.env.AGENTIC_DATA_DIR = dir2;
+  // hybrid-retrieval chunk-03 (reviewer MINOR fix): pin lexical-only so this daemon boot
+  // never constructs a real LocalWasmEmbeddingProvider (ENOENT noise; CI never has the model).
+  process.env.EMBEDDING_PROVIDER = process.env.EMBEDDING_PROVIDER ?? "none";
   const { createAnthropicApiProvider } = await import("../providers/anthropic-api-provider.js");
   const fake = createAnthropicApiProvider({ apiKey: "sk-ant-fake", client: makeFakeClient("Reply E.") as never });
   const { startDaemon } = await import("../index.js");

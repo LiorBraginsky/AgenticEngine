@@ -25,6 +25,13 @@
  * thread_distill_state mutation-marker table + replaced_facts audit. All
  * CREATE IF NOT EXISTS — additive, no ALTER. The fact store is now a STATEFUL
  * derived store (ADR-0012 Amendment 2026-06-13).
+ *
+ * hybrid-retrieval chunk-03 (spec §3.3 D3a): adds fact_embeddings + message_embeddings
+ * (plain BLOB vector storage, brute-force cosine — gotcha #47 honored) + message_fts
+ * (the first FTS5 surface over archived message content — the archive lexical leg) + a
+ * SECOND additive AFTER DELETE trigger on distilled_facts (trg_distilled_facts_ad_embeddings
+ * — does NOT edit the existing trg_distilled_facts_ad; SQLite fires both). All CREATE IF
+ * NOT EXISTS — additive, no ALTER.
  */
 export const REDACTION_MARKER = "[forgotten]";
 
@@ -166,4 +173,32 @@ CREATE TABLE IF NOT EXISTS memory_action_events (
   created_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_memory_action_events_thread ON memory_action_events(thread_id);
+
+-- hybrid-retrieval chunk-03 (spec §3.3 D3a): vector storage (plain BLOB, brute-force cosine —
+-- gotcha #47 honored) + archive lexical leg. model_id stamped per row (ADR-0017 dec.3 — swap = full re-embed).
+CREATE TABLE IF NOT EXISTS fact_embeddings (
+  fact_id    TEXT PRIMARY KEY,
+  model_id   TEXT NOT NULL,
+  dims       INTEGER NOT NULL,
+  vector     BLOB NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS message_embeddings (
+  message_id TEXT PRIMARY KEY,
+  model_id   TEXT NOT NULL,
+  dims       INTEGER NOT NULL,
+  vector     BLOB NOT NULL,
+  created_at INTEGER NOT NULL
+);
+-- Archive lexical leg (first FTS surface over Cyrillic message content). unicode61 (spec D1b provisional).
+CREATE VIRTUAL TABLE IF NOT EXISTS message_fts USING fts5(message_id UNINDEXED, content);
+
+-- Additive SECOND AFTER DELETE trigger on distilled_facts — cleans fact_embeddings.
+-- Do NOT edit trg_distilled_facts_ad; SQLite fires both. (Message rows are never row-deleted;
+-- message_embeddings/message_fts are cleaned in the scrub tx — see WriteGate.forget.)
+CREATE TRIGGER IF NOT EXISTS trg_distilled_facts_ad_embeddings
+AFTER DELETE ON distilled_facts
+BEGIN
+  DELETE FROM fact_embeddings WHERE fact_id = old.id;
+END;
 `;

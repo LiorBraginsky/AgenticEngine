@@ -16,6 +16,9 @@ beforeAll(async () => {
   process.env.AGENTIC_DATA_DIR = dataDir;
   process.env.LLM_PROVIDER = "mock";
   process.env.MEMORY_PROVIDER = "dumb-tail"; // v2-05: default flipped to smart; pin the deterministic distiller (the smart Anthropic SDK can't run under bun:test). The dismiss→distill PLUMBING is what this DoD proves, not the LLM distiller.
+  // hybrid-retrieval chunk-03 (reviewer MINOR fix): pin lexical-only so this daemon boot
+  // never constructs a real LocalWasmEmbeddingProvider (ENOENT noise; CI never has the model).
+  process.env.EMBEDDING_PROVIDER = process.env.EMBEDDING_PROVIDER ?? "none";
   const { startDaemon } = await import("./index.js");
   server = startDaemon(0);
   PORT = server.port!;

@@ -7,6 +7,9 @@ import type { AgentProvider, ProviderSessionState, ProviderInput, MemoryTurnSlic
 import { withRememberedIndex, buildOrdinalMap } from "./providers/memory-turn-slice.js";
 import { MemoryStore } from "./memory/store.js";
 import { WriteGate } from "./memory/write-gate.js";
+import type { EmbeddingProvider } from "./memory/embedding/embedding-provider.js";
+import { buildEmbeddingProvider } from "./memory/embedding/embedding-provider-selector.js";
+import { EmbeddingDrain } from "./memory/embedding/embedding-drain.js";
 import { RuleBasedScanner } from "./memory/scanner/memory-scanner.js";
 import { ThreadLifecycle } from "./memory/thread-lifecycle.js";
 import { ConsolidationHook } from "./memory/consolidation-hook.js";
@@ -66,12 +69,31 @@ const REDUCER_INPUT_TYPES = new Set(["session_start", "tool_result", "tool_cance
  *                   production uses buildMemoryProvider(). The demo harness injects
  *                   a SmartDistillerProvider with a scripted clientFactory so the full
  *                   flow runs deterministically without a live Anthropic key.
+ * @param embeddingProvider - additive test/harness injection seam (mirrors provider?/
+ *                   memoryProvider?; hybrid-retrieval chunk-03); production selects via
+ *                   buildEmbeddingProvider(). Construction alone never touches the
+ *                   filesystem/network — no test here risks a model download.
  */
-export function startDaemon(port: number = DAEMON_PORT, provider?: AgentProvider, memoryProvider?: MemoryProvider) {
+export function startDaemon(
+  port: number = DAEMON_PORT,
+  provider?: AgentProvider,
+  memoryProvider?: MemoryProvider,
+  embeddingProvider?: EmbeddingProvider | null,
+) {
   const dataDir = Bun.env.AGENTIC_DATA_DIR ?? join(homedir(), ".agentic-engine");
   const store = new MemoryStore({ dataDir });
   const scanner = new RuleBasedScanner();
   const gate = new WriteGate(store, scanner);
+  // hybrid-retrieval chunk-03 (spec §3.3 D3b): the write-observer -> drain.kick() wiring
+  // is set up BEFORE any memory writes happen below (registerDistiller etc.), so a
+  // distill-apply write also flows through the observer. embeddingProvider? ?? the
+  // selector — mirrors the provider?/memoryProvider? seam idiom above. kick() debounces
+  // via setTimeout, so this never fires synchronously from inside a write's tx.
+  const embedding = embeddingProvider ?? buildEmbeddingProvider({ dataDir });
+  const embeddingDrain = new EmbeddingDrain(store, embedding);
+  store.setWriteObserver(() => embeddingDrain.kick());
+  embeddingDrain.kick(); // startup drain (spec D3b trigger) — catches up on any backlog
+  void embedding?.warmup?.(); // fire-and-forget; never blocks startup; downloads only if AGENTIC_EMBED_AUTODOWNLOAD=1
   const hatch = new Hatch(store, gate);
   const tokenStore = new TokenStore(dataDir);
   // ADR-0016 decision 3 DI seam: the port is constructed once and threaded into
@@ -313,6 +335,15 @@ export function startDaemon(port: number = DAEMON_PORT, provider?: AgentProvider
   // T2.3a: update boundPort to the actual OS-assigned port (matters when port=0).
   // server.port is number | undefined per Bun types; port=0 always resolves to a real port.
   if (server.port !== undefined) boundPort = server.port;
+  // hybrid-retrieval chunk-03 (reviewer MINOR fix): wrap server.stop so a debounced
+  // embeddingDrain.kick() timer never outlives the daemon. Bun's Server has no separate
+  // teardown hook, so wrapping .stop() is the seam — every caller (tests + the real
+  // process) already goes through it. Idempotent: drain.stop() clears at most one timer.
+  const rawStop = server.stop.bind(server);
+  server.stop = (closeActiveConnections?: boolean): Promise<void> => {
+    embeddingDrain.stop();
+    return rawStop(closeActiveConnections);
+  };
   return server;
 }
 

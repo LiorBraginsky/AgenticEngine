@@ -105,6 +105,9 @@ test("FIX 2: fresh store, NO injected facts, first 'remember X' turn -> memoryAc
   const dataDir = mkdtempSync(join(tmpdir(), "2c02-fix2-"));
   const prevDataDir = process.env.AGENTIC_DATA_DIR;
   process.env.AGENTIC_DATA_DIR = dataDir;
+  // hybrid-retrieval chunk-03 (reviewer MINOR fix): pin lexical-only so this daemon boot
+  // never constructs a real LocalWasmEmbeddingProvider (ENOENT noise; CI never has the model).
+  process.env.EMBEDDING_PROVIDER = process.env.EMBEDDING_PROVIDER ?? "none";
 
   const portStore = new MemoryStore({ dataDir });
   const scanner = new RuleBasedScanner();
@@ -159,6 +162,9 @@ test("FIX 2: with-facts case -- the '[remembered] 1.' index prefix reaches the p
   const dataDir = mkdtempSync(join(tmpdir(), "2c02-fix2-facts-"));
   const prevDataDir = process.env.AGENTIC_DATA_DIR;
   process.env.AGENTIC_DATA_DIR = dataDir;
+  // hybrid-retrieval chunk-03 (reviewer MINOR fix): pin lexical-only so this daemon boot
+  // never constructs a real LocalWasmEmbeddingProvider (ENOENT noise; CI never has the model).
+  process.env.EMBEDDING_PROVIDER = process.env.EMBEDDING_PROVIDER ?? "none";
 
   // Seed a cross-thread machine fact BEFORE the daemon boots so retrieve()
   // injects it on the very first (new-thread) turn.

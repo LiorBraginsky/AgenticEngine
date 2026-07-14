@@ -81,6 +81,13 @@ export class WriteGate {
         "INSERT INTO mutations (id, target_message_id, kind, actor, reason, replacement_content, authored_by, created_at) VALUES (?, ?, 'tombstone', ?, ?, NULL, ?, ?)",
       ).run(crypto.randomUUID(), messageId, ctx.actor, reason ?? null, ctx.authored_by, now);
       db.query("UPDATE messages SET content = ? WHERE id = ?").run(REDACTION_MARKER, messageId);
+      // hybrid-retrieval chunk-03 (spec §0.3/§3.3): scrubbed content must be unreachable by
+      // BOTH the vector leg AND the archive-lexical leg, atomically with the scrub itself —
+      // deleteMessageDerived has no own tx (Task 4), so it commits together with the two
+      // writes above. This is also HALF of the scrub-race guard: the other half is the
+      // in-tx re-check inside upsertMessageEmbedding (store.ts) that refuses a late write
+      // landing after this tx already committed.
+      this.store.deleteMessageDerived(messageId);
     });
     tx();
     // v2-02: bump the per-thread mutation marker — applied forget path (human, or machine-over-machine;
@@ -95,6 +102,12 @@ export class WriteGate {
     this.store.mirrorEvent(threadId, { event: "forget", target_message_id: messageId, actor: ctx.actor, created_at: now });
     // purge any live distilled_facts rows referencing the forgotten content (grill S2)
     // Message-level provenance shape (DumbTail). Thread-level provenance was FixedMarker (retired v2-03).
+    // ⚠️ ADR-0012 rider Ruling 2 (fact source-independence, 2026-07-10) TRAP — flagged for 2e
+    // [hybrid-retrieval §4.3, grill #9]: this scrub primitive ALSO sweeps derived facts
+    // (dropDistilledFacts* below), which Ruling 2 FORBIDS for source erasure ("source erasure
+    // never sweeps facts"). 2d does NOT fix this — no user path calls WriteGate.forget today —
+    // but 2e thread-forget CANNOT reuse this primitive unchanged: these fact-sweep calls must be
+    // removed/reworked at 2e design time. Doc-comment only; zero behavior change in this chunk.
     this.store.dropDistilledFactsByProvenance(messageId);
     this.store.dropDistilledFactsForThread(threadId);
     // N1: any quarantine_markers row for this messageId is intentionally left — the tombstone

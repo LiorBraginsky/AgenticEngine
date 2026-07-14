@@ -14,6 +14,9 @@ beforeAll(() => {
   dataDir = mkdtempSync(join(tmpdir(), "mock-agent-"));
   process.env.AGENTIC_DATA_DIR = dataDir;
   process.env.LLM_PROVIDER = process.env.LLM_PROVIDER ?? "mock";
+  // hybrid-retrieval chunk-03 (reviewer MINOR fix): pin lexical-only so this daemon boot
+  // never constructs a real LocalWasmEmbeddingProvider (ENOENT noise; CI never has the model).
+  process.env.EMBEDDING_PROVIDER = process.env.EMBEDDING_PROVIDER ?? "none";
   server = startDaemon(0); // ephemeral port
   PORT = server.port!;
   token = new TokenStore(dataDir).token();

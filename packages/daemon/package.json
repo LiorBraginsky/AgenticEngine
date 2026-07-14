@@ -11,11 +11,15 @@
     "keychain-prod-probe": "bun run scripts/keychain-prod-probe.ts",
     "smart-distiller-probe": "bun run scripts/smart-distiller-probe.ts",
     "migrate-distiller-v2": "bun run scripts/migrate-distiller-v2.ts",
-    "memory-demo-harness": "bun run scripts/memory-demo-harness.ts"
+    "backfill-embeddings": "AGENTIC_EMBED_AUTODOWNLOAD=1 bun run scripts/backfill-embeddings.ts",
+    "memory-demo-harness": "bun run scripts/memory-demo-harness.ts",
+    "embed-probe": "AGENTIC_EMBED_AUTODOWNLOAD=1 bun run scripts/embed-probe.ts"
   },
   "dependencies": {
     "@agentic/protocol": "workspace:*",
     "@anthropic-ai/sdk": "^0.100.1",
+    "@lenml/tokenizers": "3.7.2",
+    "onnxruntime-web": "1.27.0",
     "zod": "^3.23.0"
   }
 }

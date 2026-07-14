@@ -63,6 +63,17 @@ opt-in local lane**, **(ii) hosted Voyage behind an explicit consent gate**. The
 is a recorded conductor/Lior decision (§5.2) — never a worker call, never a silent flip of the
 default.
 
+> **Implementation note (2026-07-14, chunk-03 spike outcome — q#018).** The opening spike proved
+> **transformers.js UNUSABLE for WASM-only on Bun 1.3.4** (both `@huggingface/transformers` v4 and
+> `@xenova/transformers` v2 load the native `onnxruntime-node` addon / fail to embed; #46 still
+> OPEN). Lior ruled **Lane A** (`.conveyor/bus/a/018-wasm-spike-fail.md`): the default `local-wasm`
+> adapter uses **`onnxruntime-web` DIRECTLY** (pure-WASM `InferenceSession`, bypassing transformers.js)
+> — proven end-to-end on Bun 1.3.4 (`onnxruntime-web@1.27.0`, `Xenova/multilingual-e5-small`
+> quantized, dims 384). **Posture UNCHANGED** (nothing egresses; still local-first, zero-infra) — no
+> spec/ADR change, only the wrapper. Residual build risk carried into chunk-03: a Bun-viable pure-JS
+> tokenizer (transformers.js's is contaminated); if it also fails → re-escalate (no pre-authorized
+> fallback — Lior decides on that evidence).
+
 ### 0.2 — `memory_search` results are READ-ONLY — never forget/replace-targetable
 
 **Ruled (q#017 sub-3, first half).** ADR-0016's guardrail package (d2/d7) bounds the poisoning

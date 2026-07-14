@@ -345,7 +345,8 @@ export const HISTORY_HTML = `<!DOCTYPE html>
 
         // v2-04: per-message "Forget" button removed (D-V6a-bis). hybrid-retrieval chunk-01
         // (spec §3.7 R1): the per-message "Edit" button is ALSO removed — archive is read-only
-        // immutable history; fact-forget/fact-edit (below) are the ONLY write actions left.
+        // immutable history; fact-forget (below) is the ONLY write action left in history.html.
+        // (Fact-edit is overlay-only — history.html never had a fact-edit affordance.)
         row.appendChild(roleEl);
         row.appendChild(contentEl);
         messagesContainer.appendChild(row);

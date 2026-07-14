@@ -186,19 +186,26 @@ async function distillOneThread(
           targetId = delta.candidateIds[op.targetOrdinal - 1];
         }
 
-        // D6b consult (spec §3.6, 2c chunk-01): suppress re-derivation of a tool-forgotten
-        // fact — MACHINE candidates only, honoring precedence: human fact ▷ human un-forget
-        // ▷ forget record ▷ machine re-derivation. `continue` drops new/append candidates and
-        // skips a replace non-destructively (the target is left as-is — no applyFactOp call).
-        // KNOWN LIMITATION (v2 dedup ceiling): this consult matches on the forgotten fact's
-        // DISPLAY text (relaxed connector-key), NOT on `op.canonical` — a re-derivation that
-        // shares the same canonical but reworded display text (esp. cross-language) can still
-        // slip past here. Tracked for the 2d hybrid-retrieval pass (memory-backlog §D); the
-        // D6c soft nudge (smart-distiller-provider.ts) is the honestly-ranked soft layer for
-        // this residual.
+        // TWO-AXIS D6b consult (hybrid-retrieval R2 — the 2c chunk-05 lesson applied here):
+        // suppress re-derivation of a tool-forgotten fact, MACHINE candidates only, honoring
+        // precedence: human fact ▷ human un-forget ▷ forget record ▷ machine re-derivation.
+        // `continue` drops new/append candidates and skips a replace non-destructively (target
+        // left as-is — no applyFactOp call). The match now runs on EITHER the DISPLAY key
+        // (relaxed connector key, as 2c chunk-01) OR the CANONICAL key (op.canonical vs the
+        // forgotten row's stored fact_fts.canonical, captured by MemoryActionPort.forget) —
+        // closing the cross-language slip (UK display / EN canonical) the v2 dedup ceiling left
+        // open. Legacy NULL-canonical forgotten rows fall back to display-only (honest, no
+        // backfill fabrication). NAMED RESIDUAL (accepted, spec §3.5c): a re-derivation that is
+        // BOTH fully-reworded in display AND lands a genuinely-different canonical still slips
+        // this deterministic gate; semantic auto-suppression is rejected (over-suppression
+        // risk, spec §1 Out). The hybrid candidate-fetch (spec §3.5, consumer b) makes the LLM
+        // SEE the near-duplicate so it proposes replace/no-op, and the D6c soft nudge
+        // (smart-distiller-provider.ts) is the honestly-ranked soft layer — but no deterministic
+        // gate hard-blocks that final slip.
         const norm = normalizeFactText(op.fact);
-        if (store.isForgottenNormalizedText(norm) && !store.hasHumanFactWithNormalizedText(norm)) {
-          memDebug("distill", { threadId, forgottenSuppressed: previewStr(op.fact) });
+        const canonical = op.canonical || normalizeFactText(op.fact); // mirror applyFactOp's fallback → identical key
+        if (store.isForgottenNormalizedText(norm, canonical) && !store.hasHumanFactWithNormalizedText(norm, canonical)) {
+          memDebug("distill", { threadId, forgottenSuppressed: previewStr(op.fact), canonical: previewStr(canonical) });
           continue;
         }
 

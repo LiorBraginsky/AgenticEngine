@@ -1820,6 +1820,150 @@ describe("2c chunk-01 D6b: forgotten_facts consult", () => {
   });
 });
 
+describe("hybrid-retrieval chunk-02 R2: two-axis D6b consult (canonical closes the cross-language slip)", () => {
+  test("R2(i) op:'new' — a same-canonical CROSS-LANGUAGE re-derivation (EN display; forgotten UK) is suppressed", async () => {
+    const { store } = freshStore();
+    const hook = new ConsolidationHook(store);
+    const scanner = new RuleBasedScanner();
+    store.recordForgottenFact({ raw_text: "мій улюблений колір синій", canonical: "favorite color blue", provenance: "thread:x", actor: "agent", authored_by: "machine" });
+    const t = store.createThread();
+    store.appendMessages(t, [{ role: "user", content: "my favorite color is blue" }], "s1");
+    const provider: MemoryProvider = {
+      id: "r2-new",
+      distill: async (s, threadId) => ({
+        threadId,
+        ops: [{ op: "new", fact: "favorite color is blue", canonical: "favorite color blue", topics: [] }],
+        candidateIds: [],
+        distilledThroughMarker: s.readThreadMarker(threadId),
+        distilledThroughTurn: s.maxTurnIndex(threadId),
+      }),
+      retrieve: async () => ({ messages: [], injectedFactIds: [] }),
+    };
+    registerDistiller(hook, store, provider, scanner);
+    await hook.dismiss([t]);
+    expect(store.readDistilledFacts(50).some((f) => f.fact === "favorite color is blue")).toBe(false);
+    store.close();
+  });
+
+  test("R2(ii) op:'append' — a cross-language item re-derivation is suppressed; target unchanged", async () => {
+    const { store } = freshStore();
+    const hook = new ConsolidationHook(store);
+    const scanner = new RuleBasedScanner();
+    const targetId = store.insertFact({
+      fact: "enjoys hiking", canonical: "enjoys hiking", provenance: "thread:seed",
+      scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: [],
+    }, "seed");
+    store.recordForgottenFact({ raw_text: "мій улюблений колір синій", canonical: "favorite color blue", provenance: "thread:x", actor: "agent", authored_by: "machine" });
+    const t = store.createThread();
+    store.appendMessages(t, [{ role: "user", content: "my favorite color is blue" }], "s1");
+    const provider: MemoryProvider = {
+      id: "r2-append",
+      distill: async (s, threadId) => ({
+        threadId,
+        ops: [{ op: "append", fact: "favorite color is blue", canonical: "favorite color blue", topics: [], targetOrdinal: 1, expectedTargetText: "enjoys hiking" }],
+        candidateIds: [targetId],
+        distilledThroughMarker: s.readThreadMarker(threadId),
+        distilledThroughTurn: s.maxTurnIndex(threadId),
+      }),
+      retrieve: async () => ({ messages: [], injectedFactIds: [] }),
+    };
+    registerDistiller(hook, store, provider, scanner);
+    await hook.dismiss([t]);
+    const row = store.rawDb().query("SELECT fact FROM distilled_facts WHERE id = ?").get(targetId) as { fact: string };
+    expect(row.fact).toBe("enjoys hiking");
+    store.close();
+  });
+
+  test("R2(iii) op:'replace' — a cross-language REPLACEMENT re-derivation is suppressed; target left as-is, no audit row", async () => {
+    const { store } = freshStore();
+    const hook = new ConsolidationHook(store);
+    const scanner = new RuleBasedScanner();
+    const targetId = store.insertFact({
+      fact: "works at Acme Corp", canonical: "works at acme corp", provenance: "thread:seed",
+      scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: [],
+    }, "seed");
+    store.recordForgottenFact({ raw_text: "мій улюблений колір синій", canonical: "favorite color blue", provenance: "thread:x", actor: "agent", authored_by: "machine" });
+    const t = store.createThread();
+    store.appendMessages(t, [{ role: "user", content: "my favorite color is blue" }], "s1");
+    const provider: MemoryProvider = {
+      id: "r2-replace",
+      distill: async (s, threadId) => ({
+        threadId,
+        ops: [{ op: "replace", fact: "favorite color is blue", canonical: "favorite color blue", topics: [], targetOrdinal: 1, expectedTargetText: "works at Acme Corp" }],
+        candidateIds: [targetId],
+        distilledThroughMarker: s.readThreadMarker(threadId),
+        distilledThroughTurn: s.maxTurnIndex(threadId),
+      }),
+      retrieve: async () => ({ messages: [], injectedFactIds: [] }),
+    };
+    registerDistiller(hook, store, provider, scanner);
+    await hook.dismiss([t]);
+    const row = store.rawDb().query("SELECT fact FROM distilled_facts WHERE id = ?").get(targetId) as { fact: string };
+    expect(row.fact).toBe("works at Acme Corp");
+    expect(store.readReplacedFacts(targetId).length).toBe(0);
+    store.close();
+  });
+
+  test("R2(iv) precedence byte-carry: a HUMAN fact matching on the CANONICAL axis blocks suppression (op lands)", async () => {
+    const { store } = freshStore();
+    const hook = new ConsolidationHook(store);
+    const scanner = new RuleBasedScanner();
+    const targetId = store.insertFact({
+      fact: "enjoys hiking", canonical: "enjoys hiking", provenance: "thread:seed",
+      scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: [],
+    }, "seed");
+    // Human fact: UK display, EN canonical (via fact_fts). Its canonical matches the op's.
+    const hid = crypto.randomUUID();
+    store.rawDb().query(
+      "INSERT INTO distilled_facts (id, fact, provenance, scope, expiry, confidence, authored_by, derived_at, distiller_version) VALUES (?,?,?,?,?,?,?,?,?)",
+    ).run(hid, "мій улюблений колір синій", "human-pin", "cross-thread", null, 1, "human", Date.now(), "manual");
+    store.rawDb().query("INSERT INTO fact_fts (fact_id, canonical, topic) VALUES (?, ?, ?)").run(hid, "favorite color blue", "");
+    store.recordForgottenFact({ raw_text: "мій улюблений колір синій", canonical: "favorite color blue", provenance: "thread:x", actor: "agent", authored_by: "machine" });
+    const t = store.createThread();
+    store.appendMessages(t, [{ role: "user", content: "my favorite color is blue" }], "s1");
+    const provider: MemoryProvider = {
+      id: "r2-precedence",
+      distill: async (s, threadId) => ({
+        threadId,
+        ops: [{ op: "append", fact: "favorite color is blue", canonical: "favorite color blue", topics: [], targetOrdinal: 1, expectedTargetText: "enjoys hiking" }],
+        candidateIds: [targetId],
+        distilledThroughMarker: s.readThreadMarker(threadId),
+        distilledThroughTurn: s.maxTurnIndex(threadId),
+      }),
+      retrieve: async () => ({ messages: [], injectedFactIds: [] }),
+    };
+    registerDistiller(hook, store, provider, scanner);
+    await hook.dismiss([t]);
+    const row = store.rawDb().query("SELECT fact FROM distilled_facts WHERE id = ?").get(targetId) as { fact: string };
+    expect(row.fact).toBe("enjoys hiking; favorite color is blue"); // human present ⇒ suppression does NOT fire ⇒ append lands
+    store.close();
+  });
+
+  test("R2(v) named residual: a DIFFERENT-canonical fully-reworded re-derivation is NOT suppressed (op:'new' lands)", async () => {
+    const { store } = freshStore();
+    const hook = new ConsolidationHook(store);
+    const scanner = new RuleBasedScanner();
+    store.recordForgottenFact({ raw_text: "мій улюблений колір синій", canonical: "favorite color blue", provenance: "thread:x", actor: "agent", authored_by: "machine" });
+    const t = store.createThread();
+    store.appendMessages(t, [{ role: "user", content: "I prefer cool shades" }], "s1");
+    const provider: MemoryProvider = {
+      id: "r2-residual",
+      distill: async (s, threadId) => ({
+        threadId,
+        ops: [{ op: "new", fact: "prefers cool shades", canonical: "prefers cool shades", topics: [] }],
+        candidateIds: [],
+        distilledThroughMarker: s.readThreadMarker(threadId),
+        distilledThroughTurn: s.maxTurnIndex(threadId),
+      }),
+      retrieve: async () => ({ messages: [], injectedFactIds: [] }),
+    };
+    registerDistiller(hook, store, provider, scanner);
+    await hook.dismiss([t]);
+    expect(store.readDistilledFacts(50).some((f) => f.fact === "prefers cool shades")).toBe(true); // residual — deterministic gate does not block
+    store.close();
+  });
+});
+
 // ─── 2c chunk-01 review FIX 5: the distiller's dedup-skip glass-box (dropped by the
 // applyFactOp extraction) must be restored — inspect the returned ApplyFactOutcome and
 // re-emit the debug line when the outcome is deduped/demoted-deduped. ─────────────────

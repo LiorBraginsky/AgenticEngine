@@ -133,7 +133,15 @@ export class LocalWasmEmbeddingProvider implements EmbeddingProvider {
    */
   async embed(texts: string[]): Promise<Float32Array[] | null> {
     try {
-      if (!this.ready) await this.loadFromCacheIfPresent();
+      if (!this.ready) {
+        // reviewer MINOR fix: if a warmup() is already in flight (e.g. the daemon's
+        // fire-and-forget startup warmup racing the startup-kick drain's embed() call on a
+        // cached-model first boot), await THAT instead of also starting a second, redundant
+        // loadFromCacheIfPresent() — avoids two concurrent InferenceSession.create/tokenizer
+        // loads against the same modelDir.
+        if (this.loading) await this.loading;
+        else await this.loadFromCacheIfPresent();
+      }
       if (!this.ready || !this.session || !this.tokenizer) {
         if (!this.loggedUnavailable) {
           this.loggedUnavailable = true;

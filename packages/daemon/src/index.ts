@@ -10,6 +10,7 @@ import { WriteGate } from "./memory/write-gate.js";
 import type { EmbeddingProvider } from "./memory/embedding/embedding-provider.js";
 import { buildEmbeddingProvider } from "./memory/embedding/embedding-provider-selector.js";
 import { EmbeddingDrain } from "./memory/embedding/embedding-drain.js";
+import { HybridRanker } from "./memory/embedding/hybrid-ranker.js";
 import { RuleBasedScanner } from "./memory/scanner/memory-scanner.js";
 import { ThreadLifecycle } from "./memory/thread-lifecycle.js";
 import { ConsolidationHook } from "./memory/consolidation-hook.js";
@@ -94,6 +95,12 @@ export function startDaemon(
   store.setWriteObserver(() => embeddingDrain.kick());
   embeddingDrain.kick(); // startup drain (spec D3b trigger) — catches up on any backlog
   void embedding?.warmup?.(); // fire-and-forget; never blocks startup; downloads only if AGENTIC_EMBED_AUTODOWNLOAD=1
+  // hybrid-retrieval chunk-04 (spec §3.5): the hybrid ranker consumes the embedding plane and is
+  // injected into the store so the distiller's above-cap candidate-fetch uses it. Provider null
+  // ⇒ lexical-only. Dormant-by-design below ALL_FACTS_CAP. (chunk-05 reuses `factRanker` for the
+  // memory_search MemoryActionPort — construct once here.)
+  const factRanker = new HybridRanker(store, embedding);
+  store.setFactRanker(factRanker);
   const hatch = new Hatch(store, gate);
   const tokenStore = new TokenStore(dataDir);
   // ADR-0016 decision 3 DI seam: the port is constructed once and threaded into

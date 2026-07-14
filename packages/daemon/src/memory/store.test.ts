@@ -10,6 +10,8 @@ import { REDACTION_MARKER } from "./schema.js";
 import { normalizeFactText } from "./providers/smart-distiller-provider.js";
 import { ANCHOR, SAME_CANONICAL, DIFFERENT_CANONICAL_RESIDUAL, NEGATIVE_CONTROLS } from "./rephrase-matrix.fixture.js";
 import { encodeVector } from "./embedding/vector-codec.js";
+import { HybridRanker } from "./embedding/hybrid-ranker.js";
+import type { EmbeddingProvider } from "./embedding/embedding-provider.js";
 
 function freshStore() {
   const dir = mkdtempSync(join(tmpdir(), "mf01-"));
@@ -915,6 +917,31 @@ test("hybrid-04: fetchCandidatesRanked below-cap delegates to the sync all-facts
   const sync = store.fetchCandidates("anything");
   expect(ranked.map((c) => c.id)).toEqual(sync.map((c) => c.id)); // no ranker + below cap → identical
   expect(ranked.some((c) => c.id === id)).toBe(true);
+  store.close();
+});
+
+test("hybrid-04: above-cap fetchCandidatesRanked surfaces the cross-language canonical (RED on BM25-only)", async () => {
+  const { store } = freshStore();
+  const MODEL = "scripted-v1", DIMS = 4;
+  // The 'blue' fact: Ukrainian DISPLAY, English CANONICAL, vector near the (Ukrainian) query vector.
+  const blue = store.insertFact({ fact: "мій улюблений колір синій", canonical: "favorite color blue", topics: [], provenance: "thread:t", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" }, "seed");
+  store.upsertFactEmbedding(blue, MODEL, DIMS, encodeVector(new Float32Array([1, 0, 0, 0])));
+  // 50 English filler facts (push total over the cap) with orthogonal vectors.
+  for (let i = 0; i < 50; i++) {
+    const id = store.insertFact({ fact: `filler fact ${i}`, canonical: `filler ${i}`, topics: [], provenance: "thread:t", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" }, "seed");
+    store.upsertFactEmbedding(id, MODEL, DIMS, encodeVector(new Float32Array([0, i % 2 ? 1 : -1, 0, 0])));
+  }
+  const query = "Тепер мій улюблений колір зелений"; // Ukrainian; shares NO token with any English canonical
+
+  // RED baseline: no ranker → above-cap BM25-only → the blue fact is NOT surfaced (canonical-language divergence).
+  const bm25Only = await store.fetchCandidatesRanked(query);
+  expect(bm25Only.some((c) => c.id === blue)).toBe(false);
+
+  // GREEN: inject the hybrid ranker with a scripted query vector near the blue fact's vector.
+  const scripted: EmbeddingProvider = { id: "s", modelId: MODEL, dims: DIMS, async embed(texts) { return texts.map(() => new Float32Array([0.99, 0.01, 0, 0])); } };
+  store.setFactRanker(new HybridRanker(store, scripted, { legKFacts: 20, rrfK: 60 }));
+  const hybrid = await store.fetchCandidatesRanked(query);
+  expect(hybrid.some((c) => c.id === blue)).toBe(true); // cosine leg carries the cross-language fact
   store.close();
 });
 

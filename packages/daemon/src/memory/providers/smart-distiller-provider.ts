@@ -442,7 +442,7 @@ export interface SmartDistillerOptions {
  *   1. Read distilled_through_turn (resilient, R2).
  *   2. readNewTailSince(threadId, distilled_through_turn) — filter tombstones/quarantine.
  *   3. Empty tail → short-circuit {ops:[], candidateIds:[]} (no LLM call).
- *   4. Build tail text; fetchCandidates(tailText) — ALL facts when corpus ≤ ALL_FACTS_CAP (50); FTS5/BM25 (≤ CANDIDATE_TOP_K) above the cap.
+ *   4. Build tail text; fetchCandidatesRanked(tailText) — ALL facts when corpus ≤ ALL_FACTS_CAP (50); hybrid RRF ranker (≤ CANDIDATE_TOP_K) above the cap (2d).
  *   5. Build numbered candidate pool (1..K → {fact, topics}).
  *   6. ONE LLM call (SMART_DELTA_SYSTEM_PROMPT; outside any tx — Phase-1 compute seam).
  *   7. stop_reason guard → throw SmartDistillError({truncated:true}).
@@ -546,8 +546,10 @@ export class SmartDistillerProvider implements MemoryProvider {
       .map((m) => `[${m.role}|${m.id}] ${m.content}`)
       .join("\n");
 
-    // Phase 4b: FTS5/BM25 candidate fetch over FULL corpus (outside any tx)
-    const candidates = store.fetchCandidates(tailText);
+    // Phase 4b: hybrid candidate-fetch over the FULL corpus (outside any tx). Below ALL_FACTS_CAP
+    // this is all-facts (unchanged); above it, the hybrid ranker (BM25 ∪ embedding-cosine, RRF)
+    // REPLACES BM25-only — closing the cross-language candidate miss (hybrid-retrieval 2d, spec §3.5).
+    const candidates = await store.fetchCandidatesRanked(tailText);
     const candidateIds = candidates.map((c) => c.id);
 
     // Phase 5: build numbered candidate pool for the prompt (1..K → {fact, topics})

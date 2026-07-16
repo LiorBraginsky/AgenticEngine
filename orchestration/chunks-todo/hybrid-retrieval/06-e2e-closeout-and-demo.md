@@ -1,6 +1,6 @@
 # Chunk 6: e2e closeout + LIVE demo
 
-**Status:** todo
+**Status:** in-progress
 **Created:** 2026-07-13
 **Phase:** hybrid-retrieval (2d)
 **Estimated size:** ~0.5–1 day

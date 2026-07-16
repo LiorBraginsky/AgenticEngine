@@ -106,6 +106,8 @@ ADR-0016 decision 2 already admits read tools by design ("2d adds read tools (`m
 
 ### Task 1: Type + registry surface — result-union `search` variant, registry `kind:read` row, capability-gated tools param, framed serialization
 
+> ✅ **DONE** — commit `41e84ca` (incl. the union-widening reconciliation). typecheck 0 · lint 0 · file-test 12/0 · repo-wide 779/0 · frozen untouched.
+
 **Files:**
 - Modify: `packages/daemon/src/memory/memory-action-port.ts` (the RESULT-TYPE surface: `SearchHit` + the `search` union variant, PLUS the internal `WriteActionResult` alias and retyping the two `remember*` helpers to it — the union-widening's in-file type consequence)
 - Modify: `packages/daemon/src/providers/memory-action-tools.ts` (registry row, write-filtered param + builder, contract comment, framed `serializeToolResult`)
@@ -308,6 +310,8 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ---
 
 ### Task 2: The executing port method — `MemoryActionPort.search` over the ranker + `readArchiveMessagesByIds` + `searchesUsed` counter + ranker DI
+
+> ✅ **DONE** — commit `304d761`. typecheck 0 (orchestrator-verified independently — IDE LSP diagnostics were stale) · lint 0 · store+port tests 110/0 · `src/memory` suite 452/0 · repo-wide 786/0 · frozen untouched. Real signatures matched plan (insertFact/recordQuarantine/scanner.scan `{ok}`); added local `freshPort()` helper per fallback.
 
 **Files:**
 - Modify: `packages/daemon/src/memory/memory-action-port.ts` (the `search` method + `MemorySearchRanker` + input type + `searchesUsed` field + ranker constructor dep + `canSearch`)
@@ -599,6 +603,8 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ### Task 3: Provider-loop wiring — async dispatch + `memory_search` branch, capability-gated `tools[]` + system-prompt search addendum, raised loop bound, `search` debug channel
 
+> ✅ **DONE** — commit `0e8d37d`. typecheck 0 (orchestrator-verified) · lint 0 · frozen empty · provider+prompt tests 65/0 · `src/providers` suite 95/0 · repo-wide 792/0. RED-on-old-bound PROVEN (reverted bound → round-4 forget starved → restored → green). 2 in-scope drift fixes: dropped a control-flow-dead `action!=="search"` re-check in the new if/else; updated 2 pre-existing tests' bound-derived call-count literals 4→7 (semantics unchanged).
+
 **Files:**
 - Modify: `packages/daemon/src/providers/anthropic-api-provider.ts`
 - Modify: `packages/daemon/src/providers/system-prompt.ts`
@@ -844,6 +850,8 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ### Task 4: EXECUTED real-API probe + verification sweep + PR evidence
 
+> ✅ **DONE (probe + sweep + commit)** — commit `9441492`. Probe EXECUTED exit 0: real LLM invoked `memory_search` in BOTH fact + archive scopes, tool_result framed UNTRUSTED, key never printed, no Q1. Degrade-green 607/0 · typecheck 0 · lint 0 · repo-wide 792/0 · frozen empty. PR/push deferred to orchestrator (post review gate).
+
 **Files:**
 - Create: `packages/daemon/scripts/memory-search-probe.ts` (NEW, EXECUTED — sibling of `memory-action-tool-probe.ts`)
 - Modify: `packages/daemon/package.json` (add the probe script)
@@ -989,6 +997,24 @@ git push -u origin chunk/hybrid-05-memory-search-read-tool
 3. **`search`-channel `MEMORY_DEBUG` fires in the provider loop, not the port** — unified with the existing `action` channel; keeps the port free of debug imports. The read has no durable audit (D6b), so this debug line is its ONLY observability.
 4. **The probe proves the TOOL LOOP, not retrieval quality.** Cross-language retrieval quality is chunk-04's golden eval; this probe seeds lexically-findable content so it is robust without a model download. If Lior wants a cross-language search probe too, that is a one-line ruling (set `EMBEDDING_PROVIDER=local-wasm AGENTIC_EMBED_AUTODOWNLOAD=1` + a UA↔EN seed) — flagged, not silently added.
 5. **Named residual (accepted, in-spec):** "forget the thing I just found via search" honestly defers to the Memory window (§0.2) — search hits carry no id and never join the ordinal map. Revisit trigger is recorded in the spec (corpus outgrowing `RETRIEVE_SLICE_N`=20 → a deliberate ADR-0016 amendment).
+
+## Review gate (dual-review — orchestrator-run 2026-07-16)
+
+**engine-reviewer (Opus, primary): VERDICT 0B / 0M / 5 nit.** All 8 load-bearing invariants HELD (§0.2 non-targetable by construction · d7 scanner-on-both-legs + untrusted framing · archive-read posture · cap-independence + raised bound RED-proven · capability both directions · no import cycle · frozen byte-unchanged). 5 nits (redact-at-store footgun · capped-search observability · uncovered catch · search() no own try/catch · probe banner over-states "both scopes").
+
+**hard-reviewer (frontier second-pass): VERDICT 1 MAJOR-latent / 2 MINOR / 2 NIT — FRONTIER-DELTA.**
+- **MAJOR-1 (the frontier delta):** the fact leg bypassed ADR-0012 **5f thread-isolation + expiry** (the injection enforcement point `readDistilledFactsForThread`) — a `thread-local` fact from thread A could surface via search in thread B; expired facts surfaced. Failed §7.2 citation test (contradicts ADR-0012 "5f preserved unchanged" + spec §2). Latent today (`applyFactOp` hardcodes `cross-thread`; expiry dormant).
+- MINOR-2: live-thread archive hits mis-framed "past conversation" (D1-2 honesty). MINOR-3: raised bound → worst-case ~7 calls can breach the overlay 30s handshake window; the comment over-claimed "well under". 2 NITs (never-throw docstring; capped-search debug channel).
+
+**Architect ruling (all execute-reconciliations — NONE a §5.2 escalation):** MAJOR-1 = oversight not intent (asymmetry dispositive: archive cross-thread named+gated §0.3, fact cross-thread nowhere named + §2 claims 5f untouched) → fix mirrors `readDistilledFactsForThread` via the shared `originThreadsForProvenance` helper (parity by construction, restores the frozen invariant). MINOR-2 = reframe not exclude ("earlier in this conversation"). MINOR-3 = honest comment + backlog the deadline check into #42/#43 (bound is spec-frozen §3.6 D6b, do not lower).
+
+**Fixes:** commit `c659276` — all 7 (MAJOR-1 5f+expiry · MINOR-2 reframe · redact-at-store · never-throw wrap · search-channel observability · honest latency comment · per-scope probe banner), RED→GREEN proven for F1/F2/F4.
+
+**hard-reviewer re-verification (delta `9441492..c659276`): ALL PRIOR FINDINGS CLOSED — 0 new blockers/majors, no regression on §0.2 / d7 framing / no-port byte-identity / write-cap independence.** MAJOR-1 fix confirmed exact predicate parity by construction. NIT-5 (withheld snippets consume cap slots) = by-design, unaddressed by ruling.
+
+**Backlog filed (for chunk-06 docs-reconcile / #42/#43):** memory action loop worst-case (7 sequential calls) can breach the overlay 30s handshake window; needs an in-loop wall-clock deadline or first-envelope streaming — folds into the #42/#43 latency deferral, NOT this chunk.
+
+**Final gates (orchestrator-independent, tip `c659276`):** typecheck 0 · lint:strict 0 · repo-wide `bun test` 796/0 · degrade `EMBEDDING_PROVIDER=none` 611/0 · frozen byte-diff empty. Reviewer-clean (0B/0M). Behavioral DoD item 6 RIDES chunk-06 demo — NOT claimed here.
 
 ## Status: Done
 

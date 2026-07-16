@@ -637,3 +637,73 @@ test("hybrid-05: the read cap is INDEPENDENT of the write cap — 4th search in 
   expect(ctx.actionsUsed).toBe(0); // write cap untouched by searches
   store.close();
 });
+
+// ─── review-gate FIX 1 (MAJOR-1): fact leg mirrors ADR-0012 5f thread-isolation + expiry ───
+
+test("hybrid-05 FIX1: a thread-local fact surfaces ONLY in its origin thread (mirrors readDistilledFactsForThread)", async () => {
+  const { store, gate, scanner } = freshPort();
+  const threadA = store.createThread();
+  const threadB = store.createThread();
+  const fid = store.insertFact({ fact: "private note", canonical: "private note", topics: [], provenance: `thread:${threadA}`, scope: "thread-local", expiry: null, confidence: 1, authored_by: "machine" }, "seed");
+  const port = new MemoryActionPort(store, gate, scanner, stubRanker([fid], []));
+
+  const resB = await port.search(turnCtx(threadB), { query: "private", scope: "facts" });
+  expect(resB.ok && resB.action === "search" && resB.results.length).toBe(0);
+
+  const resA = await port.search(turnCtx(threadA), { query: "private", scope: "facts" });
+  expect(resA.ok && resA.action === "search" && resA.results.length).toBe(1);
+
+  store.close();
+});
+
+test("hybrid-05 FIX1: an expired fact never surfaces via search", async () => {
+  const { store, gate, scanner } = freshPort();
+  const fid = store.insertFact({ fact: "stale fact", canonical: "stale fact", topics: [], provenance: "thread:t", scope: "cross-thread", expiry: Date.now() - 1000, confidence: 1, authored_by: "machine" }, "seed");
+  const port = new MemoryActionPort(store, gate, scanner, stubRanker([fid], []));
+
+  const res = await port.search(turnCtx(), { query: "stale", scope: "facts" });
+  expect(res.ok && res.action === "search" && res.results.length).toBe(0);
+
+  store.close();
+});
+
+// ─── review-gate FIX 2 (MINOR-2): reframe same-thread archive hits ─────────────────────────
+
+test("hybrid-05 FIX2: an archive hit from the searching thread is attributed 'earlier in this conversation'; cross-thread stays 'past conversation'", async () => {
+  const { store, gate, scanner } = freshPort();
+  const threadH = store.createThread();
+  const threadOther = store.createThread();
+  const [midH] = store.appendMessages(threadH, [{ role: "user", content: "my favorite drink is tea" }], "s");
+  const [midOther] = store.appendMessages(threadOther, [{ role: "user", content: "my favorite drink is coffee" }], "s");
+  const port = new MemoryActionPort(store, gate, scanner, stubRanker([], [midH!, midOther!]));
+
+  const res = await port.search(turnCtx(threadH), { query: "drink", scope: "archive" });
+  expect(res.ok && res.action === "search").toBe(true);
+  if (res.ok && res.action === "search") {
+    const hitH = res.results.find((r) => r.text.includes("tea"));
+    const hitOther = res.results.find((r) => r.text.includes("coffee"));
+    expect(hitH?.source).toBe("you said earlier in this conversation");
+    expect(hitOther?.source).toBe("you said in a past conversation");
+  }
+
+  store.close();
+});
+
+// ─── review-gate FIX 4 (never-throw): search() is structurally never-throw ─────────────────
+
+function throwingRanker(): MemorySearchRanker {
+  return {
+    async searchFacts() { throw new Error("boom"); },
+    async searchArchive() { return []; },
+  };
+}
+
+test("hybrid-05 FIX4: a rejecting ranker never propagates — search() resolves to honest empty results", async () => {
+  const { store, gate, scanner } = freshPort();
+  const port = new MemoryActionPort(store, gate, scanner, throwingRanker());
+
+  const res = await port.search(turnCtx(), { query: "q", scope: "facts" });
+  expect(res).toEqual({ ok: true, action: "search", results: [] });
+
+  store.close();
+});

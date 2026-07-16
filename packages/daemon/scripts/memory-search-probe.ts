@@ -46,7 +46,11 @@ async function main() {
   if (embedding) { await embedding.warmup?.(); await new EmbeddingDrain(store, embedding).drain(); }
   console.log(`[probe] seeded factId=${factId} archiveMsgId=${msgId}`);
 
-  let searchObserved = false;
+  // review-gate FIX 7: track memory_search observation PER SCENARIO (not one OR-accumulated
+  // flag) — "both scopes proven" is the PR evidence claim, so it must be genuinely checked per
+  // scope, not satisfied by e.g. the archive scenario alone tripping a shared boolean twice.
+  let currentScenario: "facts" | "archive" | undefined;
+  const scenarioObserved: { facts: boolean; archive: boolean } = { facts: false, archive: false };
   const observed: { name: string; input: unknown }[] = [];
   const provider = createAnthropicApiProvider({
     memoryActionPort: port,
@@ -62,7 +66,11 @@ async function main() {
         }
         const resp = await real.messages.create(params);
         for (const blk of resp.content) {
-          if (blk.type === "tool_use") { searchObserved = searchObserved || blk.name === "memory_search"; observed.push({ name: blk.name, input: blk.input }); console.log(`[probe] tool_use: ${blk.name} ${JSON.stringify(blk.input)}`); }
+          if (blk.type === "tool_use") {
+            if (blk.name === "memory_search" && currentScenario !== undefined) scenarioObserved[currentScenario] = true;
+            observed.push({ name: blk.name, input: blk.input });
+            console.log(`[probe] tool_use: ${blk.name} ${JSON.stringify(blk.input)}`);
+          }
           if (blk.type === "text" && blk.text) console.log(`[probe] text: ${JSON.stringify(blk.text)}`);
         }
         return resp;
@@ -74,12 +82,16 @@ async function main() {
   const emptySlice: ProviderSessionState = { phase: "done", session_id: "", messages: [], memoryActionSlice: { threadId: t, ordinalMap: new Map() } };
   for (const [label, text] of [["facts", "what is my favorite color?"], ["archive", "what did I say about my project deadline?"]] as const) {
     console.log(`\n[probe] scenario ${label}: advance() text=${JSON.stringify(text)}`);
+    currentScenario = label;
     const res = await provider.advance(emptySlice, { type: "session_start", trigger: "user", text, client_session_id: "memory-search-probe" });
     if (res.ok) console.log(`[probe] final text: ${JSON.stringify(res.finalText)}`);
   }
+  currentScenario = undefined;
 
-  if (!searchObserved) {
-    console.error("╔═ Q1 CONTINGENCY: the model did NOT call memory_search ═╗");
+  if (!scenarioObserved.facts || !scenarioObserved.archive) {
+    console.error("╔═ Q1 CONTINGENCY: the model did NOT call memory_search in BOTH scenarios ═╗");
+    console.error(`[probe] facts-scope memory_search observed: ${scenarioObserved.facts}`);
+    console.error(`[probe] archive-scope memory_search observed: ${scenarioObserved.archive}`);
     console.error(`[probe] observed tool calls: ${JSON.stringify(observed)}`);
     console.error("[probe] sequencing finding for the orchestrator (self-concept may be under-steering) — NOT masked.");
     store.close(); process.exit(1);

@@ -405,11 +405,19 @@ export function createAnthropicApiProvider(
         // 2048-token cache minimum → cache_creation_input_tokens will be 0.
         // This is a documented no-op, not a bug (plan C3-1 Design note).
         //
-        // #42/#43 latency note (no timers added — deferral honored): worst case
-        // is (MEMORY_ACTIONS_MAX_PER_TURN + MEMORY_SEARCH_MAX_PER_TURN) + 1 = 7
-        // sequential model calls (hybrid-05 — the round bound rose for the read
-        // cap; each call typically 1-3s) + up to 3 sub-ms SQLite port ops — well
-        // under the 30s handshake window.
+        // #42/#43 latency note (no timers added — deferral honored): worst case is
+        // (MEMORY_ACTIONS_MAX_PER_TURN + MEMORY_SEARCH_MAX_PER_TURN) + 1 = 7 sequential
+        // model calls (hybrid-05 — the round bound rose for the read cap) + bounded sub-ms
+        // SQLite port ops. Memory action tools are DAEMON-INTERNAL (ADR-0016): the overlay
+        // receives NO envelope until this loop emits the final show_text, so the WHOLE loop
+        // runs inside the overlay's DEFAULT_HANDSHAKE_TIMEOUT_MS (30s, measured to-first-
+        // envelope; it disarms on the first WS frame, which is the final reply here). At a
+        // typical 1-3s/call the 7-call worst case is ~7-21s, but a slow tail (~5s/call) CAN
+        // approach or exceed 30s and trip the handshake timeout → the turn is killed and the
+        // user retries. No in-loop wall-clock deadline and no first-envelope streaming exist
+        // yet — both are the deferred #42/#43 latency work (backlog), NOT this chunk. The
+        // raised bound is spec-mandated (§3.6 D6b — searches must not starve a write), so it
+        // is not lowered here.
         //
         // review FIX 4: tool-capable turns get a larger budget (1024 vs 512) now
         // that tool_use JSON shares it with the reply text — shrinks the
@@ -492,6 +500,19 @@ export function createAnthropicApiProvider(
                 ...(result.ok && result.factId !== undefined ? { factId: result.factId } : {}),
                 factPreview: previewStr(actionInputPreview(tu.name, tu.input)),
               });
+              // review-gate FIX 5: a memory_search REFUSAL (e.g. cap_exceeded) still deserves a
+              // `search`-channel line — the read glass-box (D6b) should fire for capped reads too,
+              // not only successes. Happy-path `search` payload shape (above) is unchanged.
+              if (tu.name === "memory_search" && !result.ok) {
+                const { scope, query } = searchDebugFields(tu.input);
+                memDebug("search", {
+                  threadId: turnCtx!.threadId,
+                  scope,
+                  query: previewStr(query),
+                  resultCount: 0,
+                  refused: result.code,
+                });
+              }
             }
             results.push({
               type: "tool_result",

@@ -930,13 +930,17 @@ export class MemoryStore {
    *  for a set of message ids, honoring the "latest HUMAN correction wins, else latest correction"
    *  COALESCE (same as readThreadArchive). `tombstoned` is returned as a flag so memory_search can
    *  skip scrubbed rows (in practice scrub also deletes message_fts/message_embeddings, so a
-   *  tombstoned id is never a ranker hit — this is belt-and-suspenders). Missing ids are absent.
-   *  Same 5e caveat as readThreadArchive: the COALESCE is not a second line of defense. */
-  readArchiveMessagesByIds(ids: string[]): { id: string; role: string; content: string; tombstoned: boolean }[] {
+   *  tombstoned id is never a ranker hit — this is belt-and-suspenders). `thread_id` lets the port
+   *  (review-gate FIX 2) reframe a same-thread hit as "earlier in this conversation" rather than
+   *  mislabeling it "a past conversation". Missing ids are absent. Same 5e caveat as
+   *  readThreadArchive: the COALESCE is not a second line of defense. review-gate FIX 3: content is
+   *  redacted to REDACTION_MARKER for tombstoned rows here too (mirrors readThreadArchive) — the
+   *  port's tombstone skip is then belt-and-suspenders, not the only line of defense. */
+  readArchiveMessagesByIds(ids: string[]): { id: string; role: string; content: string; tombstoned: boolean; thread_id: string }[] {
     if (ids.length === 0) return [];
     const placeholders = ids.map(() => "?").join(", ");
     const rows = this.db.query(
-      `SELECT m.id AS id, m.role AS role, m.content AS content,
+      `SELECT m.id AS id, m.role AS role, m.content AS content, m.thread_id AS thread_id,
               MAX(CASE WHEN x.kind = 'tombstone' THEN 1 ELSE 0 END) AS tombstoned,
               COALESCE(
                 (SELECT replacement_content FROM mutations
@@ -950,12 +954,13 @@ export class MemoryStore {
          LEFT JOIN mutations x ON x.target_message_id = m.id
         WHERE m.id IN (${placeholders})
         GROUP BY m.id`,
-    ).all(...ids) as TailRow[];
+    ).all(...ids) as (TailRow & { thread_id: string })[];
     return rows.map((r) => ({
       id: r.id,
       role: r.role,
-      content: r.correction ?? r.content, // tombstoned rows carry the flag; the port skips them
+      content: r.tombstoned ? REDACTION_MARKER : (r.correction ?? r.content),
       tombstoned: r.tombstoned === 1,
+      thread_id: r.thread_id,
     }));
   }
 

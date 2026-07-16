@@ -276,39 +276,64 @@ export class MemoryActionPort {
     }
     ctx.searchesUsed = (ctx.searchesUsed ?? 0) + 1;
 
-    const scope = input.scope ?? "all";
-    const query = input.query ?? "";
-    const factRanked = (scope === "facts" || scope === "all") ? await this.ranker.searchFacts(query, SEARCH_RESULT_CAP) : [];
-    const archiveRanked = (scope === "archive" || scope === "all") ? await this.ranker.searchArchive(query, SEARCH_RESULT_CAP) : [];
+    // review-gate FIX 4: wrap the body in try/catch so the "NEVER throws" docstring claim is
+    // structurally true (self-contained, like forget/remember) rather than relying on the
+    // ranker/store never throwing. A rejecting ranker (or an unexpected store error) resolves
+    // to an honest empty result set — never a forget-flavored refusal (this is a READ; D6b).
+    try {
+      const scope = input.scope ?? "all";
+      const query = input.query ?? "";
+      const factRanked = (scope === "facts" || scope === "all") ? await this.ranker.searchFacts(query, SEARCH_RESULT_CAP) : [];
+      const archiveRanked = (scope === "archive" || scope === "all") ? await this.ranker.searchArchive(query, SEARCH_RESULT_CAP) : [];
 
-    // Merge across corpora by RRF score DESC (same k ⇒ comparable); stable, facts-first on tie.
-    type Cand = { kind: "fact" | "archive"; id: string; score: number };
-    const cands: Cand[] = [
-      ...factRanked.map((h) => ({ kind: "fact" as const, id: h.id, score: h.score })),
-      ...archiveRanked.map((h) => ({ kind: "archive" as const, id: h.id, score: h.score })),
-    ].sort((a, b) => (b.score - a.score) || (a.kind === b.kind ? 0 : a.kind === "fact" ? -1 : 1));
+      // Merge across corpora by RRF score DESC (same k ⇒ comparable); stable, facts-first on tie.
+      type Cand = { kind: "fact" | "archive"; id: string; score: number };
+      const cands: Cand[] = [
+        ...factRanked.map((h) => ({ kind: "fact" as const, id: h.id, score: h.score })),
+        ...archiveRanked.map((h) => ({ kind: "archive" as const, id: h.id, score: h.score })),
+      ].sort((a, b) => (b.score - a.score) || (a.kind === b.kind ? 0 : a.kind === "fact" ? -1 : 1));
 
-    // Hydrate archive rows in ONE correction-honored read (spec §3.6 archive-read posture).
-    const archiveById = new Map(
-      this.store.readArchiveMessagesByIds(cands.filter((c) => c.kind === "archive").map((c) => c.id)).map((r) => [r.id, r]),
-    );
+      // Hydrate archive rows in ONE correction-honored read (spec §3.6 archive-read posture).
+      const archiveById = new Map(
+        this.store.readArchiveMessagesByIds(cands.filter((c) => c.kind === "archive").map((c) => c.id)).map((r) => [r.id, r]),
+      );
 
-    const results: SearchHit[] = [];
-    for (const c of cands) {
-      if (results.length >= SEARCH_RESULT_CAP) break;
-      if (c.kind === "fact") {
-        const row = this.store.readFactById(c.id);
-        if (row === null) continue; // deleted mid-turn (e.g. forgotten) — skip
-        results.push(this.toHit("fact", "remembered fact", row.fact));
-      } else {
-        if (this.store.isMessageQuarantined(c.id)) continue; // §0.3 quarantine-excluded
-        const row = archiveById.get(c.id);
-        if (row === undefined || row.tombstoned) continue; // scrubbed/tombstoned — unreachable
-        const source = row.role === "user" ? "you said in a past conversation" : "I replied in a past conversation";
-        results.push(this.toHit("archive", source, row.content));
+      const results: SearchHit[] = [];
+      for (const c of cands) {
+        if (results.length >= SEARCH_RESULT_CAP) break;
+        if (c.kind === "fact") {
+          const row = this.store.readFactById(c.id);
+          if (row === null) continue; // deleted mid-turn (e.g. forgotten) — skip
+          // ADR-0012 decision 5f + expiry — MIRROR the injection enforcement point
+          // (store.readDistilledFactsForThread): memory_search must NOT surface a fact the per-thread
+          // injection projection would exclude. A thread-local fact surfaces ONLY in its origin thread;
+          // an expired fact never surfaces. Latent today (applyFactOp hardcodes scope 'cross-thread';
+          // expiry dormant) — honoring the invariant keeps a future writer / legacy row from leaking a
+          // private or stale fact cross-thread via search.
+          if (row.expiry !== null && row.expiry <= Date.now()) continue;
+          const scope = row.scope ?? "cross-thread";
+          if (scope === "thread-local" &&
+              !this.store.originThreadsForProvenance(row.provenance ?? "").includes(ctx.threadId)) {
+            continue;
+          }
+          results.push(this.toHit("fact", "remembered fact", row.fact));
+        } else {
+          if (this.store.isMessageQuarantined(c.id)) continue; // §0.3 quarantine-excluded
+          const row = archiveById.get(c.id);
+          if (row === undefined || row.tombstoned) continue; // scrubbed/tombstoned — unreachable
+          const sameThread = row.thread_id === ctx.threadId;
+          const source =
+            row.role === "user"
+              ? (sameThread ? "you said earlier in this conversation" : "you said in a past conversation")
+              : (sameThread ? "I said earlier in this conversation" : "I replied in a past conversation");
+          results.push(this.toHit("archive", source, row.content));
+        }
       }
+      return { ok: true, action: "search", results };
+    } catch (err) {
+      console.error("[memory-action-port] search threw (should not happen):", err instanceof Error ? err.message : err);
+      return { ok: true, action: "search", results: [] };
     }
-    return { ok: true, action: "search", results };
   }
 
   /** Build a SearchHit, screening the snippet through the RuleBasedScanner (§0.3 defense-in-depth):

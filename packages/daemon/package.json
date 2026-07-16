@@ -15,7 +15,8 @@
     "memory-demo-harness": "bun run scripts/memory-demo-harness.ts",
     "embed-probe": "AGENTIC_EMBED_AUTODOWNLOAD=1 bun run scripts/embed-probe.ts",
     "fts5-check": "bun run scripts/fts5-unicode61-check.ts",
-    "retrieval-golden-eval": "EMBEDDING_PROVIDER=local-wasm AGENTIC_EMBED_AUTODOWNLOAD=1 bun run scripts/retrieval-golden-eval.ts"
+    "retrieval-golden-eval": "EMBEDDING_PROVIDER=local-wasm AGENTIC_EMBED_AUTODOWNLOAD=1 bun run scripts/retrieval-golden-eval.ts",
+    "memory-search-probe": "LLM_PROVIDER=anthropic-api bun run scripts/memory-search-probe.ts"
   },
   "dependencies": {
     "@agentic/protocol": "workspace:*",

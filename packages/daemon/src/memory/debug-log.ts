@@ -31,8 +31,15 @@
  *   { stage:"forget", route:"forgetFactById"|"forgetFact", target:{factId?,provenance?,normalizedText?}, deletedIds, deletedCount }
  *
  * action (chunk 2c-03, spec §3.9 — the memory-action tool glass-box, emitted once
- * per dispatchTool result inside the bounded loop, applied AND refused alike):
- *   { stage:"action", threadId, tool:"memory_forget"|"memory_remember", outcome:"applied"|`refused-<code>`, factId?, factPreview }
+ * per dispatchTool result inside the bounded loop, applied AND refused alike; review-gate
+ * FIX 5 note: a REFUSED memory_search (e.g. cap_exceeded) also fires here — the tool value
+ * is the closed-set name actually dispatched, not just the two write tools):
+ *   { stage:"action", threadId, tool:"memory_forget"|"memory_remember"|"memory_search", outcome:"applied"|`refused-<code>`, factId?, factPreview }
+ *
+ * search (chunk hybrid-05, spec §3.6 D6b — the read-tool glass-box; read has NO audit event,
+ * so this debug line is its only observability, emitted once per memory_search dispatch; a
+ * REFUSED search — review-gate FIX 5 — also fires here, with resultCount:0 and `refused`):
+ *   { stage:"search", threadId, scope:"facts"|"archive"|"all", query, resultCount, withheldCount?, refused? }
  *
  * Secret discipline:
  *   - Content previews are capped at 80 chars — the user's own memory content
@@ -86,7 +93,7 @@ function stageEnabled(stage: string): boolean {
  * NEVER pass the API key, auth token, or any credential.
  */
 export function memDebug(
-  stage: "distill" | "retrieve" | "forget" | "inject" | "action",
+  stage: "distill" | "retrieve" | "forget" | "inject" | "action" | "search",
   payload: Record<string, unknown>,
 ): void {
   if (!stageEnabled(stage)) return;

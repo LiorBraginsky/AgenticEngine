@@ -29,8 +29,8 @@ import type {
   MemoryActionTurnContext,
   MemoryActionResult,
 } from "../memory/memory-action-port.js";
-import { MEMORY_ACTIONS_MAX_PER_TURN } from "../memory/memory-action-port.js";
-import { MEMORY_ACTION_TOOLS_PARAM, serializeToolResult } from "./memory-action-tools.js";
+import { MEMORY_ACTIONS_MAX_PER_TURN, MEMORY_SEARCH_MAX_PER_TURN } from "../memory/memory-action-port.js";
+import { buildMemoryToolsParam, serializeToolResult } from "./memory-action-tools.js";
 import { memDebug, previewStr } from "../memory/debug-log.js";
 
 // ── Pure formatters (functional core) ─────────────────────────────────────
@@ -158,12 +158,12 @@ const EMPTY_REPLY_FALLBACK_TEXT =
  * The try/catch is a defensive backstop — the port itself never throws, but a
  * malformed-input path here must not either.
  */
-function dispatchTool(
+async function dispatchTool(
   name: string,
   input: unknown,
   port: MemoryActionPort,
   ctx: MemoryActionTurnContext,
-): MemoryActionResult {
+): Promise<MemoryActionResult> {
   const i = (input ?? {}) as Record<string, unknown>;
   try {
     if (name === "memory_forget") {
@@ -192,6 +192,11 @@ function dispatchTool(
         expected_text: i["expected_text"] as string | undefined,
       });
     }
+    if (name === "memory_search") {
+      if (typeof i["query"] !== "string") return { ok: true, action: "search", results: [] }; // malformed → honest empty (no throw, no new code)
+      const scope = i["scope"] === "facts" || i["scope"] === "archive" || i["scope"] === "all" ? i["scope"] : "all";
+      return await port.search(ctx, { query: i["query"], scope });
+    }
     // Closed set (ADR-0016 decision 2) ⇒ unreachable via the declared tools[]; defensive only.
     return { ok: false, code: "not_in_view", message: "Unknown memory tool." };
   } catch (err) {
@@ -202,6 +207,7 @@ function dispatchTool(
     // review FIX 5: branch the fallback code on the tool name — `stale_target`
     // reads as forget-flavored ("that fact no longer exists / changed"), which
     // is a misleading label to hand back for a thrown memory_remember.
+    if (name === "memory_search") return { ok: true, action: "search", results: [] }; // read: empty is honest, never a forget-flavored refusal
     const code = name === "memory_remember" ? "rejected_by_scan" : "stale_target";
     return { ok: false, code, message: "That memory action couldn't be completed." };
   }
@@ -216,6 +222,14 @@ function actionInputPreview(name: string, input: unknown): string {
   const i = (input ?? {}) as Record<string, unknown>;
   const src = name === "memory_remember" ? i["fact"] : i["expected_text"];
   return typeof src === "string" ? src : "";
+}
+
+/** hybrid-05: typed debug-fields helper for the MEMORY_DEBUG `search` channel (spec §3.6 D6b).
+ *  NO `any` — mirrors the malformed-input tolerance dispatchTool's memory_search branch applies. */
+function searchDebugFields(input: unknown): { scope: string; query: string } {
+  const i = (input ?? {}) as Record<string, unknown>;
+  const scope = i["scope"] === "facts" || i["scope"] === "archive" || i["scope"] === "all" ? i["scope"] : "all";
+  return { scope, query: typeof i["query"] === "string" ? i["query"] : "" };
 }
 
 // ── Injectable factory ─────────────────────────────────────────────────────
@@ -366,14 +380,16 @@ export function createAnthropicApiProvider(
 
         const port = opts.memoryActionPort;
         const useTools = port !== undefined;
-        const systemPromptText = composeSystemPrompt(useTools);
+        const includeSearch = useTools && (port?.canSearch ?? false); // spec §3.6 D6d
+        const systemPromptText = composeSystemPrompt(useTools, includeSearch);
+        const toolsParam = buildMemoryToolsParam(includeSearch); // stable across rounds
         const slice = state?.memoryActionSlice;
         // Constructed ONCE per turn (spec §7 CLOSED): the SAME object is handed
         // to every port call this turn, so the shared cap counter (actionsUsed)
         // is enforced across the whole turn, not per-call. "" is a defensive
         // floor — production always populates the slice when useTools (index.ts).
         const turnCtx: MemoryActionTurnContext | undefined = useTools
-          ? { threadId: slice?.threadId ?? "", ordinalMap: slice?.ordinalMap ?? new Map(), actionsUsed: 0 }
+          ? { threadId: slice?.threadId ?? "", ordinalMap: slice?.ordinalMap ?? new Map(), actionsUsed: 0, searchesUsed: 0 }
           : undefined;
 
         const convo: Anthropic.MessageParam[] = messages.map((m) => ({
@@ -389,10 +405,19 @@ export function createAnthropicApiProvider(
         // 2048-token cache minimum → cache_creation_input_tokens will be 0.
         // This is a documented no-op, not a bug (plan C3-1 Design note).
         //
-        // #42/#43 latency note (no timers added — deferral honored): worst case
-        // is MEMORY_ACTIONS_MAX_PER_TURN + 1 = 4 sequential model calls (each
-        // typically 1-3s) + up to 3 sub-ms SQLite port ops — well under the 30s
-        // handshake window.
+        // #42/#43 latency note (no timers added — deferral honored): worst case is
+        // (MEMORY_ACTIONS_MAX_PER_TURN + MEMORY_SEARCH_MAX_PER_TURN) + 1 = 7 sequential
+        // model calls (hybrid-05 — the round bound rose for the read cap) + bounded sub-ms
+        // SQLite port ops. Memory action tools are DAEMON-INTERNAL (ADR-0016): the overlay
+        // receives NO envelope until this loop emits the final show_text, so the WHOLE loop
+        // runs inside the overlay's DEFAULT_HANDSHAKE_TIMEOUT_MS (30s, measured to-first-
+        // envelope; it disarms on the first WS frame, which is the final reply here). At a
+        // typical 1-3s/call the 7-call worst case is ~7-21s, but a slow tail (~5s/call) CAN
+        // approach or exceed 30s and trip the handshake timeout → the turn is killed and the
+        // user retries. No in-loop wall-clock deadline and no first-envelope streaming exist
+        // yet — both are the deferred #42/#43 latency work (backlog), NOT this chunk. The
+        // raised bound is spec-mandated (§3.6 D6b — searches must not starve a write), so it
+        // is not lowered here.
         //
         // review FIX 4: tool-capable turns get a larger budget (1024 vs 512) now
         // that tool_use JSON shares it with the reply text — shrinks the
@@ -419,7 +444,7 @@ export function createAnthropicApiProvider(
             // forced-final round (requestTools flipped false by the cap
             // backstop below), `tool_choice:{type:"none"}` is what forces clean
             // final text instead — omitting `tools` is NOT a valid way to do it.
-            ...(useTools ? { tools: MEMORY_ACTION_TOOLS_PARAM } : {}),
+            ...(useTools ? { tools: toolsParam } : {}),
             ...(useTools && !requestTools ? { tool_choice: { type: "none" as const } } : {}),
           });
 
@@ -444,34 +469,68 @@ export function createAnthropicApiProvider(
           }
 
           convo.push({ role: "assistant", content: response.content });
-          const results: Anthropic.ToolResultBlockParam[] = toolUses.map((tu) => {
-            const result = dispatchTool(tu.name, tu.input, port!, turnCtx!);
-            // MEMORY_DEBUG `action` channel (chunk 2c-03, spec §3.9): one line per
-            // dispatchTool result, applied AND refused alike — off by default.
-            memDebug("action", {
-              threadId: turnCtx!.threadId,
-              tool: tu.name,
-              outcome: result.ok ? "applied" : `refused-${result.code}`,
-              ...(result.ok && result.factId !== undefined ? { factId: result.factId } : {}),
-              factPreview: previewStr(actionInputPreview(tu.name, tu.input)),
-            });
-            return {
+          // hybrid-05: SEQUENTIAL await loop — cap-counting is order-dependent (the shared
+          // turnCtx counters mutate per call), so a .map() (which would run dispatchTool calls
+          // in parallel via Promise resolution order) is not safe once dispatchTool is async.
+          const results: Anthropic.ToolResultBlockParam[] = [];
+          for (const tu of toolUses) {
+            const result = await dispatchTool(tu.name, tu.input, port!, turnCtx!);
+            if (result.ok && result.action === "search") {
+              // MEMORY_DEBUG `search` channel (hybrid-05, spec §3.6 D6b): the read-tool
+              // glass-box — reads have NO audit event, so this line is the only observability.
+              const { scope, query } = searchDebugFields(tu.input);
+              memDebug("search", {
+                threadId: turnCtx!.threadId,
+                scope,
+                query: previewStr(query),
+                resultCount: result.results.length,
+                withheldCount: result.results.filter((r) => r.withheld).length,
+              });
+            } else {
+              // MEMORY_DEBUG `action` channel (chunk 2c-03, spec §3.9): one line per
+              // dispatchTool result, applied AND refused alike — off by default.
+              // hybrid-05: this `else` is reached only when NOT (result.ok && result.action === "search")
+              // (the branch above), so TS already narrows `result.ok===true` here to exclude the `search`
+              // arm structurally — an explicit `result.action !== "search"` re-check would be a provably-dead
+              // comparison (tsc TS2367) given that narrowing, so it is not repeated; the exclusion still holds.
+              memDebug("action", {
+                threadId: turnCtx!.threadId,
+                tool: tu.name,
+                outcome: result.ok ? "applied" : `refused-${result.code}`,
+                ...(result.ok && result.factId !== undefined ? { factId: result.factId } : {}),
+                factPreview: previewStr(actionInputPreview(tu.name, tu.input)),
+              });
+              // review-gate FIX 5: a memory_search REFUSAL (e.g. cap_exceeded) still deserves a
+              // `search`-channel line — the read glass-box (D6b) should fire for capped reads too,
+              // not only successes. Happy-path `search` payload shape (above) is unchanged.
+              if (tu.name === "memory_search" && !result.ok) {
+                const { scope, query } = searchDebugFields(tu.input);
+                memDebug("search", {
+                  threadId: turnCtx!.threadId,
+                  scope,
+                  query: previewStr(query),
+                  resultCount: 0,
+                  refused: result.code,
+                });
+              }
+            }
+            results.push({
               type: "tool_result",
               tool_use_id: tu.id,
               content: serializeToolResult(result),
-            };
-          });
+            });
+          }
           convo.push({ role: "user", content: results });
 
           rounds++;
-          // C1 hard backstop: bound loop-executing rounds at the SAME constant
-          // that bounds the per-turn action cap — at most cap+1 model calls
-          // total. The port's cap_exceeded is the natural terminator for a
-          // single response with multiple tool_use blocks; this round bound
-          // guards a misbehaving LLM that keeps calling tools one-per-round.
+          // C1 backstop RISES for the READ cap (spec §3.6 D6b): bound loop-executing rounds at
+          // write-cap + read-cap so 3 searches can no longer exhaust the rounds a legitimate write
+          // needs. Worst case = (MEMORY_ACTIONS_MAX_PER_TURN + MEMORY_SEARCH_MAX_PER_TURN) + 1 = 7
+          // sequential model calls; the port's per-tool caps (actionsUsed / searchesUsed) are the
+          // real terminators — this guards a misbehaving LLM calling one tool per round.
           // review FIX 1: this ONLY flips requestTools (which now controls
           // tool_choice:none, not `tools` presence — see the create() call above).
-          if (rounds >= MEMORY_ACTIONS_MAX_PER_TURN) requestTools = false;
+          if (rounds >= MEMORY_ACTIONS_MAX_PER_TURN + MEMORY_SEARCH_MAX_PER_TURN) requestTools = false;
         }
 
         // review FIX 4: never ship an empty show_text bubble — substitute an

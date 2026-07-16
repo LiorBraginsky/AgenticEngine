@@ -294,3 +294,22 @@ describe("capability-conditional composition (2c §3.8)", () => {
     expect(MEMORY_SELF_CONCEPT_WITH_ACTIONS).toContain("automatically");
   });
 });
+
+// ── hybrid-05: search addendum (D6c/D6d) ──────────────────────────────────
+
+test("hybrid-05: composeSystemPrompt(true, false) is byte-identical to the 2c WITH_ACTIONS prompt", () => {
+  expect(composeSystemPrompt(true, false)).toBe(COMPOSED_SYSTEM_PROMPT_WITH_ACTIONS);
+  expect(composeSystemPrompt(true)).toBe(COMPOSED_SYSTEM_PROMPT_WITH_ACTIONS); // default searchPresent=false
+});
+
+test("hybrid-05: composeSystemPrompt(false, *) never claims tools (capability-absent, both directions)", () => {
+  expect(composeSystemPrompt(false, true)).toBe(COMPOSED_SYSTEM_PROMPT);
+  expect(composeSystemPrompt(false, false)).toBe(COMPOSED_SYSTEM_PROMPT);
+});
+
+test("hybrid-05: composeSystemPrompt(true, true) adds the search addendum (D6c/D6d) without dropping the action self-concept", () => {
+  const p = composeSystemPrompt(true, true);
+  expect(p).toContain("search"); // claims the capability
+  expect(p).toContain("Memory window"); // still defers out-of-view forget/edit
+  expect(p.startsWith(COMPOSED_SYSTEM_PROMPT_WITH_ACTIONS)).toBe(true); // additive onto WITH_ACTIONS
+});

@@ -13,7 +13,7 @@ import type { ProviderInput, ProviderSessionState } from "./provider.js";
 import { MemoryStore } from "../memory/store.js";
 import { WriteGate } from "../memory/write-gate.js";
 import { RuleBasedScanner } from "../memory/scanner/memory-scanner.js";
-import { MemoryActionPort } from "../memory/memory-action-port.js";
+import { MemoryActionPort, type MemorySearchRanker } from "../memory/memory-action-port.js";
 
 // ── Fake Anthropic client types ────────────────────────────────────────────
 
@@ -103,6 +103,14 @@ function freshMemoryHarness() {
   const gate = new WriteGate(store, scanner);
   const port = new MemoryActionPort(store, gate, scanner);
   return { store, scanner, gate, port };
+}
+
+// hybrid-05: deterministic in-test MemorySearchRanker stub — no model, CI-stable.
+function stubRanker(factIds: string[], archiveIds: string[]): MemorySearchRanker {
+  return {
+    async searchFacts() { return factIds.map((id, i) => ({ id, score: 1 / (61 + i) })); },
+    async searchArchive() { return archiveIds.map((id, i) => ({ id, score: 1 / (61 + i) })); },
+  };
 }
 
 // ── Import the provider ────────────────────────────────────────────────────
@@ -630,7 +638,11 @@ describe("memory-action tool loop (chunk 2c-02)", () => {
     store.close();
   });
 
-  test("loop bound: an ALWAYS-tool_use client is called at most MEMORY_ACTIONS_MAX_PER_TURN+1 times and resolves (no hang/throw)", async () => {
+  // hybrid-05: the round bound rose to MEMORY_ACTIONS_MAX_PER_TURN + MEMORY_SEARCH_MAX_PER_TURN
+  // (spec §3.6 D6b) so 3 searches can't starve a legitimate write — the call-count ceiling
+  // this test asserts rises from 4 (3+1) to 7 (6+1) accordingly; the SEMANTIC invariant (a
+  // misbehaving all-tool_use client is bounded and never hangs/throws) is unchanged.
+  test("loop bound: an ALWAYS-tool_use client is called at most (MEMORY_ACTIONS_MAX_PER_TURN + MEMORY_SEARCH_MAX_PER_TURN)+1 times and resolves (no hang/throw)", async () => {
     const { store, port } = freshMemoryHarness();
     const t = store.createThread();
     const factId = store.insertFact({
@@ -683,8 +695,9 @@ describe("memory-action tool loop (chunk 2c-02)", () => {
 
     expect(threw).toBe(false);
     expect(result!.ok).toBe(true);
-    // At most cap+1 sequential model calls (3 tool-executing rounds + 1 forced final).
-    expect(callCount()).toBeLessThanOrEqual(4);
+    // At most cap+1 sequential model calls (6 tool-executing rounds + 1 forced final —
+    // hybrid-05 raised bound: MEMORY_ACTIONS_MAX_PER_TURN + MEMORY_SEARCH_MAX_PER_TURN).
+    expect(callCount()).toBeLessThanOrEqual(7);
 
     store.close();
   });
@@ -889,7 +902,8 @@ describe("memory-action tool loop (chunk 2c-02)", () => {
     }, "seed");
 
     // Always returns tool_use — forces the loop to hit the round cap and issue
-    // the forced-final call (call #cap+1 = the 4th sequential model call).
+    // the forced-final call (call #cap+1 = the 7th sequential model call —
+    // hybrid-05 raised bound: MEMORY_ACTIONS_MAX_PER_TURN + MEMORY_SEARCH_MAX_PER_TURN).
     const { client, capturedParams, callCount } = makeScriptedClient([
       {
         stop_reason: "tool_use",
@@ -920,10 +934,10 @@ describe("memory-action tool loop (chunk 2c-02)", () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(callCount()).toBe(4); // 3 tool-executing rounds (the cap) + 1 forced-final
+    expect(callCount()).toBe(7); // 6 tool-executing rounds (the raised cap) + 1 forced-final
 
     const params = capturedParams() as Array<{ tools?: unknown; tool_choice?: { type: string } }>;
-    expect(params).toHaveLength(4);
+    expect(params).toHaveLength(7);
 
     // NO call may omit `tools` while useTools — every round's convo may already
     // carry tool_use/tool_result blocks from a prior round.
@@ -1562,6 +1576,80 @@ describe("injection drill + honesty (spec §5, d7 ceiling)", () => {
     const events = store.readMemoryActionEvents(t);
     expect(events.some((e) => e.outcome === "refused-not_in_view")).toBe(true);
 
+    store.close();
+  });
+});
+
+// ── hybrid-05: memory_search provider-loop wiring ──────────────────────────
+
+describe("hybrid-05: memory_search provider-loop wiring", () => {
+  test("hybrid-05: no ranker ⇒ tools[] excludes memory_search (capability-conditional; 2c byte-identical)", async () => {
+    // Port WITHOUT a ranker: capture the tools[] the provider declares.
+    const { store, gate, scanner } = freshMemoryHarness();
+    const port = new MemoryActionPort(store, gate, scanner); // no ranker → canSearch=false
+    const { client, capturedParams } = makeScriptedClient([
+      { stop_reason: "end_turn", content: [{ type: "text", text: "ok" }] },
+    ]);
+    const provider = createAnthropicApiProvider({ apiKey: "sk-ant-test", client: client as never, memoryActionPort: port });
+    await provider.advance(undefined, {
+      type: "session_start",
+      trigger: "user",
+      text: "hi",
+      client_session_id: "c-hybrid05-1",
+    });
+    const params = capturedParams()[0] as { tools?: { name: string }[] };
+    expect((params.tools ?? []).map((t) => t.name)).toEqual(["memory_forget", "memory_remember"]); // no memory_search
+    store.close();
+  });
+
+  test("hybrid-05: ranker present ⇒ tools[] includes memory_search", async () => {
+    const { store, gate, scanner } = freshMemoryHarness();
+    const port = new MemoryActionPort(store, gate, scanner, stubRanker([], []));
+    const { client, capturedParams } = makeScriptedClient([
+      { stop_reason: "end_turn", content: [{ type: "text", text: "ok" }] },
+    ]);
+    const provider = createAnthropicApiProvider({ apiKey: "sk-ant-test", client: client as never, memoryActionPort: port });
+    await provider.advance(undefined, {
+      type: "session_start",
+      trigger: "user",
+      text: "hi",
+      client_session_id: "c-hybrid05-2",
+    });
+    const params = capturedParams()[0] as { tools?: { name: string }[] };
+    expect((params.tools ?? []).map((t) => t.name)).toContain("memory_search");
+    store.close();
+  });
+
+  test("hybrid-05: 3 searches + 1 write in one turn all fit the raised loop bound (RED on the old bound of 3)", async () => {
+    // Seed a forgettable fact in the injected slice so round 4's forget can succeed.
+    const { store, gate, scanner } = freshMemoryHarness();
+    const t = store.createThread();
+    const fid = store.insertFact({ fact: "favorite color blue", canonical: "favorite color blue", topics: [], provenance: `thread:${t}`, scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" }, "seed");
+    const port = new MemoryActionPort(store, gate, scanner, stubRanker([fid], []));
+    const { client } = makeScriptedClient([
+      { stop_reason: "tool_use", content: [{ type: "tool_use", id: "s1", name: "memory_search", input: { query: "color", scope: "facts" } }] },
+      { stop_reason: "tool_use", content: [{ type: "tool_use", id: "s2", name: "memory_search", input: { query: "color", scope: "facts" } }] },
+      { stop_reason: "tool_use", content: [{ type: "tool_use", id: "s3", name: "memory_search", input: { query: "color", scope: "facts" } }] },
+      { stop_reason: "tool_use", content: [{ type: "tool_use", id: "f1", name: "memory_forget", input: { ordinal: 1, expected_text: "favorite color blue" } }] },
+      { stop_reason: "end_turn", content: [{ type: "text", text: "done" }] },
+    ]);
+    const provider = createAnthropicApiProvider({ apiKey: "sk-ant-test", client: client as never, memoryActionPort: port });
+    const priorState: ProviderSessionState = {
+      phase: "done",
+      session_id: "",
+      messages: [],
+      memoryActionSlice: { threadId: t, ordinalMap: new Map([[1, fid]]) },
+    };
+    await provider.advance(priorState, {
+      type: "session_start",
+      trigger: "user",
+      text: "search for my color then forget it",
+      client_session_id: "c-hybrid05-3",
+    });
+    // The forget in round 4 EXECUTED only because the bound rose to 6 — RED if the bound were 3
+    // (requestTools would flip false after round 3 → tool_choice:none → the forget never dispatches).
+    expect(store.readFactById(fid)).toBeNull();
+    expect(store.readMemoryActionEvents(t).some((e) => e.action === "forget" && e.outcome === "applied")).toBe(true);
     store.close();
   });
 });

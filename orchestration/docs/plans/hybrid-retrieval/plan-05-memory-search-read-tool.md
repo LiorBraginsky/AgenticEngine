@@ -107,9 +107,13 @@ ADR-0016 decision 2 already admits read tools by design ("2d adds read tools (`m
 ### Task 1: Type + registry surface — result-union `search` variant, registry `kind:read` row, capability-gated tools param, framed serialization
 
 **Files:**
-- Modify: `packages/daemon/src/memory/memory-action-port.ts` (the RESULT-TYPE surface only: `SearchHit` + the `search` union variant)
+- Modify: `packages/daemon/src/memory/memory-action-port.ts` (the RESULT-TYPE surface: `SearchHit` + the `search` union variant, PLUS the internal `WriteActionResult` alias and retyping the two `remember*` helpers to it — the union-widening's in-file type consequence)
 - Modify: `packages/daemon/src/providers/memory-action-tools.ts` (registry row, write-filtered param + builder, contract comment, framed `serializeToolResult`)
+- Modify: `packages/daemon/src/providers/anthropic-api-provider.ts` (narrowing-ONLY: one `&& result.action !== "search"` guard on the pre-existing `memDebug("action", …)` factId spread — NO `memory_search` wiring, that stays Task 3)
+- Modify: `packages/daemon/src/memory/memory-action-port.daemon.test.ts` (narrowing-ONLY: two pre-existing `if (result.ok)` blocks gain `&& result.action !== "search"` so `.factId`/`.message` stay accessible)
 - Test: `packages/daemon/src/providers/memory-action-tools.test.ts`
+
+> **Atomicity note (why the last two files are here — orchestrator/architect reconciliation):** the moment the `search` variant enters `MemoryActionResult`, every consumer that reads `.factId`/`.message` off a `result.ok`-narrowed value stops typechecking. Those consumers live in Task 2's and Task 3's files, so Task 1 can only be repo-typecheck-green if the union-widening lands *with* its narrowing guards. These are the ONLY edits Task 1 makes to those two files; the `search` method (Task 2) and the dispatch branch (Task 3) are untouched here.
 
 **Interfaces:**
 - Consumes: nothing new.
@@ -180,7 +184,19 @@ export type MemoryActionResult =
   | { ok: true; action: "forget" | "remember" | "reassert"; factId?: string; message: string }
   | { ok: true; action: "search"; results: SearchHit[] } // spec §3.6 D6a — READ-ONLY, no ids (never targetable, §0.2)
   | { ok: false; code: "not_in_view" | "stale_target" | "refused_human_fact" | "rejected_by_scan" | "cap_exceeded" | "duplicate"; message: string };
+
+/** The write-action arms of MemoryActionResult — every arm EXCEPT the read-only `search` variant.
+ *  The write helpers (rememberExplicitTarget / rememberNoTarget) and the reassert spread only ever
+ *  produce these; typing them to this (not the now-wider public union) keeps
+ *  `{ ...outcome, action: "reassert" }` and audit() total after `search` widened the union
+ *  (hybrid-retrieval chunk-05). Internal — NOT exported (not part of the Task 2/3 contract). */
+type WriteActionResult = Exclude<MemoryActionResult, { action: "search" }>;
 ```
+
+  Then retype the two write helpers so the `search` arm never flows into the reassert spread (this is the fix for the internal `:182` breakage — `{ ...outcome, action: "reassert" }` is otherwise inferred to include `{ ok:true; action:"reassert"; results: SearchHit[] }`, which is not assignable):
+  - `rememberExplicitTarget(...)` (`:187`): change the return type `: MemoryActionResult {` → `: WriteActionResult {`.
+  - `rememberNoTarget(...)` (`:227`): change the return type `: MemoryActionResult {` → `: WriteActionResult {`.
+  - Leave `audit(...)` (`:235`) and the public `remember()` return type as `MemoryActionResult` — unchanged (`WriteActionResult` is a subtype, so the pass-through stays assignable).
 
 - [ ] **Step 4 — Add the registry row + write-filtered param + builder + framed serialize in `memory-action-tools.ts`.**
   - `:20` widen the name union:
@@ -253,14 +269,38 @@ export function serializeToolResult(result: MemoryActionResult): string {
 }
 ```
 
+- [ ] **Step 4b — Fold the union-widening's cross-file type consequences (narrowing-ONLY, no behavior change).** The public `MemoryActionResult` is now wider; three pre-existing consumers read `.factId`/`.message` off a `result.ok`-narrowed value and must exclude the `search` arm. All edits are pure type-narrowing via the `action` discriminant — zero runtime change (a write result's `action` is never `"search"`), no ids exposed, no targetability added (§0.2).
+
+  **`packages/daemon/src/memory/memory-action-port.daemon.test.ts`** — two pre-existing blocks:
+  - `:169` change `if (result.ok) {` → `if (result.ok && result.action !== "search") {` (the block reading `result.factId` at `:171`).
+  - `:263` change `if (result.ok) {` → `if (result.ok && result.action !== "search") {` (the block reading `result.factId` at `:264` and `result.message` at `:265`).
+
+  **`packages/daemon/src/providers/anthropic-api-provider.ts`** — the `memDebug("action", …)` factId spread at `:455`:
+  ```ts
+  // chunk-05: `result` is now the wider MemoryActionResult (gained the read-only `search` arm in
+  // Task 1). Search results carry NO factId, so exclude that arm before the factId access. The
+  // memory_search dispatch branch is wired in Task 3; until then this guard is a type-only no-op.
+  ...(result.ok && result.action !== "search" && result.factId !== undefined ? { factId: result.factId } : {}),
+  ```
+
+  > If `tsc` surfaces any FURTHER pre-existing `.factId`/`.message` access on a `result.ok`-narrowed `MemoryActionResult` beyond these three sites, apply the identical `&& result.action !== "search"` narrowing — it is always the behavior-preserving fix. Do NOT touch the frozen surfaces or add any read of a `SearchHit`.
+
 - [ ] **Step 5 — Run to verify GREEN.** `bun test packages/daemon/src/providers/memory-action-tools.test.ts` → PASS (including the pre-existing `:12` "declares exactly memory_forget + memory_remember" test — unchanged).
 
 - [ ] **Step 6 — Typecheck + lint.** `bun run --cwd packages/daemon typecheck && bun run --cwd packages/daemon lint:strict` → 0.
 
 - [ ] **Step 7 — Commit.**
 ```bash
-git add packages/daemon/src/memory/memory-action-port.ts packages/daemon/src/providers/memory-action-tools.ts packages/daemon/src/providers/memory-action-tools.test.ts
+git add packages/daemon/src/memory/memory-action-port.ts packages/daemon/src/providers/memory-action-tools.ts packages/daemon/src/providers/anthropic-api-provider.ts packages/daemon/src/memory/memory-action-port.daemon.test.ts packages/daemon/src/providers/memory-action-tools.test.ts
 git commit -m "feat(memory): memory_search registry row (kind:read) + result-union search variant + capability-gated tools param + untrusted-framed serialization (hybrid-retrieval chunk-05)
+
+Widen MemoryActionResult with the read-only \`search\` variant ATOMICALLY with its type
+consequences so every consumer stays typecheck-green: an internal WriteActionResult alias
+retypes the two remember* helpers (fixes the reassert spread in-file), and a narrowing-only
+'action !== \"search\"' guard lands on the two pre-existing daemon-test result.ok blocks and
+the provider's memDebug(\"action\") factId spread. No behavior change to forget/remember/
+reassert/audit; results stay id-free / non-targetable (§0.2). memory_search execution and
+dispatch wiring remain Tasks 2/3.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
@@ -275,6 +315,8 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Modify: `packages/daemon/src/index.ts` (pass `factRanker` to the port constructor — one line)
 - Test: `packages/daemon/src/memory/memory-action-port.daemon.test.ts`
 - Test: `packages/daemon/src/memory/store.test.ts`
+
+> **Note (chunk-05 reconciliation):** scope unchanged. `memory-action-port.ts` and `memory-action-port.daemon.test.ts` were already touched by Task 1 (the `WriteActionResult` alias + two narrowing lines); Task 2's `search` method and appended tests land additively on top — no rework.
 
 **Interfaces:**
 - Consumes: `SearchHit`, `MemoryActionResult.search` (Task 1); the chunk-04 `HybridRanker` (`searchFacts`/`searchArchive`); `store.readFactById` `:1187`, `store.isMessageQuarantined` `:763`, `store.readThreadArchive` COALESCE template `:902`.
@@ -563,6 +605,8 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Modify: `packages/daemon/src/memory/debug-log.ts`
 - Test: `packages/daemon/src/providers/anthropic-api-provider.test.ts`
 - Test: `packages/daemon/src/providers/system-prompt.test.ts`
+
+> **Note (chunk-05 reconciliation):** `anthropic-api-provider.ts:455` already carries the `&& result.action !== "search"` guard on the `memDebug("action", …)` factId spread (pre-landed in Task 1). PRESERVE it when converting `dispatchTool` to async and adding the `memory_search` branch — it is the type-narrow that keeps a search result out of the `factId` debug field. Do not revert or duplicate it.
 
 **Interfaces:**
 - Consumes: `buildMemoryToolsParam` (Task 1), `MEMORY_SEARCH_MAX_PER_TURN` + `MemoryActionPort.search`/`canSearch` (Task 2).

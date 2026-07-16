@@ -330,12 +330,15 @@ function buildScriptedClient(): Anthropic {
 // asserts. Item 2 (memory_search) is proven by the separate EXECUTED
 // memory-search-probe.ts (real LLM); referenced, not duplicated here.
 //
-// `--mode` is IGNORED by this suite (dual-review F4): the runtime here is ALWAYS
-// LLM_PROVIDER=mock + the scripted distiller client, unconditionally — there is no
-// real-LLM code path for --suite=2d to vary on. A prior version silently downgraded
-// the scene-(b) e2e-REPLACE hard-assert to "informational" under --mode=real, which
-// meant a genuine main regression could print "SUITE COMPLETE" instead of failing.
-// Every assert below fires unconditionally.
+// `--mode` no longer affects any ASSERT or OUTCOME in this suite (dual-review F4): the
+// runtime here is ALWAYS LLM_PROVIDER=mock + the scripted distiller client,
+// unconditionally — there is no real-LLM code path for --suite=2d to vary the RESULT
+// on. A prior version silently downgraded the scene-(b) e2e-REPLACE hard-assert to
+// "informational" under --mode=real, which meant a genuine main regression could print
+// "SUITE COMPLETE" instead of failing. Every assert below now fires unconditionally.
+// (`--mode` still sets DEFAULT_WS_TIMEOUT_MS's ceiling — 30s vs 5s, :559 — since the WS
+// turns here don't pass an explicit timeoutMs; that's an inert timeout knob, not an
+// assert/outcome variance, and a scripted client resolves well inside either bound.)
 async function run2dSuite(): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), "demo-harness-2d-"));
   const cleanup2d = (srv: ReturnType<typeof import("../src/index.js").startDaemon> | null): void => {
@@ -345,7 +348,7 @@ async function run2dSuite(): Promise<void> {
   let srv: ReturnType<typeof import("../src/index.js").startDaemon> | null = null;
   try {
     console.log("\n╔═ hybrid-retrieval 2d GLASS-BOX SUITE (spec §5 items 1,3,4,5) ═╗");
-    console.log("[2d] note: --mode is a no-op for --suite=2d (always scripted/deterministic); --mode only affects --suite=core.");
+    console.log("[2d] note: --mode is a no-op for this suite's asserts/outcomes (always scripted/deterministic; only the WS-turn timeout ceiling varies — see comment above) — --mode meaningfully affects --suite=core.");
 
     // Embedding env MUST be set before startDaemon (provider is built at boot).
     process.env.AGENTIC_DATA_DIR = dir;
@@ -663,7 +666,7 @@ async function wsTurnAndSettle(
   return result;
 }
 
-// ── Bounded poll helper (chunk-04 2.4 — real-mode-only) ─────────────────────
+// ── Bounded poll helper (chunk-04 2.4, originally real-mode-only) ───────────
 //
 // Fixes the chunk-03 reviewer MINOR (a live LLM distill can take 1-3s, which
 // the pre-chunk-04 fixed 300/400ms settles could outrun) + the pre-existing
@@ -675,10 +678,22 @@ async function wsTurnAndSettle(
 // no-op (spec 5b, ConsolidationHook.dismiss). Polling for THAT row landing is
 // therefore a robust, content-agnostic "this turn's background consolidation
 // has committed" signal — no need to guess specific fact substrings the live
-// model might produce. Bounded at POLL_DEADLINE_MS; NEVER hard-asserted here
-// (2c real-mode observations stay informational, per the section banner —
-// no process.exit(1) on a poll timeout). Stub-mode call sites are UNCHANGED —
-// this helper is only invoked from real-mode-only call sites.
+// model might produce. Bounded at POLL_DEADLINE_MS.
+//
+// Call-site assertion posture DIFFERS by caller (comment-drift fix, chunk-06
+// closure re-review): the original 2c real-mode call sites below keep
+// `settle.settled` INFORMATIONAL — never hard-asserted, no process.exit(1) on
+// a poll timeout — because those are live-LLM rehearsal observations (spec §5
+// items 1-5, printed not asserted, per the section banner). The hybrid-
+// retrieval chunk-06 `run2dSuite` scene-(b) call site (~:479) is DIFFERENT: it
+// DOES hard-assert `settle.settled` (`!settle.settled` triggers a THESIS-FAIL
+// + process.exit(1)). That is safe there specifically because scene (b) runs
+// the SCRIPTED distiller client (never a live LLM) — the consolidation hook
+// unconditionally commits a distillation_events row on every dismiss
+// regardless of what the scripted client returns, so `settled` becoming false
+// within POLL_DEADLINE_MS cannot be model-latency flake; it can only mean the
+// turn's background consolidation genuinely never ran (a real defect worth
+// stopping the line for), not a timing hiccup.
 const POLL_DEADLINE_MS = 8_000;
 const POLL_INTERVAL_MS = 200;
 

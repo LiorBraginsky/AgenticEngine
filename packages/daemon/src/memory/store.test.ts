@@ -1291,3 +1291,18 @@ test("R3: readForgottenFacts breaks same-created_at ties by insertion order (row
   expect(rows.map((r) => r.raw_text)).toEqual(["third", "second"]);
   store.close();
 });
+
+test("hybrid-05: readArchiveMessagesByIds honors the correction COALESCE + tombstone flag", () => {
+  const { store } = freshStore();
+  const t = store.createThread();
+  const [a, b] = store.appendMessages(t, [
+    { role: "user", content: "original A" },
+    { role: "assistant", content: "reply B" },
+  ], "sess");
+  const rows = store.readArchiveMessagesByIds([a!, b!]);
+  expect(rows.find((r) => r.id === a)?.content).toBe("original A");
+  expect(rows.find((r) => r.id === b)?.role).toBe("assistant");
+  expect(rows.every((r) => r.tombstoned === false)).toBe(true);
+  expect(store.readArchiveMessagesByIds([])).toEqual([]);
+  store.close();
+});

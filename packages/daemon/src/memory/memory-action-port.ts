@@ -8,6 +8,11 @@ import { applyFactOp } from "./apply-fact-op.js";
  *  constant so the loop-iteration bound and the per-turn action cap are ONE number. */
 export const MEMORY_ACTIONS_MAX_PER_TURN = 3;
 
+/** spec §3.6 D6b — the READ cap, enforced INDEPENDENTLY of MEMORY_ACTIONS_MAX_PER_TURN.
+ *  The provider's loop-round backstop rises to the SUM so searches never starve a write. */
+export const MEMORY_SEARCH_MAX_PER_TURN = 3;
+const SEARCH_RESULT_CAP = 8; // spec §3.6 D6a top-N (architect-time)
+
 /**
  * ONE object per turn (spec §7 CLOSED). chunk-01 constructs it directly in tests;
  * chunk-02 builds it from the retrieve slice. The port MUTATES `actionsUsed`.
@@ -18,6 +23,7 @@ export interface MemoryActionTurnContext {
   threadId: string;
   ordinalMap: Map<number, string>; // ordinal → distilled_facts.id
   actionsUsed: number;             // shared cap counter (mutable)
+  searchesUsed?: number;           // spec §3.6 D6b — read counter; optional so forget/remember-only contexts need not set it (defaults 0).
 }
 
 export interface SearchHit {
@@ -51,6 +57,18 @@ export interface MemoryRememberInput {
   expected_text?: string;
 }
 
+export interface MemorySearchInput { query: string; scope?: "facts" | "archive" | "all"; }
+
+/** Structural ranker dep (spec §3.6 D6a port wiring). Defined HERE — NOT imported from the
+ *  embedding module — so the port never imports hybrid-ranker.ts (no cycle). The concrete
+ *  HybridRanker satisfies this structurally (its RankHit ⊇ {id,score}, and it has both methods;
+ *  the store's narrower FactCandidateRanker has only searchFacts, so it is NOT reused here). */
+export interface MemorySearchRankedHit { id: string; score: number; }
+export interface MemorySearchRanker {
+  searchFacts(query: string, k: number): Promise<MemorySearchRankedHit[]>;
+  searchArchive(query: string, k: number): Promise<MemorySearchRankedHit[]>;
+}
+
 /**
  * MemoryActionPort — the daemon-internal 2c capability (spec §3.2/§3.3/§3.6/§3.7).
  * NEVER throws across the port boundary (known-gotcha #9): every path returns a
@@ -63,7 +81,12 @@ export class MemoryActionPort {
     private readonly store: MemoryStore,
     private readonly gate: WriteGate,
     private readonly scanner: MemoryScanner,
+    private readonly ranker?: MemorySearchRanker, // hybrid-retrieval chunk-05 (spec §3.6 D6a)
   ) {}
+
+  /** spec §3.6 D6d: search is available iff a ranker is wired. The provider gates memory_search
+   *  out of tools[] when false, so the capability-conditional self-concept never claims search. */
+  get canSearch(): boolean { return this.ranker !== undefined; }
 
   forget(ctx: MemoryActionTurnContext, input: MemoryForgetInput): MemoryActionResult {
     if (ctx.actionsUsed >= MEMORY_ACTIONS_MAX_PER_TURN) {
@@ -237,6 +260,63 @@ export class MemoryActionPort {
     }
     const applied = applyFactOp(this.store, { op: "new", fact: input.fact, canonical: norm, topics: [], provenance }, "agent");
     return { ok: true, action: "remember", factId: applied.factId, message: "Remembered." };
+  }
+
+  /**
+   * spec §3.6 D6a — the READ tool. Runs the hybrid ranker over facts and/or the archive,
+   * hydrates snippets honoring the standing archive-read posture (correction COALESCE,
+   * tombstone + quarantine exclusion), screens every snippet through the RuleBasedScanner
+   * (flagged ⇒ WITHHELD, §0.3), caps at SEARCH_RESULT_CAP. Results carry NO ids and never
+   * join the ordinal map (§0.2 — READ-ONLY). NEVER throws (gotcha #9); NO audit event (D6b).
+   */
+  async search(ctx: MemoryActionTurnContext, input: MemorySearchInput): Promise<MemoryActionResult> {
+    if (this.ranker === undefined) return { ok: true, action: "search", results: [] }; // gated off in tools[] anyway
+    if ((ctx.searchesUsed ?? 0) >= MEMORY_SEARCH_MAX_PER_TURN) {
+      return { ok: false, code: "cap_exceeded", message: "I've reached my search limit for this turn." };
+    }
+    ctx.searchesUsed = (ctx.searchesUsed ?? 0) + 1;
+
+    const scope = input.scope ?? "all";
+    const query = input.query ?? "";
+    const factRanked = (scope === "facts" || scope === "all") ? await this.ranker.searchFacts(query, SEARCH_RESULT_CAP) : [];
+    const archiveRanked = (scope === "archive" || scope === "all") ? await this.ranker.searchArchive(query, SEARCH_RESULT_CAP) : [];
+
+    // Merge across corpora by RRF score DESC (same k ⇒ comparable); stable, facts-first on tie.
+    type Cand = { kind: "fact" | "archive"; id: string; score: number };
+    const cands: Cand[] = [
+      ...factRanked.map((h) => ({ kind: "fact" as const, id: h.id, score: h.score })),
+      ...archiveRanked.map((h) => ({ kind: "archive" as const, id: h.id, score: h.score })),
+    ].sort((a, b) => (b.score - a.score) || (a.kind === b.kind ? 0 : a.kind === "fact" ? -1 : 1));
+
+    // Hydrate archive rows in ONE correction-honored read (spec §3.6 archive-read posture).
+    const archiveById = new Map(
+      this.store.readArchiveMessagesByIds(cands.filter((c) => c.kind === "archive").map((c) => c.id)).map((r) => [r.id, r]),
+    );
+
+    const results: SearchHit[] = [];
+    for (const c of cands) {
+      if (results.length >= SEARCH_RESULT_CAP) break;
+      if (c.kind === "fact") {
+        const row = this.store.readFactById(c.id);
+        if (row === null) continue; // deleted mid-turn (e.g. forgotten) — skip
+        results.push(this.toHit("fact", "remembered fact", row.fact));
+      } else {
+        if (this.store.isMessageQuarantined(c.id)) continue; // §0.3 quarantine-excluded
+        const row = archiveById.get(c.id);
+        if (row === undefined || row.tombstoned) continue; // scrubbed/tombstoned — unreachable
+        const source = row.role === "user" ? "you said in a past conversation" : "I replied in a past conversation";
+        results.push(this.toHit("archive", source, row.content));
+      }
+    }
+    return { ok: true, action: "search", results };
+  }
+
+  /** Build a SearchHit, screening the snippet through the RuleBasedScanner (§0.3 defense-in-depth):
+   *  a flagged snippet is WITHHELD — text becomes a safe marker and `withheld:true` is set. */
+  private toHit(kind: "fact" | "archive", source: string, text: string): SearchHit {
+    const scan = this.scanner.scan({ content: text, scope: "cross-thread", authored_by: "machine" });
+    if (!scan.ok) return { kind, source, text: "[withheld — flagged by a safety check]", withheld: true };
+    return { kind, source, text };
   }
 
   private audit(

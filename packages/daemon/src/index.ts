@@ -108,7 +108,10 @@ export function startDaemon(
   // and run the bounded memory-action tool loop. memoryActionsActive gates the
   // index.ts-side ordinal-map/prefix wiring below — only the anthropic-api
   // provider consumes the capability today.
-  const memoryActionPort = new MemoryActionPort(store, gate, scanner);
+  // hybrid-retrieval chunk-05 (spec §3.6 D6a): reuse the SAME HybridRanker (constructed :102 for
+  // the distiller) so memory_search runs over the identical hybrid legs. Ranker present ⇒
+  // port.canSearch ⇒ memory_search declared in tools[] (D6d).
+  const memoryActionPort = new MemoryActionPort(store, gate, scanner, factRanker);
   const activeProvider = provider ?? buildInjector(undefined, { memoryActionPort });
   const memoryActionsActive = activeProvider.id === "anthropic-api";
   // memoryProvider? — additive test/harness injection seam (mirrors provider?); production uses buildMemoryProvider().

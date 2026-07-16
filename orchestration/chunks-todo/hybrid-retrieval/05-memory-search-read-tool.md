@@ -1,6 +1,6 @@
 # Chunk 5: memory_search — the read tool on the ADR-0016 plane
 
-**Status:** todo
+**Status:** in-progress
 **Created:** 2026-07-13
 **Phase:** hybrid-retrieval (2d)
 **Estimated size:** ~1 day

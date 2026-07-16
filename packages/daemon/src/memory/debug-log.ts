@@ -34,6 +34,10 @@
  * per dispatchTool result inside the bounded loop, applied AND refused alike):
  *   { stage:"action", threadId, tool:"memory_forget"|"memory_remember", outcome:"applied"|`refused-<code>`, factId?, factPreview }
  *
+ * search (chunk hybrid-05, spec §3.6 D6b — the read-tool glass-box; read has NO audit event,
+ * so this debug line is its only observability, emitted once per memory_search dispatch):
+ *   { stage:"search", threadId, scope:"facts"|"archive"|"all", query, resultCount, withheldCount }
+ *
  * Secret discipline:
  *   - Content previews are capped at 80 chars — the user's own memory content
  *     (acceptable under MEMORY_DEBUG, but kept short for greppability).
@@ -86,7 +90,7 @@ function stageEnabled(stage: string): boolean {
  * NEVER pass the API key, auth token, or any credential.
  */
 export function memDebug(
-  stage: "distill" | "retrieve" | "forget" | "inject" | "action",
+  stage: "distill" | "retrieve" | "forget" | "inject" | "action" | "search",
   payload: Record<string, unknown>,
 ): void {
   if (!stageEnabled(stage)) return;

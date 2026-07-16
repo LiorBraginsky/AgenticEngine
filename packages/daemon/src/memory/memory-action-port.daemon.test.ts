@@ -166,7 +166,7 @@ test("remember: explicit machine target with changed attribute → REPLACE (id s
   const result = port.remember(ctx, { fact: "favorite color red", replaces_ordinal: 1, expected_text: "favorite color blue" });
 
   expect(result.ok).toBe(true);
-  if (result.ok) {
+  if (result.ok && result.action !== "search") {
     expect(result.action).toBe("remember");
     expect(result.factId).toBe(id);
   }
@@ -260,7 +260,7 @@ test("remember: explicit human target with changed attribute → competing machi
   const result = port.remember(ctx, { fact: "Lior's birthday is July 2", replaces_ordinal: 1, expected_text: "Lior's birthday is June 1" });
 
   expect(result.ok).toBe(true);
-  if (result.ok) {
+  if (result.ok && result.action !== "search") {
     expect(result.factId).not.toBe(humanId);
     expect(result.message.toLowerCase()).toContain("pinned");
   }

@@ -6,6 +6,8 @@ import {
   type MemoryActionToolName,
   type MemoryActionToolSpec,
 } from "./memory-action-tools.js";
+import { buildMemoryToolsParam } from "./memory-action-tools.js";
+import type { MemoryActionResult } from "../memory/memory-action-port.js";
 
 // ─── closed-set shape ───────────────────────────────────────────────────────
 
@@ -66,4 +68,36 @@ test("totality guard: Record<MemoryActionToolName,...> missing a row is a compil
   } satisfies IncompleteTable;
   // Runtime assertion just so the test body isn't ONLY a type check.
   expect(incomplete.memory_forget.name).toBe("memory_forget");
+});
+
+// ─── hybrid-05: memory_search read tool (registry row + capability gating) ─
+
+test("hybrid-05: memory_search is registered as kind:'read' (the totality guard forces classification)", () => {
+  expect(MEMORY_ACTION_TOOLS.memory_search.kind).toBe("read");
+  expect(MEMORY_ACTION_TOOLS.memory_search.input_schema.type).toBe("object");
+  expect(MEMORY_ACTION_TOOLS.memory_search.input_schema.required).toEqual(["query"]);
+});
+
+test("hybrid-05: MEMORY_ACTION_TOOLS_PARAM stays write-only (byte-identical to 2c — the no-search invariant)", () => {
+  expect(MEMORY_ACTION_TOOLS_PARAM.map((t) => t.name)).toEqual(["memory_forget", "memory_remember"]);
+});
+
+test("hybrid-05: buildMemoryToolsParam gates memory_search on the capability flag (D6d)", () => {
+  expect(buildMemoryToolsParam(false).map((t) => t.name)).toEqual(["memory_forget", "memory_remember"]);
+  expect(buildMemoryToolsParam(true).map((t) => t.name)).toEqual(["memory_forget", "memory_remember", "memory_search"]);
+});
+
+test("hybrid-05: serializeToolResult frames search results as UNTRUSTED data with a leading note", () => {
+  const result: MemoryActionResult = {
+    ok: true, action: "search",
+    results: [{ kind: "archive", source: "you said in a past conversation", text: "deadline is Friday" }],
+  };
+  const parsed = JSON.parse(serializeToolResult(result)) as { note: string; results: unknown[] };
+  expect(parsed.note).toContain("UNTRUSTED");
+  expect(parsed.results).toHaveLength(1);
+});
+
+test("hybrid-05: serializeToolResult leaves non-search results byte-unchanged", () => {
+  const forget: MemoryActionResult = { ok: true, action: "forget", factId: "f1", message: "Forgotten." };
+  expect(serializeToolResult(forget)).toBe(JSON.stringify(forget));
 });

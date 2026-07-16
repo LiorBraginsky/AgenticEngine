@@ -20,9 +20,24 @@ export interface MemoryActionTurnContext {
   actionsUsed: number;             // shared cap counter (mutable)
 }
 
+export interface SearchHit {
+  kind: "fact" | "archive";
+  source: string;
+  text: string;
+  withheld?: boolean;
+}
+
 export type MemoryActionResult =
   | { ok: true; action: "forget" | "remember" | "reassert"; factId?: string; message: string }
+  | { ok: true; action: "search"; results: SearchHit[] } // spec §3.6 D6a — READ-ONLY, no ids (never targetable, §0.2)
   | { ok: false; code: "not_in_view" | "stale_target" | "refused_human_fact" | "rejected_by_scan" | "cap_exceeded" | "duplicate"; message: string };
+
+/** The write-action arms of MemoryActionResult — every arm EXCEPT the read-only `search` variant.
+ *  The write helpers (rememberExplicitTarget / rememberNoTarget) and the reassert spread only ever
+ *  produce these; typing them to this (not the now-wider public union) keeps
+ *  `{ ...outcome, action: "reassert" }` and audit() total after `search` widened the union
+ *  (hybrid-retrieval chunk-05). Internal — NOT exported. */
+type WriteActionResult = Exclude<MemoryActionResult, { action: "search" }>;
 
 export interface MemoryForgetInput {
   ordinal: number;
@@ -182,7 +197,7 @@ export class MemoryActionPort {
     ordinal: number,
     norm: string,
     provenance: string,
-  ): MemoryActionResult {
+  ): WriteActionResult {
     const factId = ctx.ordinalMap.get(ordinal);
     if (factId === undefined) {
       return { ok: false, code: "not_in_view", message: "That fact isn't in this turn's view — I can't target it here. Use the Memory window." };
@@ -216,7 +231,7 @@ export class MemoryActionPort {
     return { ok: true, action: "remember", factId: applied.factId, message: "Remembered." };
   }
 
-  private rememberNoTarget(input: MemoryRememberInput, norm: string, provenance: string): MemoryActionResult {
+  private rememberNoTarget(input: MemoryRememberInput, norm: string, provenance: string): WriteActionResult {
     if (this.store.factExistsByDedupKey(norm)) {
       return { ok: false, code: "duplicate", message: "I already have that noted." };
     }

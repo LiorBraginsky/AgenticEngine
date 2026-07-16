@@ -452,7 +452,10 @@ export function createAnthropicApiProvider(
               threadId: turnCtx!.threadId,
               tool: tu.name,
               outcome: result.ok ? "applied" : `refused-${result.code}`,
-              ...(result.ok && result.factId !== undefined ? { factId: result.factId } : {}),
+              // chunk-05: `result` is now the wider MemoryActionResult (gained the read-only `search` arm in
+              // Task 1). Search results carry NO factId, so exclude that arm before the factId access. The
+              // memory_search dispatch branch is wired in Task 3; until then this guard is a type-only no-op.
+              ...(result.ok && result.action !== "search" && result.factId !== undefined ? { factId: result.factId } : {}),
               factPreview: previewStr(actionInputPreview(tu.name, tu.input)),
             });
             return {

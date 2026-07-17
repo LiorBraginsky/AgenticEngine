@@ -18,9 +18,11 @@ const DEFAULT_DEBOUNCE_MS = 50;
  * — the drain holds NO persisted queue; every `drain()` call re-derives its work from the
  * store, so a crash/restart mid-batch just resumes wherever the scan says work remains.
  *
- * Degrades to a no-op when `provider` is `null` (lexical-only, ADR-0017 decision 1) or when
- * `provider.embed()` resolves `null` mid-run (provider went unavailable — stop that leg,
- * leave the rest pending for the next kick). NEVER throws — the store's write-observer
+ * Degrades to a no-op when `provider` is `null` (lexical-only, ADR-0017 decision 1). A `null`
+ * batch is no longer a blanket leg-stop: the drain retries the batch's texts singly to isolate
+ * a poison row (chunk-07 items 2+3), skipping only the row(s) that still fail and continuing
+ * with the rest; a batch that embeds nothing at all stops the leg (provider truly unavailable
+ * or all-poison — non-starvation, no wedge). NEVER throws — the store's write-observer
  * (Task 4) calls `kick()` synchronously after every commit; a throw there would crash the
  * daemon's request path.
  */
@@ -105,31 +107,62 @@ export class EmbeddingDrain {
 
   private async drainOnce(): Promise<DrainResult> {
     const provider = this.provider!;
-    let factsEmbedded = 0;
-    let messagesEmbedded = 0;
-
-    for (;;) {
-      const pending = this.store.pendingFactEmbeddings(provider.modelId, this.batchSize);
-      if (pending.length === 0) break;
-      const vectors = await provider.embed(pending.map((p) => p.fact));
-      if (vectors === null) break; // provider went unavailable mid-run — degrade, stop this leg
-      pending.forEach((row, i) => {
-        const outcome = this.store.upsertFactEmbedding(row.id, provider.modelId, provider.dims, encodeVector(vectors[i]!));
-        if (outcome === "written") factsEmbedded++;
-      });
-    }
-
-    for (;;) {
-      const pending = this.store.pendingMessageEmbeddings(provider.modelId, this.batchSize);
-      if (pending.length === 0) break;
-      const vectors = await provider.embed(pending.map((p) => p.content));
-      if (vectors === null) break;
-      pending.forEach((row, i) => {
-        const outcome = this.store.upsertMessageEmbedding(row.id, provider.modelId, provider.dims, encodeVector(vectors[i]!));
-        if (outcome === "written") messagesEmbedded++;
-      });
-    }
-
+    const factsEmbedded = await this.drainLeg(
+      (limit) => this.store.pendingFactEmbeddings(provider.modelId, limit).map((p) => ({ id: p.id, text: p.fact })),
+      (id, vec) => this.store.upsertFactEmbedding(id, provider.modelId, provider.dims, encodeVector(vec)),
+    );
+    const messagesEmbedded = await this.drainLeg(
+      (limit) => this.store.pendingMessageEmbeddings(provider.modelId, limit).map((p) => ({ id: p.id, text: p.content })),
+      (id, vec) => this.store.upsertMessageEmbedding(id, provider.modelId, provider.dims, encodeVector(vec)),
+    );
     return { factsEmbedded, messagesEmbedded };
+  }
+
+  /**
+   * Drain one corpus leg to completion, ISOLATING poison rows (spec §3.3 D3 drain design;
+   * chunk-07 items 2+3). `embed()` is all-or-nothing per call (frozen port contract, ADR-0017
+   * dec.1 — a batch resolves `null` on ANY per-text failure), so on a `null` batch we retry the
+   * batch's texts ONE AT A TIME to isolate the offender. A text that still fails is recorded as
+   * skipped-THIS-PASS (never written as a zero vector — that would poison cosine ranking) and
+   * left pending — it simply won't join the cosine leg; the lexical leg still finds it (D3b
+   * "missing embedding = graceful"). NON-STARVATION: skipped ids are filtered out of every
+   * subsequent scan this pass, so the loop always makes progress and terminates; if a whole
+   * batch embeds NOTHING (provider genuinely unavailable, or all remaining rows poison) the leg
+   * stops — no wedge. Skipped rows are re-attempted on the NEXT drain kick (skip-per-pass; a
+   * persisted retry-cap is deliberately NOT built — chunk-07 anti-gold-plating).
+   */
+  private async drainLeg(
+    scan: (limit: number) => { id: string; text: string }[],
+    upsert: (id: string, vec: Float32Array) => "written" | "skipped",
+  ): Promise<number> {
+    const provider = this.provider!;
+    const skipped = new Set<string>();
+    let embedded = 0;
+    for (;;) {
+      const pending = scan(this.batchSize).filter((r) => !skipped.has(r.id));
+      if (pending.length === 0) break; // nothing left but already-skipped rows this pass
+      const vectors = await provider.embed(pending.map((r) => r.text));
+      if (vectors !== null) {
+        pending.forEach((row, i) => {
+          if (upsert(row.id, vectors[i]!) === "written") embedded++;
+        });
+        continue;
+      }
+      // A batch resolved null: EITHER the provider is unavailable, OR >=1 poison row nulled it.
+      // Isolate by embedding one text at a time.
+      let wroteAny = false;
+      for (const row of pending) {
+        const single = await provider.embed([row.text]);
+        const vec = single?.[0];
+        if (!vec) {
+          skipped.add(row.id); // still fails alone -> skip-this-pass, leave pending
+          continue;
+        }
+        if (upsert(row.id, vec) === "written") embedded++;
+        wroteAny = true;
+      }
+      if (!wroteAny) break; // provider down OR all remaining are poison -> stop this leg
+    }
+    return embedded;
   }
 }

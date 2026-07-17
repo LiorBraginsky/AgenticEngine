@@ -42,6 +42,22 @@ function nullEmbedProvider(): EmbeddingProvider {
   };
 }
 
+/** Mimics local-wasm's all-or-nothing batch failure on a "poison" text: a batch CONTAINING
+ *  the poison resolves null (as embed() does when session.run throws — simulating the ORT-error
+ *  class at the provider seam, chunk-07 item 4); a singleton non-poison resolves its fixture
+ *  vector; a singleton poison resolves null. This is the input the drain's per-text isolation
+ *  must recover from. NOTE: the drain embeds the RAW fact/content text (DOC_PREFIX is applied
+ *  inside local-wasm, not by the drain), so `poison` here is the raw stored text. */
+function poisonBatchProvider(poison: string, modelId = "poison-fixture"): EmbeddingProvider {
+  const fixture = new FixtureEmbeddingProvider({ modelId });
+  return {
+    id: "poison",
+    modelId,
+    dims: fixture.dims,
+    embed: async (texts: string[]) => (texts.includes(poison) ? null : fixture.embed(texts)),
+  };
+}
+
 // ── Lexical-only degrade ──────────────────────────────────────────────────────────────
 
 test("a null provider: kick() and drain() are no-ops (no throw, 0 embedded); a fact stays pending", async () => {
@@ -89,6 +105,38 @@ test("drain() embeds every pending fact and message in one pass", async () => {
   expect(result).toEqual({ factsEmbedded: 3, messagesEmbedded: 2 });
   expect(store.pendingFactEmbeddings(provider.modelId, 10)).toEqual([]);
   expect(store.pendingMessageEmbeddings(provider.modelId, 10)).toEqual([]);
+  store.close();
+});
+
+// ── Poison-row isolation (chunk-07 item 2) ────────────────────────────────────────────
+test("a poison text in a batch: that row is skipped, its siblings still embed (RED pre-fix: the leg aborted)", async () => {
+  const { store } = fresh();
+  store.insertFact(baseFact({ fact: "good-a", canonical: "good-a" }), "dumb-tail");
+  const poisonId = store.insertFact(baseFact({ fact: "POISON", canonical: "POISON" }), "dumb-tail");
+  store.insertFact(baseFact({ fact: "good-b", canonical: "good-b" }), "dumb-tail");
+
+  const provider = poisonBatchProvider("POISON");
+  const result = await new EmbeddingDrain(store, provider).drain();
+
+  expect(result.factsEmbedded).toBe(2); // good-a + good-b embedded despite the poison sibling
+  expect(store.pendingFactEmbeddings(provider.modelId, 10).map((r) => r.id)).toEqual([poisonId]);
+  store.close();
+});
+
+// ── Non-starvation over a paged backlog (chunk-07 item 3) ─────────────────────────────
+test("backlog with one poison row FIRST: every later row still drains and the pass terminates (the skipped-set avoids re-embedding the poison batch every page; termination holds because each page makes progress)", async () => {
+  const { store } = fresh();
+  const poisonId = store.insertFact(baseFact({ fact: "POISON", canonical: "POISON" }), "dumb-tail");
+  const goodIds = ["g1", "g2", "g3", "g4"].map((f) => store.insertFact(baseFact({ fact: f, canonical: f }), "dumb-tail"));
+
+  const provider = poisonBatchProvider("POISON");
+  const drain = new EmbeddingDrain(store, provider, { batchSize: 2 }); // force multi-page paging
+
+  const result = await drain.drain(); // MUST return — a wedge hangs → bun test timeout
+
+  expect(result.factsEmbedded).toBe(4); // all four goods drained, poison at the front notwithstanding
+  expect(store.pendingFactEmbeddings(provider.modelId, 10).map((r) => r.id)).toEqual([poisonId]);
+  void goodIds;
   store.close();
 });
 

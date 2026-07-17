@@ -98,3 +98,19 @@ test("runBackfill with a null provider still builds fts (degrade honesty): provi
   expect(report.messagesEmbedded).toBe(0);
   store.close();
 });
+
+test("runBackfill completes on a real-archive shape (a >512-token message present) — fixture lane wiring guard", async () => {
+  const { store, gate } = fresh();
+  const t = store.createThread();
+  const longContent = Array.from({ length: 30000 }, (_, i) => `w${i}`).join(" "); // well over the 512 window
+  gate.appendTurn(t, [{ role: "user", content: longContent }, { role: "user", content: "short one" }], "s1", CTX);
+  store.insertFact(baseFact(), "dumb-tail");
+
+  const report = await runBackfill(store, new FixtureEmbeddingProvider(), { quiet: true });
+
+  expect(report.messagesEmbedded).toBe(2);
+  expect(report.factsEmbedded).toBe(1);
+  expect(report.messagesPendingAfter).toBe(0);
+  expect(report.factsPendingAfter).toBe(0);
+  store.close();
+});

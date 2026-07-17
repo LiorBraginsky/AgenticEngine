@@ -20,6 +20,31 @@ export interface WordPieceIds {
  *  rather than imported by name so this file stays the one place naming the concrete lib. */
 type PreTrainedTokenizer = ReturnType<typeof TokenizerLoader.fromPreTrained>;
 
+/**
+ * The model's max position count. XLM-RoBERTa / `Xenova/multilingual-e5-small` has 512
+ * position embeddings; a longer sequence makes `session.run` throw an ONNX Runtime broadcast
+ * error ("512 by <N>") — the live D3 failure this chunk fixes (real archive, 2026-07-16).
+ *
+ * The model's `tokenizer_config.json` declares `model_max_length: 512`, but this file loads
+ * with `tokenizerConfig: {}` (no truncation config reaches the lib), so we cap explicitly here.
+ *
+ * HONEST TRADEOFF: a text longer than 512 tokens is represented by its FIRST ~512 tokens only.
+ * Chunking / windowed-averaging is deliberately OUT (spec §7.2 — this is the minimal starvation
+ * fix, not a retrieval-quality feature; revisit only on golden-set-class evidence). The trailing
+ * EOS is intentionally not re-appended — mean-pool over the head window is well-defined for e5.
+ */
+export const MODEL_MAX_POSITIONS = 512;
+
+/** Cap an encoding to the model's max positions (first-N tokens). Pure + exported so the cap
+ *  is unit-testable without loading the model (CI has no model files). */
+export function truncateEncoding(ids: WordPieceIds, maxPositions = MODEL_MAX_POSITIONS): WordPieceIds {
+  if (ids.inputIds.length <= maxPositions) return ids;
+  return {
+    inputIds: ids.inputIds.slice(0, maxPositions),
+    attentionMask: ids.attentionMask.slice(0, maxPositions),
+  };
+}
+
 export class XlmRobertaTokenizer {
   private constructor(private readonly tokenizer: PreTrainedTokenizer) {}
 
@@ -32,11 +57,11 @@ export class XlmRobertaTokenizer {
     return new XlmRobertaTokenizer(tokenizer);
   }
 
-  /** Tokenize `text` into ids + attention mask. Caller pre-applies the e5 "passage:"/
-   *  "query:" prefix — this seam is prefix-agnostic. May throw; the adapter's `embed()`
-   *  wraps every call site so a tokenizer error NEVER escapes as a throw to a consumer. */
+  /** Tokenize `text` into ids + attention mask, capped to MODEL_MAX_POSITIONS (long texts are
+   *  represented by their first ~512 tokens — see truncateEncoding). Caller pre-applies the e5
+   *  "passage:"/"query:" prefix. May throw; the adapter's `embed()` wraps every call site. */
   encode(text: string): WordPieceIds {
     const encoded = this.tokenizer(text) as { input_ids: number[]; attention_mask: number[] };
-    return { inputIds: encoded.input_ids, attentionMask: encoded.attention_mask };
+    return truncateEncoding({ inputIds: encoded.input_ids, attentionMask: encoded.attention_mask });
   }
 }

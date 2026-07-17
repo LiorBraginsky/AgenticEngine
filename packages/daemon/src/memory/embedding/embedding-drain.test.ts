@@ -124,7 +124,7 @@ test("a poison text in a batch: that row is skipped, its siblings still embed (R
 });
 
 // ── Non-starvation over a paged backlog (chunk-07 item 3) ─────────────────────────────
-test("backlog with one poison row FIRST: every later row still drains and the pass terminates (RED pre-fix; a naive skip would wedge)", async () => {
+test("backlog with one poison row FIRST: every later row still drains and the pass terminates (the skipped-set avoids re-embedding the poison batch every page; termination holds because each page makes progress)", async () => {
   const { store } = fresh();
   const poisonId = store.insertFact(baseFact({ fact: "POISON", canonical: "POISON" }), "dumb-tail");
   const goodIds = ["g1", "g2", "g3", "g4"].map((f) => store.insertFact(baseFact({ fact: f, canonical: f }), "dumb-tail"));

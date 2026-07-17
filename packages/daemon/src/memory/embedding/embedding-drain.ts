@@ -125,11 +125,23 @@ export class EmbeddingDrain {
    * batch's texts ONE AT A TIME to isolate the offender. A text that still fails is recorded as
    * skipped-THIS-PASS (never written as a zero vector — that would poison cosine ranking) and
    * left pending — it simply won't join the cosine leg; the lexical leg still finds it (D3b
-   * "missing embedding = graceful"). NON-STARVATION: skipped ids are filtered out of every
-   * subsequent scan this pass, so the loop always makes progress and terminates; if a whole
-   * batch embeds NOTHING (provider genuinely unavailable, or all remaining rows poison) the leg
-   * stops — no wedge. Skipped rows are re-attempted on the NEXT drain kick (skip-per-pass; a
-   * persisted retry-cap is deliberately NOT built — chunk-07 anti-gold-plating).
+   * "missing embedding = graceful").
+   *
+   * TERMINATION / NO-WEDGE: the leg always stops — either every un-skipped row has been scanned
+   * (`pending.length === 0`), or a full page embeds NOTHING (`wroteAny === false`), which fires
+   * on the FIRST all-poison page it meets. It never hangs.
+   *
+   * Honest caveat on the second stop condition: it is a "stop the leg", not "every good row
+   * this pass" guarantee. If >= `batchSize` contiguous rows at the lowest rowids are ALL poison,
+   * `wroteAny` goes false on that first page and the leg stops there — good rows sitting BEHIND
+   * that block are not guaranteed to drain in this pass (they will on a later kick, once skipped
+   * ids are filtered out of the scan). This is an accepted tradeoff, not a bug: the `break` keeps
+   * the genuinely-unavailable-provider case cheap (one page's worth of attempts, not one per
+   * backlog row), and after truncation (chunk-07 item 1) the known poison cause (>512 tokens) is
+   * gone — a residual all-poison page of that size is implausible on real data.
+   *
+   * Skipped rows are re-attempted on the NEXT drain kick (skip-per-pass; a persisted retry-cap
+   * is deliberately NOT built — chunk-07 anti-gold-plating).
    */
   private async drainLeg(
     scan: (limit: number) => { id: string; text: string }[],

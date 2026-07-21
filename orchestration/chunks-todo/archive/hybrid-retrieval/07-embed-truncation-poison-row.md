@@ -1,6 +1,8 @@
+> 🗄️ ARCHIVED 2026-07-21 — done. Historical record; do not edit.
+
 # Chunk 7: embed truncation + poison-row isolation (demo-found defect D3)
 
-**Status:** in-progress
+**Status:** done — hybrid-retrieval 2d SHIPPED + CLOSED 2026-07-21 (PR #103; feature demo-signed §6.1; see specs/archive/2026-07-13-hybrid-retrieval.md)
 **Created:** 2026-07-17
 **Phase:** hybrid-retrieval (2d)
 **Estimated size:** small (~half day)

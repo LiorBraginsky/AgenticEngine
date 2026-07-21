@@ -213,7 +213,8 @@ tags: [roadmap, milestones]
 > facts VIEW with per-fact provenance, distilled-fact-text EDIT (durable human badge) + message
 > correction, "release the reference" FORGET, and honest locked/daemon-down states (+ `history.html`
 > fallback tails). Spec `specs/archive/2026-07-02-memory-transparency-ui.md` (implemented). **Queue
-> head now: 2d (hybrid).** (provenance-affordance chunk-01 SHIPPED 2026-07-13 via PR #93 — feature
+> head now: the 2d post-close fix pass** ([[memory-backlog]] §D-post) — **2d hybrid retrieval itself
+> SHIPPED + CLOSED 2026-07-21.** (provenance-affordance chunk-01 SHIPPED 2026-07-13 via PR #93 — feature
 > closed, spec implemented+archived; chunk-05 D1 dedup fix merged 2026-07-13 — 2c closed.)
 
 > **2c — agent memory-action tools (conversational forget/remember) — SHIPPED + CLOSED 2026-07-13.**
@@ -249,19 +250,29 @@ rough priority:
   window (tray → "Open Memory…"); per-fact in-answer linkage = deliberate deferral with named
   revisit triggers (stale-fact wrong-answer incident · multi-user · 2d). No ADR-0012 change. Spec
   `specs/archive/2026-07-13-in-answer-provenance-affordance.md` (implemented). See [[memory-backlog]] §A.
-- **2d — on-demand archive retrieval + HYBRID candidate-fetch (BM25 + embeddings).** ← **QUEUE HEAD
-  (2026-07-13, after provenance-affordance closed).** The proper cross-language / reworded retrieval. **Lior direction 2026-07-10: HYBRID (lexical BM25 + semantic
-  embeddings), not embeddings-only** — so exact-term and reworded/cross-language matches both land.
-  **Supersedes BOTH plain BM25 AND the all-facts-below-cap stopgap** once the fact corpus outgrows
-  "pass them all to the distiller." The cross-language BM25 miss it replaces was the root of the
-  demo-3 duplicate-colour defect (and the accepted-as-known v2 dedup ceiling; Ukrainian tail vs
-  English canonical).
+- **2d — on-demand archive retrieval + HYBRID candidate-fetch (BM25 + embeddings).** ✅ **SHIPPED +
+  CLOSED 2026-07-21.** Spec `specs/archive/2026-07-13-hybrid-retrieval.md` (implemented) + **ADR-0017**
+  (`EmbeddingProvider` plane + egress posture) + ADR-0016 d7 rider. Delivered (chunks 01–07 + e2e/demo
+  closeout, PRs #97–#103): the above-`ALL_FACTS_CAP` candidate lane now runs the **hybrid ranker**
+  (FTS5 BM25 ∪ brute-force embedding cosine, fused via RRF k=60; below-cap all-facts pool unchanged);
+  the local-wasm **`onnxruntime-web`-DIRECT** embedding lane (no-egress + zero-infra — Lior Lane-A
+  ruling after the transformers.js spike failed on Bun); brute-force cosine over a BLOB column (no
+  `sqlite-vec`, gotcha #47 avoided); the `memory_search` READ tool (ADR-0016 read slot); embed
+  truncation + poison-row isolation (chunk-07). **Supersedes BOTH plain BM25 AND the
+  all-facts-below-cap stopgap** above the cap — the cross-language BM25 miss it replaces was the root
+  of the demo-3 duplicate-colour defect (Ukrainian tail vs English canonical; the embedding leg is the
+  only half that closes it cross-script). **Lior's live §6.1 demo signed 2026-07-21 (all §5 items
+  1–5 GREEN); findings routed as the post-close fix pass ([[memory-backlog]] §D-post — QUEUE HEAD).**
 - **Variant B — distilled facts rendered into the SYSTEM prompt** (instead of `[remembered]`
   user-messages). Architecturally cleaner per-turn injection; pairs naturally with 2c/2d. Considered
   and deferred in v2-08 (the `[remembered]`-as-messages format is load-bearing across system-prompt +
   provenance-stamp + tests — too big a rewrite for the recall fix; variant A shipped instead).
-- **thread-forget** — a content-erase primitive (reuses the dormant `WriteGate` scrub); the
-  successor to the dropped message-forget (ADR-0015 decision 5 superseded).
+- **thread-forget (2e)** — ← **next feature after the 2d post-close fix pass; NOW UNBLOCKED
+  2026-07-21.** A content-erase primitive (reuses the dormant `WriteGate` scrub); the successor to the
+  dropped message-forget (ADR-0015 decision 5 superseded). 2d's `memory_search` makes the archive
+  searchable, so a "forgotten" conversation can resurface content — the coupling [[memory-backlog]] §C
+  predicted is now live. Must honor the Ruling-2 trap (does NOT sweep facts — fact source-independence;
+  flagged for the 2e designer during 2d chunk-03/05).
 - **Finer (message-level) provenance** — deferred from v2-06; better "dig deeper" + forget
   granularity than the current thread-level provenance.
 - **Archive-summarization tier** — the O(archive) scaling trigger; also the point at which the

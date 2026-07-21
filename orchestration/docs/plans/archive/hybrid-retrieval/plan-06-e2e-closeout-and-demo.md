@@ -1,3 +1,5 @@
+> 🗄️ ARCHIVED 2026-07-21 — shipped. Historical record; do not edit.
+
 # Chunk hybrid-retrieval/06 — e2e closeout + LIVE demo — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this task-by-task. Steps use checkbox (`- [ ]`) syntax. This is the feature-CLOSING chunk: it ASSEMBLES + PROVES — it adds **no new capability** (chunk §Scope). It touches ONLY `packages/daemon/scripts/*` and `orchestration/docs/*`. If you find yourself needing a change to product source under `packages/daemon/src/**`, STOP — that is scope for decompose (§7.2 citation test), not this chunk.
@@ -21,7 +23,7 @@
 
 ## Status
 
-**Plan authored — ready for engine-worker.** Execution status: PRE-DEMO (Steps 1–2) not started → DEMO GATE (orchestrator reports BLOCKED, Lior-gated) → POST-DEMO (Step 3) staged, apply-only-after-sign-off. Resume from the first unchecked `- [ ]`.
+**Shipped — hybrid-retrieval 2d chunk-06 (PR #102, merged; feature demo-signed + closed 2026-07-21).** *(historical execution status:)* PRE-DEMO (Steps 1–2) built + gated green → DEMO GATE passed (Lior's live §6.1 feature-closing demo SIGNED 2026-07-21, all §5 items 1–5 GREEN) → POST-DEMO (Step 3, docs-reconcile) + §4.4 archival executed by the fresh closeout continuation (this PR).
 
 ---
 
@@ -380,4 +382,4 @@ Do NOT flip any chunk (01–06) to done/archive before this gate passes.
 - Backlog to reconcile: `orchestration/docs/memory-backlog.md` §D/§B; `orchestration/docs/roadmap.md`; `orchestration/docs/known-gotchas.md` #46/#47; `orchestration/docs/specs/2026-06-13-memory-distiller-v2.md`
 - ADR-0017: `orchestration/docs/adr/0017-embedding-provider-plane-and-egress-posture.md` (accepted with the spec)
 
-## Status: Done
+## Status: shipped

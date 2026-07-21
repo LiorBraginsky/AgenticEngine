@@ -1,6 +1,8 @@
+> 🗄️ ARCHIVED 2026-07-21 — done. Historical record; do not edit.
+
 # Chunk 1: message-edit removal + D6c flake fix
 
-**Status:** in-progress
+**Status:** done — hybrid-retrieval 2d SHIPPED + CLOSED 2026-07-21 (PR #97; feature demo-signed §6.1; see specs/archive/2026-07-13-hybrid-retrieval.md)
 **Created:** 2026-07-13
 **Phase:** hybrid-retrieval (2d) — riders-first
 **Estimated size:** ~1 day

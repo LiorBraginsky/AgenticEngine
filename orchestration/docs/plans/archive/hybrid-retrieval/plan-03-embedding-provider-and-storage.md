@@ -1,3 +1,5 @@
+> 🗄️ ARCHIVED 2026-07-21 — shipped. Historical record; do not edit.
+
 # Chunk hybrid-retrieval/03 — EmbeddingProvider port + vector/archive-lexical storage — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this task-by-task. Steps use checkbox (`- [ ]`) syntax. **Task 1 is a BLOCKING spike gate — do not write any product code until it is green.** All test-cycle steps follow `superpowers:test-driven-development`: red → green → commit.
@@ -408,7 +410,7 @@ export async function runBackfill(store: MemoryStore, provider: EmbeddingProvide
 - **Out-of-scope held:** no ranker/fusion, no `memory_search`, no golden-set eval, no hosted/Ollama adapter build, no persisted queue, no `sqlite-vec`/ANN, no `onnxruntime-node`/transformers.js, no protocol/mock-reducer edits, no edit to `trg_distilled_facts_ad`.
 - **No new ADR** — ADR-0017 executes here; Lane-A substitution pre-authorized (q#018).
 
-## Status: executing Phase 2 (orchestrator: engine-orchestrator, chunk hybrid-retrieval/03)
+## Status: shipped — hybrid-retrieval 2d chunk-03 (PR #99, merged; feature demo-signed + closed 2026-07-21)
 
 **Progress:**
 - ✅ **Task 1** (tokenizer + WASM spike-gate) — PASS 2026-07-14 (`@lenml/tokenizers@3.7.2` + `onnxruntime-web@1.27.0`, UA↔EN cosine 0.855, no native addon).

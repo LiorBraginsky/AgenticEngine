@@ -41,6 +41,10 @@ import { SmartDistillerProvider } from "../src/memory/providers/smart-distiller-
 import type Anthropic from "@anthropic-ai/sdk";
 import { MemoryStore } from "../src/memory/store.js";
 import type { FactOp } from "../src/memory/memory-provider.js";
+import { HybridRanker } from "../src/memory/embedding/hybrid-ranker.js";
+import { EmbeddingDrain } from "../src/memory/embedding/embedding-drain.js";
+import { buildEmbeddingProvider } from "../src/memory/embedding/embedding-provider-selector.js";
+import { ANCHOR } from "../src/memory/rephrase-matrix.fixture.js";
 
 // ── Banner ─────────────────────────────────────────────────────────────────
 
@@ -62,6 +66,10 @@ const modeArg = args.find((a) => a.startsWith("--mode="));
 const MODE: "stub" | "real" = modeArg === "--mode=real" ? "real" : "stub";
 console.log(`[demo-harness] mode: ${MODE}`);
 console.log("");
+
+const suiteArg = args.find((a) => a.startsWith("--suite="));
+const SUITE: "core" | "2d" = suiteArg === "--suite=2d" ? "2d" : "core";
+console.log(`[demo-harness] suite: ${SUITE}`);
 
 // ── Setup ─────────────────────────────────────────────────────────────────
 
@@ -312,6 +320,234 @@ function buildScriptedClient(): Anthropic {
   } as unknown as Anthropic;
 }
 
+// ── run2dSuite ───────────────────────────────────────────────────────────────
+// Self-contained hybrid-retrieval (2d) glass-box scenes for Lior's live demo
+// (spec §5 items 1,3,4,5). Own tmpDir + own daemon booted WITH the embedding
+// env so the below-cap `core` flow stays fast/key-free. Deterministic: the
+// scripted distiller client emits the REPLACE; only the embedding LEG is real
+// (the same ~100-500MB local-wasm model the golden-eval uses, cached in a STABLE
+// dir across runs — see modelCacheDir below). NO real LLM needed for the HARD
+// asserts. Item 2 (memory_search) is proven by the separate EXECUTED
+// memory-search-probe.ts (real LLM); referenced, not duplicated here.
+//
+// `--mode` no longer affects any ASSERT or OUTCOME in this suite (dual-review F4): the
+// runtime here is ALWAYS LLM_PROVIDER=mock + the scripted distiller client,
+// unconditionally — there is no real-LLM code path for --suite=2d to vary the RESULT
+// on. A prior version silently downgraded the scene-(b) e2e-REPLACE hard-assert to
+// "informational" under --mode=real, which meant a genuine main regression could print
+// "SUITE COMPLETE" instead of failing. Every assert below now fires unconditionally.
+// (`--mode` still sets DEFAULT_WS_TIMEOUT_MS's ceiling — 30s vs 5s, :559 — since the WS
+// turns here don't pass an explicit timeoutMs; that's an inert timeout knob, not an
+// assert/outcome variance, and a scripted client resolves well inside either bound.)
+async function run2dSuite(): Promise<void> {
+  const dir = mkdtempSync(join(tmpdir(), "demo-harness-2d-"));
+  const cleanup2d = (srv: ReturnType<typeof import("../src/index.js").startDaemon> | null): void => {
+    if (srv) { try { srv.stop(true); } catch { /* ignore */ } }
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+  };
+  let srv: ReturnType<typeof import("../src/index.js").startDaemon> | null = null;
+  try {
+    console.log("\n╔═ hybrid-retrieval 2d GLASS-BOX SUITE (spec §5 items 1,3,4,5) ═╗");
+    console.log("[2d] note: --mode is a no-op for this suite's asserts/outcomes (always scripted/deterministic; only the WS-turn timeout ceiling varies — see comment above) — --mode meaningfully affects --suite=core.");
+
+    // Embedding env MUST be set before startDaemon (provider is built at boot).
+    process.env.AGENTIC_DATA_DIR = dir;
+    process.env.EMBEDDING_PROVIDER = "local-wasm";
+    process.env.AGENTIC_EMBED_AUTODOWNLOAD = "1";
+    process.env.LLM_PROVIDER = "mock";
+
+    // Build + warm up the SHARED embedding provider BEFORE booting the daemon, then inject it
+    // into startDaemon's 4th param (embeddingProvider?) instead of letting the daemon build its
+    // OWN separate instance. REAL-RUN FINDING (self-verify, Step 1.3): without this, the daemon's
+    // own fire-and-forget `void embedding?.warmup?.()` (index.ts) races this scene's WS turn — the
+    // turn fired before the daemon's OWN instance finished loading, so its factRanker fell back to
+    // BM25-only for that one call (candidates pool = filler facts only, no blue; MEMORY_DEBUG=1
+    // confirmed this: the "distill" candidates list omitted the blue fact entirely). Sharing ONE
+    // already-warmed instance (this scene's direct RED/GREEN check + the daemon's own factRanker)
+    // removes the race — this is a harness-only fix (startDaemon's real 4-arg signature), not a
+    // product-source change.
+    //
+    // modelCacheDir is a STABLE (non-mkdtemp) path (dual-review nit) so the local-wasm model is
+    // downloaded/loaded ONCE and reused across `--suite=2d` invocations instead of re-fetched
+    // every run — only the SQLite/thread data lives in the per-run ephemeral `dir`.
+    const modelCacheDir = join(tmpdir(), "demo-harness-2d-model-cache");
+    const provider = buildEmbeddingProvider({ dataDir: modelCacheDir });
+    if (!provider) {
+      console.error(`[2d] SCENE (b): SKIP — no embedding provider constructed for EMBEDDING_PROVIDER=${process.env["EMBEDDING_PROVIDER"]} (set EMBEDDING_PROVIDER=local-wasm). NOT a retrieval defect — the embedding lane isn't even configured.`);
+      cleanup2d(srv); return;
+    }
+    await provider.warmup?.();
+    // F2 (dual-review): buildEmbeddingProvider never returns null for local-wasm, and warmup()
+    // never throws (LocalWasmEmbeddingProvider.doWarmup catches internally and just leaves
+    // `ready=false` on a failed/blocked download) — so the `!provider` check above is DEAD for
+    // this env and can never catch "the model didn't actually load." Probe embed() directly: a
+    // null result means the model is genuinely unavailable (e.g. offline, blocked network) — an
+    // INFRA-FAIL, NOT a retrieval defect and NOT the feature thesis failing. Without this probe, a
+    // blocked download would silently degrade to lexical-only and the scene below would
+    // misreport itself as "STOP-THE-LINE — the feature thesis FAILS," which it is not.
+    const probeVec = (await provider.embed(["probe"]))?.[0];
+    if (!probeVec) {
+      console.error("[2d] SCENE (b): INFRA-FAIL — embedding provider constructed but non-functional (model download/load did not complete). NOT a retrieval defect, NOT the feature thesis failing. Scene (b) rides Lior's machine (needs the local-wasm model on disk).");
+      console.log("\n╔═ 2d GLASS-BOX SUITE SKIPPED (infra: embedding model unavailable) — items 2/3/4/5 also skipped (scene (b) gates the daemon boot) ═╗");
+      cleanup2d(srv); return;
+    }
+
+    // ── SCENE (b) seed — item 1(b): seeded ABOVE-cap, BM25-alone MISSES, hybrid SURFACES → REPLACE ──
+    // Seed the blue anchor (Ukrainian display, English canonical) + >ALL_FACTS_CAP(50) filler,
+    // reusing the golden-eval seam (insertFact + filler loop + EmbeddingDrain) — done BEFORE
+    // startDaemon (F3, dual-review): seeding+draining through a separate MemoryStore connection
+    // WHILE the daemon is already running would race the daemon's own startup
+    // `embeddingDrain.kick()` over the same sqlite file (no busy_timeout configured →
+    // SQLITE_BUSY → a caught, partial embed → a possible false-RED that looks like a thesis
+    // failure but is really lock contention). Seeding pre-boot means the daemon's own startup
+    // drain scan (after boot, below) finds nothing pending — a fast no-op, no concurrent writer,
+    // no race.
+    //
+    // The filler facts are seeded `scope: "thread-local"` — a TEST CONSTRUCT, not representative
+    // of production (real machine-derived facts are always "cross-thread"). Marking filler
+    // thread-local (bound to a provenance thread id that never matches any real thread here)
+    // keeps it OUT of `readDistilledFactsForThread`'s recency-based cross-thread injection,
+    // avoiding an injection-dilution confound: `buildChatStub` echoes injected `[remembered]`
+    // facts verbatim into its reply, and the distiller pools the WHOLE tail (user line + that
+    // echo) into ONE query embedding (smart-distiller-provider.ts `distillOneThread`) — with
+    // filler cross-thread-injected, ~200 chars of "unrelated filler statement" noise swamped the
+    // short colour signal and the cosine leg stopped favoring blue (confirmed via MEMORY_DEBUG=1
+    // during self-verify). Filler stays FULLY visible to the distiller's candidate-fetch either
+    // way (scope-agnostic per store.ts:1310 "candidate set is never reduced") — thread-local only
+    // changes injection, not candidacy, so it still pads the corpus past the cap. The
+    // query-pooling dilution itself (no last-turn weighting in `distillOneThread`) is a genuine
+    // production behavior this test construct works AROUND, not a defect this chunk fixes —
+    // escalated as a demo-watch + backlog item (see chunk report); the production
+    // e2e-REPLACE-above-cap-WITH-injection path is the LIVE demo's job (spec §3.8b), not this
+    // scripted scene's.
+    console.log("\n[2d] SCENE (b): seed blue fact + >50 filler; RED(bm25) misses, GREEN(hybrid) surfaces → REPLACE");
+    const seedStore = new MemoryStore({ dataDir: dir });
+    const blueId = seedStore.insertFact({ fact: ANCHOR.display, canonical: ANCHOR.canonical, topics: ["#preferences"], provenance: "thread:seed2d", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" }, "seed2d");
+    const totalFacts = (): number => (seedStore.rawDb().query("SELECT COUNT(*) AS n FROM distilled_facts").get() as { n: number }).n;
+    let filler = 0;
+    while (totalFacts() <= 50 && filler < 80) { // exceed ALL_FACTS_CAP so the hybrid candidate lane runs (spec D5b/grill #4)
+      seedStore.insertFact({ fact: `unrelated filler statement number ${filler}`, canonical: `filler ${filler}`, topics: [], provenance: "thread:seed2d-filler", scope: "thread-local", expiry: null, confidence: 1, authored_by: "machine" }, "seed2d");
+      filler++;
+    }
+    console.log(`[2d] SCENE (b): seeded ${totalFacts()} facts (>50); blueId=${blueId.slice(0, 8)}…`);
+    await new EmbeddingDrain(seedStore, provider).drain();
+
+    // RED vs GREEN candidate contrast (direct ranker — mirrors golden-eval; no second daemon boot).
+    // F1 HONESTY (dual-review — the surfacing proof itself is sound and non-riggable; these are
+    // log/comment corrections, not a re-architecture):
+    //   - The contradiction tail is Ukrainian (SAME language as ANCHOR.display) vs the stored
+    //     ENGLISH canonical. `fact_fts` indexes ONLY canonical (store.ts:1399) — a Ukrainian query
+    //     shares NOTHING with an English canonical, so RED MUST miss BY SCHEMA. This RED assert is
+    //     tautological: it demonstrates the defect, it can never discriminate a working fix from a
+    //     broken one (it cannot fail).
+    //   - The embedding leg matches on the DISPLAY axis (Ukrainian query ↔ Ukrainian display) —
+    //     this is a SAME-LANGUAGE semantic-paraphrase proof (синій→зелений), NOT a cross-lingual
+    //     one: a MONOLINGUAL (Ukrainian-only) embedding model would ALSO pass this scene, since
+    //     query and display share a language and most tokens. The genuinely CROSS-LINGUAL axis
+    //     (matching a query against a fact via semantics alone, ACROSS languages) is proven by the
+    //     golden-eval's CROSS_LANGUAGE klasses (Step 2 of this chunk: rephrase-uk-*, xl-es, xl-de)
+    //     — NOT by this scene. Scene (b)'s job is the END-TO-END WIRING (surfacing → REPLACE
+    //     through the real daemon above the cap), not re-proving cross-linguality golden-eval
+    //     already owns.
+    const CANDIDATE_TOP_K = 10;
+    const contradictionTail = "тепер мій улюблений колір зелений";
+    const redHits = await new HybridRanker(seedStore, null).searchFacts(contradictionTail, CANDIDATE_TOP_K);
+    const greenHits = await new HybridRanker(seedStore, provider).searchFacts(contradictionTail, CANDIDATE_TOP_K);
+    const redSurfaced = redHits.some((h) => h.id === blueId);
+    const greenSurfaced = greenHits.some((h) => h.id === blueId);
+    console.log(`[2d] SCENE (b): RED(bm25-only) surfaces blue candidate = ${redSurfaced} (expect false — tautological by schema, see comment); GREEN(hybrid) = ${greenSurfaced} (expect true)`);
+    seedStore.close();
+    if (redSurfaced) { console.error("[2d] SCENE (b): THESIS-FAIL — BM25-alone unexpectedly surfaced the candidate; the mechanism is NOT isolated (attribute honestly, do not mask)."); cleanup2d(srv); process.exit(1); }
+    if (!greenSurfaced) { console.error("[2d] SCENE (b): THESIS-FAIL — the hybrid lane did NOT surface the blue candidate even though the embedding model IS available; the feature thesis genuinely FAILS (STOP-THE-LINE, spec §3.5b)."); cleanup2d(srv); process.exit(1); }
+
+    // Boot the daemon ONLY NOW (F3): seeding+draining above is fully complete, so the daemon's
+    // own startup `embeddingDrain.kick()` scan finds nothing pending (a fast no-op) — no
+    // concurrent writer, no SQLITE_BUSY race.
+    const { startDaemon } = await import("../src/index.js");
+    const scriptedClient = buildScriptedClient();
+    const memStub = new SmartDistillerProvider({ client: scriptedClient });
+    srv = startDaemon(0, buildChatStub(), memStub, provider);
+    const PORT = srv.port!;
+    const token = readFileSync(join(dir, "auth-token"), "utf8").trim();
+    console.log(`[2d] daemon on port ${PORT}`);
+
+    // End-to-end REPLACE (GREEN daemon): the contradiction turn → dismiss → distill → above-cap
+    // hybrid fetchCandidatesRanked surfaces blue → scripted client emits op:replace → exactly one
+    // colour fact, the new value (green), no duplicate. Polls (F3) on a `distillation_events` row
+    // rather than a fixed sleep — a real-embed-backed distill (cosine leg over 51 rows) can
+    // genuinely outrun a fixed settle, producing a false RED that looks like "REPLACE did not
+    // fire" when it's really "the distill hadn't committed yet."
+    const colourBefore = countColourFacts(dir);
+    const t = crypto.randomUUID();
+    const settle = await wsTurnAndPollDistillSettle(PORT, token, dir, { threadId: t, text: contradictionTail });
+    console.log(`[2d] SCENE (b): e2e turn distill settled=${settle.settled} (waited ${settle.waitedMs}ms, ≤${POLL_DEADLINE_MS}ms)`);
+    const colourAfter = countColourFacts(dir);
+    const verify = new MemoryStore({ dataDir: dir });
+    const colourRows = verify.rawDb().query("SELECT id, fact FROM distilled_facts WHERE fact LIKE '%синій%' OR fact LIKE '%зелений%' OR fact LIKE '%колір%' OR fact LIKE '%Люблю%'").all() as { id: string; fact: string }[];
+    verify.close();
+    const exactlyOne = colourRows.length === 1;
+    const isGreen = colourRows.some((r) => r.fact.includes("зелений"));
+    const noStaleBlue = !colourRows.some((r) => r.fact.includes("синій"));
+    console.log(`[2d] SCENE (b): colour facts before=${colourBefore} after=${colourAfter}; rows=[${colourRows.map((r) => `"${r.fact}"`).join(", ")}]`);
+    if (!settle.settled || !exactlyOne || !isGreen || !noStaleBlue) {
+      console.error(`[2d] SCENE (b): THESIS-FAIL — expected exactly ONE colour fact (green, no stale blue) with the distill settled; got settled=${settle.settled} rows=${colourRows.length}. The hybrid candidate surfaced but the REPLACE did not fire (STOP-THE-LINE — spec §Notes: a red scene (b) is stop-the-line, not polish).`);
+      cleanup2d(srv); process.exit(1);
+    }
+    console.log("[2d] SCENE (b): GREEN — hybrid surfaced the same-language semantic paraphrase above the cap (against the fact's ENGLISH bm25-canonical, which RED provably cannot match) → REPLACE fired → exactly one colour fact (green). THE FEATURE THESIS (end-to-end wiring); cross-linguality itself is golden-eval's proof (Step 2), not this scene's.");
+
+    // ── item 5 — degrade: provider absent ⇒ lexical-only, availability holds ──
+    // REALITY CHECK (self-verify, Step 1.3): fact_fts indexes ONLY `canonical` (the ENGLISH match
+    // key — store.ts:1399 "the FACTS BM25 leg — matches fact_fts.canonical"; spec D-V4c: "BM25
+    // matches canonical (English key)... the embedding leg matches the user-language DISPLAY
+    // text"). A Ukrainian-language query can therefore NEVER hit via BM25-only, by design — that
+    // is not a degrade REGRESSION, it is the exact cross-language gap embeddings exist to close
+    // (the feature thesis itself). The honest lexical-only-availability probe is an ENGLISH query
+    // against the CURRENT colour fact's canonical ("user favourite colour green", set by scene
+    // (b)'s REPLACE) — the axis BM25-only genuinely DOES still serve with provider=null.
+    console.log("\n[2d] item 5 (degrade): with provider=null (lexical-only), an English canonical-matching query still answers (the cross-language axis is embedding-only by design — that's the feature thesis, not an item-5 regression)");
+    const degStore = new MemoryStore({ dataDir: dir });
+    const lexHits = await new HybridRanker(degStore, null).searchFacts("favourite colour green", CANDIDATE_TOP_K);
+    degStore.close();
+    const lexAnswers = lexHits.length > 0;
+    console.log(`[2d] item 5: lexical-only hits for "favourite colour green" = ${lexHits.length} (availability holds = ${lexAnswers})`);
+    if (!lexAnswers) { console.error("[2d] item 5: RED — lexical-only degrade returned nothing for a lexically-matchable (English canonical) query; availability regressed (spec §4 note 7 — degrade contract)."); cleanup2d(srv); process.exit(1); }
+    console.log("[2d] item 5: GREEN — retrieval quality degrades to lexical-only (canonical/English axis only — cross-language needs the embedding leg), availability never does.");
+
+    // ── item 4 — message-edit GONE; fact-edit alive ──
+    // POST /memory/edit with a MESSAGE body ⇒ 400 (chunk-01 removed the message branch);
+    // with a FACT body ⇒ 204 + text persists as human.
+    console.log("\n[2d] item 4: message-edit removed (400) — fact-edit alive (204, durable human)");
+    const msgEditRes = await fetch(`http://127.0.0.1:${PORT}/memory/edit`, {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ target_type: "message", message_id: "any", replacement: "x", reason: "msg-edit-gone-check" }),
+    });
+    console.log(`[2d] item 4: POST /memory/edit {target_type:"message"} → ${msgEditRes.status} (expect 400)`);
+    const factEditRes = await fetch(`http://127.0.0.1:${PORT}/memory/edit`, {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ target_type: "fact", fact_id: blueId, replacement: "мій улюблений колір бірюзовий", reason: "fact-edit-alive-check" }),
+    });
+    console.log(`[2d] item 4: POST /memory/edit {target_type:"fact"} → ${factEditRes.status} (expect 204)`);
+    if (msgEditRes.status !== 400) { console.error("[2d] item 4: RED — the message-edit branch still answers (chunk-01 R1 removal not on assembled main)."); cleanup2d(srv); process.exit(1); }
+    if (factEditRes.status !== 204) { console.error("[2d] item 4: RED — fact-edit no longer works (regression)."); cleanup2d(srv); process.exit(1); }
+    console.log("[2d] item 4: GREEN — message-edit is GONE (400); fact-edit alive (204).");
+
+    // ── item 3 — forget → reworded same-canonical re-derivation suppressed (R2 canonical axis) ──
+    // Referenced deterministic coverage: chunk-02's forgotten_facts-canonical tests + the live demo.
+    // A light live rehearsal here would require the anthropic-api provider + port (stub mode wires
+    // neither), so item 3's headless proof is chunk-02's suite; the demo covers it live.
+    console.log("\n[2d] item 3: reworded same-canonical re-derivation suppression — deterministic proof = chunk-02 forgotten_facts-canonical tests; live coverage = demo item 3.");
+
+    // ── item 2 — memory_search out-of-slice ──
+    console.log("[2d] item 2: memory_search out-of-slice — EXECUTED proof = scripts/memory-search-probe.ts (real LLM, fact + archive scopes); live coverage = demo item 2.");
+
+    console.log("\n╔═ 2d GLASS-BOX SUITE COMPLETE — scene (b) is the feature thesis; paste this stdout into the PR ═╗");
+    cleanup2d(srv);
+  } catch (err) {
+    console.error(`[2d] UNEXPECTED ERROR: ${err instanceof Error ? err.stack : String(err)}`);
+    cleanup2d(srv); process.exit(1);
+  }
+}
+
 // ── WS turn helper ─────────────────────────────────────────────────────────
 //
 // Opens a WS, sends session_start, drives tool_result if needed, waits for
@@ -430,7 +666,7 @@ async function wsTurnAndSettle(
   return result;
 }
 
-// ── Bounded poll helper (chunk-04 2.4 — real-mode-only) ─────────────────────
+// ── Bounded poll helper (chunk-04 2.4, originally real-mode-only) ───────────
 //
 // Fixes the chunk-03 reviewer MINOR (a live LLM distill can take 1-3s, which
 // the pre-chunk-04 fixed 300/400ms settles could outrun) + the pre-existing
@@ -442,10 +678,22 @@ async function wsTurnAndSettle(
 // no-op (spec 5b, ConsolidationHook.dismiss). Polling for THAT row landing is
 // therefore a robust, content-agnostic "this turn's background consolidation
 // has committed" signal — no need to guess specific fact substrings the live
-// model might produce. Bounded at POLL_DEADLINE_MS; NEVER hard-asserted here
-// (2c real-mode observations stay informational, per the section banner —
-// no process.exit(1) on a poll timeout). Stub-mode call sites are UNCHANGED —
-// this helper is only invoked from real-mode-only call sites.
+// model might produce. Bounded at POLL_DEADLINE_MS.
+//
+// Call-site assertion posture DIFFERS by caller (comment-drift fix, chunk-06
+// closure re-review): the original 2c real-mode call sites below keep
+// `settle.settled` INFORMATIONAL — never hard-asserted, no process.exit(1) on
+// a poll timeout — because those are live-LLM rehearsal observations (spec §5
+// items 1-5, printed not asserted, per the section banner). The hybrid-
+// retrieval chunk-06 `run2dSuite` scene-(b) call site (~:479) is DIFFERENT: it
+// DOES hard-assert `settle.settled` (`!settle.settled` triggers a THESIS-FAIL
+// + process.exit(1)). That is safe there specifically because scene (b) runs
+// the SCRIPTED distiller client (never a live LLM) — the consolidation hook
+// unconditionally commits a distillation_events row on every dismiss
+// regardless of what the scripted client returns, so `settled` becoming false
+// within POLL_DEADLINE_MS cannot be model-latency flake; it can only mean the
+// turn's background consolidation genuinely never ran (a real defect worth
+// stopping the line for), not a timing hiccup.
 const POLL_DEADLINE_MS = 8_000;
 const POLL_INTERVAL_MS = 200;
 
@@ -491,6 +739,11 @@ async function wsTurnAndPollDistillSettle(
 }
 
 // ── Main harness ───────────────────────────────────────────────────────────
+
+if (SUITE === "2d") {
+  await run2dSuite(); // --mode is a no-op here (F4, dual-review) — see run2dSuite's banner note
+  process.exit(0); // run2dSuite exits non-zero itself on a hard-assert failure
+}
 
 try {
   // ── Step 0: boot daemon ─────────────────────────────────────────────────

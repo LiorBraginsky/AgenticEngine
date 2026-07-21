@@ -135,30 +135,28 @@ The structure is sound for single-user dogfood. Everything below is **deferred /
       fact instead of a REPLACE; the agent then SURFACED the contradiction in a new thread and offered
       cleanup — the documented **degradation-not-corruption** path (spec §3.7a safety-net) behaving as
       designed. Feeds the §E complex-corrections case-set. *Lives:* §E + here.
-  - **⚠️ KNOWN RESIDUAL from chunk-01 (frontier-reviewer finding, flagged for Lior — NOT a merge
-    blocker):** the d5 re-derivation suppression (D6b consult) matches a forgotten fact on its
-    **display text** (relaxed connector-key, aligned with `factExistsByDedupKey`), **NOT** on the
-    distiller's separate `canonical` key. `forgotten_facts` has no canonical column, so a re-derivation
-    that shares the SAME canonical but a **reworded display text (esp. cross-language / Ukrainian
-    facts)** can slip past the consult and re-enter one dismiss later. This is **spec-compliant** —
-    §3.6 D6b promises match on "resulting **text** normalized-matches"; the D6c prompt-nudge is the
-    honestly-ranked soft layer. It is the SAME structural class as the §D known v2 dedup ceiling
-    (cross-language/reworded), one axis over. **Proper close = a spec §3.6 rider (new scope, §7.2 — not
-    freelanced into chunk-01):** additive `canonical` column on `forgotten_facts` (written by
-    `port.forget` from the target's `fact_fts.canonical`) + D6b consult also matches on canonical.
-    Best folded into the **§D 2d hybrid-retrieval pass** (same root: display-vs-canonical identity).
-    The connector-word bypass (the strict-vs-relaxed key divergence that was a genuine regression) was
-    **found and fixed** in chunk-01. *Lives:* here; chunk-01 PR + ledger; distiller-registration.ts
-    D6b consult in-code limitation note.
-    - **↔ chunk-05 relation (still OPEN — do NOT mark closed):** chunk-05 (D1 fix) aligned the *sibling*
-      **live-fact** dedup — `factExistsByDedupKey` now matches on BOTH the English canonical AND the
-      user-language display text, so a tool fact and a distiller fact for the same statement collapse.
-      That is a **different surface** from this residual: this one is the **`forgotten_facts` D6b
-      consult** (which has no canonical column at all). chunk-05 does **not** touch `forgotten_facts`, so
-      this residual is untouched — the additive-`canonical`-column close above still rides the §D 2d
-      pass. What chunk-05 *did* narrow: the live-fact display↔canonical identity gap the
-      distiller-registration.ts:193-198 comment tracks; the *reworded* (non-exact) cross-language slip
-      remains 2d's (hybrid retrieval), on both surfaces.
+  - **⚠️ KNOWN RESIDUAL from chunk-01 — ✅ CLOSED by hybrid-retrieval chunk-02 (PR #98) 2026-07-14.**
+    The proper close the residual named landed as specified: the additive **`forgotten_facts.canonical`
+    column** (nullable, wired for BOTH store generations — fresh `SCHEMA_DDL` + a PRAGMA-guarded
+    `ensureForgottenFactsCanonicalColumn` in the ctor, no backfill), captured by `port.forget` from
+    the target's `fact_fts.canonical` **before** the gate delete (AFTER-DELETE-trigger race handled),
+    and the **D6b consult now matches on canonical OR display** (two-axis) across the 3 helpers +
+    D6c(editFact)/D6e(remember) clears. The cross-language UK-display / EN-canonical reword slip is
+    CLOSED on the `forgotten_facts` surface. Legacy NULL-canonical rows fall back to display-only
+    (honest). *(Separately, the **D6c flake** — `readForgottenFacts` returning oldest tied rows for
+    lack of a secondary sort, observed 3× — was root-caused + fixed in **chunk-01, PR #97**:
+    `ORDER BY created_at DESC, rowid DESC`, RED-first proven, + rowid-ASC hardening on the 2 ASC
+    reads.)* *(historical:)* the d5 re-derivation suppression (D6b consult) originally matched a
+    forgotten fact only on its **display text**, so a re-derivation sharing the SAME canonical but a
+    reworded display text could slip past — the SAME structural class as the §D v2 dedup ceiling, one
+    axis over. The connector-word bypass (a genuine strict-vs-relaxed regression) was found+fixed in
+    chunk-01. *Lives:* chunk-01 PR #97 + chunk-02 PR #98 + ledger.
+    - **↔ chunk-05 relation — ✅ CLOSED (now consistent).** chunk-05 (2c D1 fix) had aligned the
+      *sibling* **live-fact** dedup (`factExistsByDedupKey` matching BOTH English canonical AND
+      user-language display); this residual — the separate **`forgotten_facts` D6b consult** surface —
+      is now closed by chunk-02's `forgotten_facts.canonical` column above. Both surfaces (live-fact
+      dedup + forgotten-fact consult) now match on the canonical axis; the reworded cross-language slip
+      that was 2d's to close is closed on both.
 
 ### C. Content erase — thread-forget  (roadmap 2e)
 - **thread-forget** — forget a WHOLE conversation (content-erase), the chosen replacement for the
@@ -169,31 +167,109 @@ The structure is sound for single-user dogfood. Everything below is **deferred /
   "deletes its facts" sketch here is SUPERSEDED. *Deferred:* its own feature; pairs with
   2d (a forgotten topic could otherwise resurface via message-search). *Lives:* ADR-0012 rider
   2026-07-10; `specs/2026-06-13-memory-distiller-v2.md` §1/§3.6; roadmap.
+  - **⤳ NOW UNBLOCKED (2026-07-21) — 2d shipped the coupling this bullet predicted.** The
+    `memory_search` READ tool (2d chunk-05) makes the archive genuinely searchable, so a
+    conversation the user "forgot" can now resurface its content via archive search — the exact
+    reason §C said thread-forget "pairs with 2d." The scrub primitive (`WriteGate.forget`) is
+    already built and dormant; the 2e WriteGate Ruling-2 trap (thread-forget must NOT sweep facts —
+    fact source-independence) was flagged twice during 2d (chunk-03/05) for the 2e designer. 2e is
+    the next feature after the D-post fix pass drains.
 
-### D. Retrieval quality — semantic candidate-fetch  (roadmap 2d)  ⭐ the root fix
-- **2d — on-demand archive retrieval + SEMANTIC (embeddings) candidate-fetch.** The PROPER
+### D. Retrieval quality — semantic candidate-fetch  (roadmap 2d)  ⭐ the root fix — ✅ SHIPPED + CLOSED 2026-07-21
+> **✅ 2d — HYBRID retrieval SHIPPED + CLOSED 2026-07-21.** Spec
+> `specs/archive/2026-07-13-hybrid-retrieval.md` (implemented); ADR-0017 (`EmbeddingProvider` plane +
+> egress posture, accepted with the spec) + ADR-0016 d7 rider (archive-search injection channel).
+> Built via conveyor (chunks 01–07): **HYBRID candidate-fetch = FTS5 BM25 ∪ brute-force embedding
+> cosine, fused via RRF (k=60)** on the above-`ALL_FACTS_CAP` lane (below-cap all-facts pool byte
+> unchanged); `EmbeddingProvider` plane w/ the **local-wasm `onnxruntime-web`-DIRECT** lane
+> (no-egress + zero-infra — Lior Lane-A ruling after the transformers.js WASM spike failed on Bun,
+> q#018); `fact_embeddings`/`message_embeddings`/`message_fts` storage (brute-force cosine over a BLOB
+> col — no `sqlite-vec`, gotcha #47 avoided); a restart-safe stateless embedding drain; the
+> `memory_search` READ tool on the ADR-0016 read slot (id-free non-targetable results, scanner +
+> untrusted framing); embed truncation to the model 512-window + poison-row isolation (chunk-07, from
+> the D3 live-demo finding). **Lior's live §6.1 feature-closing demo SIGNED 2026-07-21 — all §5 items
+> 1–5 GREEN** (1a REPLACE-chain · 1b the RED→GREEN above-cap thesis via the conductor-run `--suite=2d`
+> · 2 cross-language archive search · 3/4/5). PRs #97/#98/#99/#100/#101/#103 (chunks) + #102 (e2e/demo
+> closeout). Findings routed as a **separate post-close fix pass** (Lior chose close-first) — see the
+> **D-post** block below.
+- **2d — on-demand archive retrieval + SEMANTIC (embeddings) candidate-fetch.** ✅ **SHIPPED (see
+  callout).** *(historical)* The PROPER
   cross-language / reworded retrieval. The current BM25 (matching the user's Ukrainian tail against the
   English LLM canonical) is why the demo-3 colour-change duplicated; the all-facts-below-cap pool is the
   cheap stopgap. **2d (embeddings) supersedes BOTH** once the corpus outgrows "pass them all." First cut
   could be FTS5 keyword search over the message archive; vector/embeddings as a swappable provider.
-  *Deferred:* embeddings install complexity on Bun (`onnxruntime-node`/`setCustomSQLite` — see gotchas)
-  + premature at single-user scale. *Lives:* roadmap; `specs/2026-06-13-memory-distiller-v2.md` §1; q#008;
-  `research/2026-06-13-memory-similarity-approaches.md`.
-- **2d shape = HYBRID retrieval (BM25 + embeddings) — Lior direction 2026-07-10** (recorded at the
-  memory-transparency-ui joint demo, on the accepted-as-known v2 dedup ceiling). When memory-quality work
-  resumes, 2d should combine lexical BM25 with semantic embeddings (not embeddings-only) so exact-term
-  matches and cross-language/reworded matches both land — the dedup ceiling (a cross-language re-derivation
-  slipping past normalized dedup) is the concrete miss a hybrid ranker is meant to close.
+  *Lives:* `specs/archive/2026-07-13-hybrid-retrieval.md`; `specs/2026-06-13-memory-distiller-v2.md` §1/§3.4 (superseded-lane cross-note); q#008;
+  `research/2026-07-13-hybrid-retrieval-bm25-embeddings.md`.
+- **2d shape = HYBRID retrieval (BM25 + embeddings) — Lior direction 2026-07-10** ✅ **SHIPPED as
+  ruled** (RRF fusion of the two legs, not embeddings-only). *(historical)* Recorded at the
+  memory-transparency-ui joint demo, on the accepted-as-known v2 dedup ceiling: combine lexical BM25
+  with semantic embeddings so exact-term matches and cross-language/reworded matches both land — the
+  dedup ceiling (a cross-language re-derivation slipping past normalized dedup) is the concrete miss
+  the hybrid ranker closes (the embedding leg is the ONLY half that closes it cross-script — golden-set
+  proven, chunk-04).
 - **REMOVE message-edit — DECIDED (Lior 2026-07-10, final), EXECUTION scheduled at the 2d pass.**
-  Ruled same-day after the rider acceptance: with fact-edit shipped as the real "correct what the
-  agent remembers" lever, the archive message-correction surface (chunk-03) is pointless ("бестолковий")
-  — per fact source-independence it feeds nothing downstream. End state: **archive = read-only
-  immutable history; memory (facts) = the editable surface.** Removal is deliberately deferred to the
-  2d design pass (no urgency; it blocks nothing) — when 2d starts, add a removal chunk: strip the
-  message Edit affordance from the overlay + history.html, retire the `/memory/edit` message branch
-  (keep `target_type:"fact"`), keep the append-only mutation/correction machinery in the store
-  (immutable-history primitive, ADR-0015 B1 — it predates the UI and other things sit on it).
-  *Lives:* here; ADR-0012 rider 2026-07-10 Ruling 1 removal-note.
+  ✅ **SHIPPED — chunk-01 (PR #97).** Message-edit removed end-to-end: overlay Edit affordance +
+  `history.html` Edit/doEdit + the `/memory/edit` **message** branch (→ 400 `bad_body`; `Hatch.edit`
+  retired as dead — its sole caller was that branch). **KEPT** as designed: `target_type:"fact"`
+  edit + the append-only mutation/correction machinery in the store (immutable-history primitive,
+  ADR-0015 B1). End state achieved: **archive = read-only immutable history; memory (facts) = the
+  editable surface** (ADR-0012 rider 2026-07-10 Ruling 1 executed). *(historical rationale:)* with
+  fact-edit shipped as the real "correct what the agent remembers" lever, the archive
+  message-correction surface was pointless ("бестолковий") — per fact source-independence it fed
+  nothing downstream. *Lives:* chunk-01 PR #97 + ledger; ADR-0012 rider 2026-07-10 Ruling 1.
+
+### D-post. 2d post-close fix pass  ← ⭐ QUEUE HEAD (2026-07-21)
+> The 2d live §6.1 demo signed GREEN on all five items; Lior chose **close-first** and routed the
+> findings here as the next queue item. Grouped honestly by kind. None blocked the sign-off.
+
+**Steering (prompt/self-concept level — no schema/wire change; the bulk of this pass):**
+- **D1-lang — stored-fact AND reply language must follow the USER's utterance language.** 4 demo
+  datapoints (2026-07-16 + 2026-07-21): an EN statement stored as a UA fact; EN→UA / UA→UA / EN→EN
+  eye-colour transitions nondeterministically; a reply came back half-UA/half-EN on an EN question.
+  The LLM picks the language on a whim rather than mirroring the user. **LANGUAGE-AGNOSTIC steering
+  fix** — follow the user's utterance language, **no UA-specific machinery** (binds Lior's 2026-07-14
+  ruling; the architecture is already canonical-key/multilingual-embedding language-neutral).
+- **D2 — unprompted duplicate cleanup.** The agent forgot/cleaned up duplicate facts *without being
+  asked* — violates the prompted-edit spirit (act on memory only when the user prompts it). A
+  self-concept / prompt steering fix; guardrails d1–d7 held perfectly (this is behaviour tuning, not
+  a security gap). *(2c demo-finding D2, carried 2026-07-16 → 2026-07-21.)*
+- **O2 — injection-blob reply quality** (carried from 2c, open-case #3): on a large incoherent paste
+  with an embedded «забудь усе», the d7 defense HELD (zero deletions) but the reply degraded to a
+  greeting non-sequitur. Answer-quality / prompt-quality on the recall-usage A′ tail — re-measurable
+  against the live 2c tool path.
+- **O3 — replace-steering miss** (carried from 2c): a colour change once produced a competing fact
+  instead of a REPLACE; the agent then surfaced the contradiction + offered cleanup (the documented
+  degradation-not-corruption safety-net, spec §3.7a). Feeds the §E complex-corrections case-set.
+
+**Mechanical (small, scoped code fixes; one needs a Lior ruling first):**
+- **D4 — REPLACE keeps the ORIGINAL thread provenance** (NEW, 2026-07-21 demo). A fact «Мої очі
+  зелені» stated in thread `f2f0d7d7` still shows `from: 2e49e174` (the thread that first stated the
+  eye colour) after a REPLACE ⇒ the Memory-window provenance misleads. **Needs a small ruling +
+  fix:** update provenance to the *replacing* thread on REPLACE, OR record a provenance chain. Ruling
+  is Lior's (which semantic); the fix is small either way.
+- **`isFactVisibleToThread` extraction** (chunk-05 conductor-reviewer MINOR): the port and the store
+  each have their own copy of the fact-visibility predicate → drift risk. Extract one shared
+  predicate. A refactor, no behaviour change.
+- **arg-parse fail-open nit** (2026-07-21 demo evidence): the demo-harness `--suite=2d` flag
+  silently fell through to the core suite when run from a branch that lacks it (Lior ran it from
+  `main`). Make the arg-parse fail-closed (unknown/absent-flag → explicit error), not fall-open.
+- **`doWarmup` no `ready` early-exit** (chunk-06 worker Finding 5): `doWarmup` builds a 2nd
+  `InferenceSession` even when one is already ready — add a `ready` early-exit.
+
+**Watch (observe at real scale before deciding to build — no fix yet):**
+- **Query-pooling dilution above-cap (Finding 1b, escalated at chunk-06).** `distillOneThread` pools
+  the whole tail into ONE query embedding with no last-turn weighting ⇒ above-cap + injection-active,
+  a real assistant reply restating injected facts can dilute the query enough to drop the
+  contradicting fact out of the candidate top-K → `op:new` → an above-cap duplicate (tied to O2).
+  The demo-watch flag did **NOT** manifest at Lior's scale on 2026-07-21, but watch scene-(b)-shaped
+  turns at larger real scale: a red REPLACE above-cap = this retrieval-input dilution, not just LLM
+  steering (spec §3.8b attribution). Lever if it bites: last-turn / recency weighting on the query
+  embedding, or first-envelope streaming.
+- **7 sequential model calls vs the overlay 30s handshake (#42/#43 tie, chunk-05 backlog).** The
+  raised loop bound (`MEMORY_ACTIONS_MAX_PER_TURN` + `MEMORY_SEARCH_MAX_PER_TURN` + final text) can
+  reach up to 7 sequential Sonnet calls; a search-heavy turn could false-timeout the overlay 30s
+  handshake window until in-loop-deadline / first-envelope streaming lands. Bound is spec-frozen
+  (§3.6 D6b); record the risk, revisit when streaming lands.
 
 ### E. What's remembered / fact richness
 - **Complex corrections & deletion-via-statement — NOT specced (open case).** Replace currently fires
@@ -278,10 +354,17 @@ surface). **Theme A above is the direct execution of that mandate and is the lea
 ---
 
 ## Suggested next step
-**Theme A SHIPPED 2026-07-10** (`memory-transparency-ui`; chunks 01–05 + joint §6.1 demo signed).
-**2c (`memory-action-tools`, conversational forget/remember) SHIPPED + CLOSED 2026-07-13** — live §6.1
-demo signed; the one in-feature defect (D1 case-duplicate) fixed in chunk-05 (merged), spec
-accepted→implemented, folder drained (§B). **The provenance-affordance design task RESOLVED
-2026-07-13 (§A)** — one trivial chunk (`provenance-affordance/01`, gated on spec acceptance), per-fact
-deliberately deferred. The queue now, in rough order: that chunk; then **2d — HYBRID retrieval (BM25 +
-embeddings; §D, Lior 2026-07-10)** once the corpus outgrows all-facts-below-cap.
+**Theme A SHIPPED 2026-07-10** (`memory-transparency-ui`). **2c (`memory-action-tools`) SHIPPED +
+CLOSED 2026-07-13.** **provenance-affordance RESOLVED + SHIPPED + CLOSED 2026-07-13** (§A). **2d —
+HYBRID retrieval (BM25 + embeddings via RRF; §D) SHIPPED + CLOSED 2026-07-21** — Lior's live §6.1
+feature-closing demo signed (all §5 items 1–5 GREEN); spec implemented + archived; chunks 01–07 +
+e2e/demo closeout merged. The queue now, in rough order:
+1. **The 2d post-close fix pass (§D-post) ← QUEUE HEAD.** Mostly language-agnostic steering (D1-lang
+   fact/reply-language-follows-user · D2 unprompted-cleanup · O2/O3) + a few small mechanical fixes
+   (D4 replace-provenance — needs a Lior ruling first · `isFactVisibleToThread` extraction ·
+   arg-parse fail-open · `doWarmup` early-exit) + two watch items (query-pooling dilution above-cap ·
+   7-seq-calls vs the overlay 30s handshake).
+2. **2e — thread-forget (§C).** Now genuinely unblocked: 2d's `memory_search` makes the archive
+   searchable, so a "forgotten" conversation can resurface content → the content-erase primitive is
+   now the coupled need §C predicted. Reuses the dormant `WriteGate.forget` scrub; must honor the
+   Ruling-2 trap (does NOT sweep facts — fact source-independence).

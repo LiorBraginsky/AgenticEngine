@@ -1,6 +1,8 @@
+> 🗄️ ARCHIVED 2026-07-21 — implemented. Historical record; do not edit.
+
 ---
 title: Hybrid retrieval (2d) — BM25 + embeddings via RRF, memory_search read tool, and the committed riders
-status: accepted — Lior 2026-07-14 (§5.2 one-event package via AskUserQuestion, ALL FOUR §0 points AS RECOMMENDED: 0.1 local-first WASM + spike ladder · 0.2 memory_search read-only · 0.3 ADR-0016 d7 rider · 0.4 ADR-0017 accepted)
+status: implemented — chunks 01–07 shipped (PRs #97/#98/#99/#100/#101/#103) + e2e/demo closeout (PR #102); Lior's live §6.1 feature-closing demo SIGNED 2026-07-21 (all §5 items 1–5 GREEN: 1a REPLACE-chain · 1b RED→GREEN above-cap thesis · 2 cross-language archive search · 3/4/5). Findings routed as a separate post-close fix pass (D1-lang · D4-replace-provenance · D2-unprompted-cleanup — see memory-backlog §D). (was: accepted — Lior 2026-07-14 §5.2 one-event package via AskUserQuestion, ALL FOUR §0 points AS RECOMMENDED: 0.1 local-first WASM + spike ladder · 0.2 memory_search read-only · 0.3 ADR-0016 d7 rider · 0.4 ADR-0017 accepted)
 date: 2026-07-13
 deciders: [lior]
 feeds: hybrid-retrieval

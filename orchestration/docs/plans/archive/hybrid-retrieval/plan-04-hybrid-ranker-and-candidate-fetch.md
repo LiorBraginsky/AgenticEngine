@@ -1,3 +1,5 @@
+> 🗄️ ARCHIVED 2026-07-21 — shipped. Historical record; do not edit.
+
 # Chunk hybrid-retrieval/04 — hybrid ranker (RRF) + distiller candidate-fetch + golden-set eval — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this task-by-task. Steps use checkbox (`- [ ]`) syntax. All test-cycle steps follow `superpowers:test-driven-development`: red → green → commit. This is a spec-FROZEN chunk (spec §3.4/§3.5/§3.8) — do NOT re-decide frozen seams. Two architect-time seams the spec explicitly delegated are resolved below (`## Approaches`); the worker decides nothing further.
@@ -809,7 +811,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 1. **Approach A1 deviates from §3.5 D5a's LITERAL wording.** The spec says "the BM25-only lane [inside `fetchCandidates`] is REPLACED." Because the cosine leg is inherently async and `fetchCandidates` is a frozen sync method with ~11 v2 call sites, I keep `fetchCandidates` byte-identical and put the swap in an async sibling `fetchCandidatesRanked` that the distiller calls. **The consumer-observed behavior is identical to the spec's intent** (distiller above-cap → hybrid; below-cap unchanged) and this BEST satisfies the DoD's hard "below-cap byte-identical / v2 suite untouched" + §4 note 1's "diff the distiller integration tests." I judged this a reconciliation-to-the-existing-decision (an implementation detail the spec couldn't foresee), not new scope — hence Status: Done, not a blocking escalation. If the conductor/Lior wants the literal in-place async mutation of `fetchCandidates` (Approach A2, touching the v2 test call sites), that is a one-line ruling and I will revise.
 2. **Approach B1 (symmetric `"passage: "` query prefix).** Spec-delegated (§7); golden-set-arbitrated; `embedQuery` port-widening is the documented fallback only if the golden set fails specifically on prefix.
 
-## Status: Done
+## Status: shipped
 
 ## ADR worthy: no
 

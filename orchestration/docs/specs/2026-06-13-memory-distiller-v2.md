@@ -65,6 +65,10 @@ tags: [spec, memory, distiller, incremental, stability, fts5, topic-tags, forget
   built here is reused by 2d; 2d adds the message-archive side + (per research) local embeddings,
   where Bun/macOS `sqlite-vec`/`onnxruntime-node` complexity is warranted by the harder use case.
   **NOT folded in now** (q#008 — folding it drags embedding-install complexity in prematurely).
+  **→ SHIPPED 2026-07-21** as hybrid-retrieval 2d: the message-archive side + the above-cap hybrid
+  candidate-fetch (BM25 ∪ embedding cosine, RRF) landed via the local-wasm `onnxruntime-web`-DIRECT
+  lane (the `sqlite-vec` path was correctly avoided — brute-force cosine over a BLOB column at our
+  scale; gotcha #47). See §3.4 D-V4a cross-note + `specs/archive/2026-07-13-hybrid-retrieval.md`.
 - **Local embeddings / hosted embedding API** — DEFERRED to 2d (research verdict; q#008). FTS5 + the
   LLM-already-in-the-distill-call cover the contradiction/dedup task at dogfood scale.
 - **In-overlay memory UI** — separate follow-on (unchanged from the 2026-06-12 scope SPLIT).
@@ -211,6 +215,16 @@ in canonical form** the lexical-overlap assumption holds; the residual synonym/a
 likes≠dislikes) is judged by **the LLM already in the distill call** over the FTS5 hits. Local
 embeddings carry stacked Bun/macOS install risks; hosted (Voyage) conflicts with ADR-0011 + privacy.
 Maps to ADR-0012 d.6 ("vector retrieval = swappable provider, not a v1 bet").
+
+> **⤳ SUPERSEDED for the ABOVE-CAP candidate lane only (hybrid-retrieval 2d, SHIPPED 2026-07-21).**
+> D-V4a's "FTS5/BM25, NOT embeddings" was the correct v1 bet at dogfood scale, and it still holds
+> for the **below-cap** all-facts pool (unchanged, byte-identical). But per this section's own "the
+> same layer 2d will reuse" forward pointer, the **above-`ALL_FACTS_CAP` candidate-fetch lane** now
+> runs the **hybrid ranker** (FTS5 BM25 ∪ brute-force embedding cosine, fused via RRF) — exactly the
+> "swappable provider" ADR-0012 d.6 anticipated, now EXECUTED (ADR-0017 `EmbeddingProvider` plane).
+> The cross-language / reworded miss D-V4a's lexical-overlap assumption could not close (Ukrainian
+> tail vs English canonical) is what the embedding leg closes. See
+> `specs/archive/2026-07-13-hybrid-retrieval.md` §3.5 (candidate-fetch) + §3.8 (golden-set instrument).
 
 **D-V4b. Topic-tags WIDEN recall; they NEVER filter** [grill B1 — corrects q#010/q#011 "scoped to
 topic-tag"]. **FROZEN INVARIANT: the contradiction-detection candidate set is never *reduced* by a

@@ -1,3 +1,5 @@
+> 🗄️ ARCHIVED 2026-07-21 — shipped. Historical record; do not edit.
+
 # Chunk hybrid-retrieval/07 — embed truncation + poison-row isolation (demo-found defect D3) — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this task-by-task. Steps use checkbox (`- [ ]`) syntax. All test-cycle steps follow `superpowers:test-driven-development`: red → green → commit.
@@ -387,7 +389,7 @@ On DONE: ready-to-merge per crawl §11.4 (conductor re-verifies + merges); then 
 - **Placeholder scan:** none — every code step shows complete code; every command shows expected output.
 - **Loud flag preserved:** the item-2 → Option-D widening path (ADR-worthy) is documented, not silently coded around; route back if item-2 is read as mandating per-element `null` in `embed()`.
 
-## Status: review-complete — ready-to-merge (crawl §11.4: conductor re-verifies + merges)
+## Status: shipped — hybrid-retrieval 2d chunk-07 (PR #103, merged; feature demo-signed + closed 2026-07-21)
 
 **Execution record (all 3 tasks done + review-clean):**
 - Task 1 (truncation @ tokenizer seam) — commit `dbaaac1`. RED→green (`tokenizer.test.ts` 2 pass).

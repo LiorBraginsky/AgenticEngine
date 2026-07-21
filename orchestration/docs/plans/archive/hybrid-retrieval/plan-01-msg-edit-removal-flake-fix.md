@@ -1,6 +1,8 @@
+> 🗄️ ARCHIVED 2026-07-21 — shipped. Historical record; do not edit.
+
 # Plan — hybrid-retrieval chunk 01: message-edit removal + D6c flake fix
 
-## Status: review-complete — ready-to-merge (reviewer-clean 0/0/0; mechanical gate green; behavioral item rides chunk-06 demo)
+## Status: shipped — hybrid-retrieval 2d chunk-01 (PR #97, merged; feature demo-signed + closed 2026-07-21)
 
 **Chunk:** `orchestration/chunks-todo/hybrid-retrieval/01-message-edit-removal-and-flake-fix.md`
 **Spec:** `orchestration/docs/specs/2026-07-13-hybrid-retrieval.md` §3.7 R1 (message-edit removal) + §3.7 R3 (D6c flake + rowid hardening).

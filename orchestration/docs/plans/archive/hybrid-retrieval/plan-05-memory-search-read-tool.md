@@ -1,3 +1,5 @@
+> 🗄️ ARCHIVED 2026-07-21 — shipped. Historical record; do not edit.
+
 # Chunk hybrid-retrieval/05 — `memory_search` read tool on the ADR-0016 action-tool plane — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this task-by-task. Steps use checkbox (`- [ ]`) syntax. All test-cycle steps follow `superpowers:test-driven-development`: red → green → commit. This is a spec-FROZEN chunk (spec §3.6 D6a–D6d, §0.2, §0.3) — the four seams are SPECIFIED; do NOT re-decide them. The architect-time seams the spec explicitly delegated (§7) are resolved below under `## Approaches`; the worker decides nothing further.
@@ -1016,6 +1018,6 @@ git push -u origin chunk/hybrid-05-memory-search-read-tool
 
 **Final gates (orchestrator-independent, tip `c659276`):** typecheck 0 · lint:strict 0 · repo-wide `bun test` 796/0 · degrade `EMBEDDING_PROVIDER=none` 611/0 · frozen byte-diff empty. Reviewer-clean (0B/0M). Behavioral DoD item 6 RIDES chunk-06 demo — NOT claimed here.
 
-## Status: Done
+## Status: shipped
 
 ## ADR worthy: no

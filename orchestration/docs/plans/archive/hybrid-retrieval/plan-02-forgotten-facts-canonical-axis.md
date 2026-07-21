@@ -1,6 +1,8 @@
+> 🗄️ ARCHIVED 2026-07-21 — shipped. Historical record; do not edit.
+
 # forgotten_facts canonical axis (R2) — Implementation Plan
 
-**Status:** review-complete — ready-to-merge (crawl §11.4: conductor re-verifies clean checkout + merges; do NOT self-merge)
+**Status:** shipped — hybrid-retrieval 2d chunk-02 (PR #98, merged; feature demo-signed + closed 2026-07-21)
 **Chunk:** `orchestration/chunks-todo/hybrid-retrieval/02-forgotten-facts-canonical-axis.md`
 **Spec:** `orchestration/docs/specs/2026-07-13-hybrid-retrieval.md` §3.7 R2
 **Branch:** `chunk/hybrid-02-forgotten-facts-canonical-axis`
@@ -827,7 +829,7 @@ git push -u origin chunk/hybrid-02-forgotten-facts-canonical-axis
 - **Rewrite the stale `:193-198` note (m3 lesson)** → Task 3.
 - **Out-of-scope respected:** no embeddings, `factExistsByDedupKey` untouched, no backfill, no new ADR.
 
-## Status: Done
+## Status: shipped
 
 ---
 

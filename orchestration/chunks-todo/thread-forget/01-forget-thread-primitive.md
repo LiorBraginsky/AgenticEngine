@@ -1,6 +1,6 @@
 # Chunk 1: Ruling-2 reconciliation + the `forgetThread` primitive
 
-**Status:** todo
+**Status:** in-progress
 **Created:** 2026-07-22
 **Phase:** memory 2e (thread-forget)
 **Estimated size:** ~1 day
@@ -92,3 +92,11 @@ Runtime-coupling notes: spec §4 items 1/2/5.
 
 - The spec's §3.1 "typed not-found" vs throw: match the house never-throw posture (gotcha #9)
   where cheap; the HTTP mapping lands in chunk-02 either way (spec §7 open-at-build).
+- **[orchestrator annotation 2026-07-22 — §7.2 reconciliation lane, not a scope change]** The
+  §3.2 test-enumeration is INCOMPLETE. Beyond the listed `write-gate.test.ts:64,80`, grep found
+  FOUR more tests that pin the forbidden fact-sweep and go RED once it is removed:
+  `distiller-integration.daemon.test.ts:137,173,490` + `hatch.daemon.test.ts:187`. These
+  reconcile the SAME way (flip to "facts survive" per Ruling 2) — same accepted-decision
+  reconciliation as the enumerated pair, so folded into the plan (Task 1), not escalated. Recorded
+  here so the frozen yardstick stays honest for the reviewer. Verified against main @ 951ded9 (spec
+  anchors were @ 6785b35; no numeric drift, only under-enumeration).

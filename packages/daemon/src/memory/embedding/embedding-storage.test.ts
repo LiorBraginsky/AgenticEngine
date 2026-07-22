@@ -122,29 +122,6 @@ test("deleteFactById leaves zero orphan fact_embeddings rows (the new AFTER DELE
   store.close();
 });
 
-test("dropDistilledFactsByProvenance leaves zero orphan fact_embeddings rows", () => {
-  const { store } = fresh();
-  const id = store.insertFact(baseFact({ provenance: "m-1" }), "dumb-tail");
-  store.upsertFactEmbedding(id, MODEL_A, DIMS, vec(1));
-
-  expect(store.dropDistilledFactsByProvenance("m-1")).toBe(1);
-  const orphan = store.rawDb().query("SELECT COUNT(*) AS n FROM fact_embeddings").get() as { n: number };
-  expect(orphan.n).toBe(0);
-  store.close();
-});
-
-test("dropDistilledFactsForThread leaves zero orphan fact_embeddings rows", () => {
-  const { store } = fresh();
-  const t = store.createThread();
-  const id = store.insertFact(baseFact({ provenance: `thread:${t}` }), "dumb-tail");
-  store.upsertFactEmbedding(id, MODEL_A, DIMS, vec(1));
-
-  expect(store.dropDistilledFactsForThread(t)).toBe(1);
-  const orphan = store.rawDb().query("SELECT COUNT(*) AS n FROM fact_embeddings").get() as { n: number };
-  expect(orphan.n).toBe(0);
-  store.close();
-});
-
 test("dropAllDistilledFacts leaves zero orphan fact_embeddings rows", () => {
   const { store } = fresh();
   const id1 = store.insertFact(baseFact({ fact: "a", canonical: "a" }), "dumb-tail");

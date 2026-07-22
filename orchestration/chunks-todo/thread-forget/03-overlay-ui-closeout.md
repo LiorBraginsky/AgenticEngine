@@ -80,3 +80,10 @@ Runtime-coupling notes: spec §4 items 3/4/8.
 
 - Exact copy/placement/banner styling are architect-time (spec §7) EXCEPT the frozen §0.2
   confirm sentence (q#019 rider 3 — verbatim, user-facing contract).
+- **[carried from chunk-01 review 2026-07-22 — engine-reviewer NIT]** `forgetThread` is idempotent
+  for tombstones (the `NOT EXISTS` filter adds zero new ones on repeat) but a repeat call still
+  appends a SECOND `{event:"thread_forget", created_at}` line to the JSONL mirror (N re-erases → N
+  lines; harmless + arguably audit-honest). The husk banner render (spec §3.5, "You erased this
+  conversation's content on <date>") reads `thread_forget.created_at` — it must tolerate N such
+  mirror lines and pick a DETERMINISTIC one (first = original erase date, recommended; or last).
+  Don't assume exactly one.

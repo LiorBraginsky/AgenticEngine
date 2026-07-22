@@ -77,31 +77,6 @@ test("insertDistilledFacts + readDistilledFacts round-trips facts", () => {
   store.close();
 });
 
-test("dropDistilledFactsByProvenance removes only the matching-provenance rows", () => {
-  const { store } = freshStore();
-  store.insertDistilledFacts([
-    { fact: "a", provenance: "m-1", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
-    { fact: "b", provenance: "m-2", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
-  ], "dumb-tail");
-  expect(store.dropDistilledFactsByProvenance("m-1")).toBe(1);
-  expect(store.readDistilledFacts(10).map((f) => f.fact)).toEqual(["b"]);
-  store.close();
-});
-
-test("dropDistilledFactsForThread removes thread-level provenance row", () => {
-  const { store } = freshStore();
-  const t = store.createThread();
-  store.insertDistilledFacts([
-    { fact: "thread summary", provenance: `thread:${t}`, scope: "cross-thread", expiry: null, confidence: 0.5, authored_by: "machine" },
-    { fact: "unrelated", provenance: "m-other", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" },
-  ], "fixed-marker");
-  expect(store.dropDistilledFactsForThread(t)).toBe(1);
-  const remaining = store.readDistilledFacts(10);
-  expect(remaining.length).toBe(1);
-  expect(remaining[0]!.provenance).toBe("m-other");
-  store.close();
-});
-
 test("dropAllDistilledFacts clears the entire projection table", () => {
   const { store } = freshStore();
   store.insertDistilledFacts([
@@ -1030,22 +1005,6 @@ test("v2-02 SYNC GATE: deleteFactById keeps fact_fts == distilled_facts, no orph
   const { store } = freshStore();
   const { a } = seedTwoFacts(store);
   store.deleteFactById(a);
-  assertDerivedInSync(store);
-  store.close();
-});
-
-test("v2-02 SYNC GATE: dropDistilledFactsByProvenance keeps derived tables in sync", () => {
-  const { store } = freshStore();
-  seedTwoFacts(store);
-  store.dropDistilledFactsByProvenance("thread:tA");
-  assertDerivedInSync(store);
-  store.close();
-});
-
-test("v2-02 SYNC GATE: dropDistilledFactsForThread keeps derived tables in sync", () => {
-  const { store } = freshStore();
-  seedTwoFacts(store);
-  store.dropDistilledFactsForThread("tB");
   assertDerivedInSync(store);
   store.close();
 });

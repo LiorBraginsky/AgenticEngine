@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS threads (
   thread_id      TEXT PRIMARY KEY,
   created_at     INTEGER NOT NULL,
   last_active_at INTEGER NOT NULL,
-  status         TEXT NOT NULL DEFAULT 'active',  -- 'active' | 'dismissed'
+  status         TEXT NOT NULL DEFAULT 'active',  -- 'active' | 'dismissed' | 'forgotten' (2e thread-forget)
   title          TEXT
 );
 

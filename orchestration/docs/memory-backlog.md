@@ -218,9 +218,16 @@ The structure is sound for single-user dogfood. Everything below is **deferred /
   message-correction surface was pointless ("бестолковий") — per fact source-independence it fed
   nothing downstream. *Lives:* chunk-01 PR #97 + ledger; ADR-0012 rider 2026-07-10 Ruling 1.
 
-### D-post. 2d post-close fix pass  ← ⭐ QUEUE HEAD (2026-07-21)
+### D-post. 2d post-close fix pass — ✅ FIX PASS SHIPPED 2026-07-22 (PR #107); residuals = dogfood-watch
 > The 2d live §6.1 demo signed GREEN on all five items; Lior chose **close-first** and routed the
-> findings here as the next queue item. Grouped honestly by kind. None blocked the sign-off.
+> findings here. **memory-fix-pass/01 MERGED 2026-07-22 (PR #107, 815/0, reviewer 0B/0M/0m):**
+> D4 RESOLVED (Lior ruling 2026-07-22, option A — REPLACE re-stamps provenance to the REPLACING
+> thread in the one shared `applyFactOp` lane, both call-paths; `replaced_facts` keeps the prior
+> text) · D1-lang + D2 steering SHIPPED (capability-present lane only, language-agnostic wording,
+> propose-then-consent; absent lane byte-pinned) · `isFactVisibleToThread` extracted · `doWarmup`
+> early-exit · harness arg-parse fail-closed. **Remaining below = dogfood-watch (D1/D2 steering
+> efficacy proves out in daily use) + the Watch block + O2/O3 observations — no build queued.
+> QUEUE HEAD → §C 2e thread-forget.**
 
 **Steering (prompt/self-concept level — no schema/wire change; the bulk of this pass):**
 - **D1-lang — stored-fact AND reply language must follow the USER's utterance language.** 4 demo
@@ -242,19 +249,12 @@ The structure is sound for single-user dogfood. Everything below is **deferred /
   degradation-not-corruption safety-net, spec §3.7a). Feeds the §E complex-corrections case-set.
 
 **Mechanical (small, scoped code fixes; one needs a Lior ruling first):**
-- **D4 — REPLACE keeps the ORIGINAL thread provenance** (NEW, 2026-07-21 demo). A fact «Мої очі
-  зелені» stated in thread `f2f0d7d7` still shows `from: 2e49e174` (the thread that first stated the
-  eye colour) after a REPLACE ⇒ the Memory-window provenance misleads. **Needs a small ruling +
-  fix:** update provenance to the *replacing* thread on REPLACE, OR record a provenance chain. Ruling
-  is Lior's (which semantic); the fix is small either way.
-- **`isFactVisibleToThread` extraction** (chunk-05 conductor-reviewer MINOR): the port and the store
-  each have their own copy of the fact-visibility predicate → drift risk. Extract one shared
-  predicate. A refactor, no behaviour change.
-- **arg-parse fail-open nit** (2026-07-21 demo evidence): the demo-harness `--suite=2d` flag
-  silently fell through to the core suite when run from a branch that lacks it (Lior ran it from
-  `main`). Make the arg-parse fail-closed (unknown/absent-flag → explicit error), not fall-open.
-- **`doWarmup` no `ready` early-exit** (chunk-06 worker Finding 5): `doWarmup` builds a 2nd
-  `InferenceSession` even when one is already ready — add a `ready` early-exit.
+- **D4 — REPLACE keeps the ORIGINAL thread provenance** — ✅ **RESOLVED 2026-07-22 (PR #107).**
+  Lior ruled option A (provenance = the replacing thread; `replaced_facts` keeps prior text; the
+  Memory-window replace-history render was declined — revisit on demand). RED-first tested.
+- **`isFactVisibleToThread` extraction** — ✅ **DONE 2026-07-22 (PR #107)**: one predicate, two call-sites.
+- **arg-parse fail-open nit** — ✅ **DONE 2026-07-22 (PR #107)**: `resolveSuite` fails loudly on unknown values.
+- **`doWarmup` no `ready` early-exit** — ✅ **DONE 2026-07-22 (PR #107)**: early-exit added (no stale-ready hole — `ready` only set on successful load).
 
 **Watch (observe at real scale before deciding to build — no fix yet):**
 - **Query-pooling dilution above-cap (Finding 1b, escalated at chunk-06).** `distillOneThread` pools

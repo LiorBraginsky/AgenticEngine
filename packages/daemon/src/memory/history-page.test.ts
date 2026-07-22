@@ -42,3 +42,14 @@ test("A: loadThreadList has an explicit 401 -> locked branch (not 'No threads')"
   expect(HISTORY_HTML).toContain("r.status === 401");
   expect(HISTORY_HTML).toContain("renderLocked");
 });
+
+// ── thread-forget (2e) chunk-02 Task 3: history.html fallback ────────────────
+
+test("HISTORY_HTML pins the FROZEN §0.2 confirm copy template (q#019 rider 3)", () => {
+  expect(HISTORY_HTML).toContain(`"Erase this conversation's content (" + messageCount + " messages)? Distilled facts remain. Cannot be undone."`);
+});
+
+test("HISTORY_HTML sends target_type:'thread' and renders an honest 409 line", () => {
+  expect(HISTORY_HTML).toContain(`target_type: "thread"`);
+  expect(HISTORY_HTML).toContain("This conversation is open — close it first.");
+});

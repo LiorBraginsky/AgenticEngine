@@ -140,6 +140,7 @@ export const HISTORY_HTML = `<!DOCTYPE html>
     .back-btn:hover { text-decoration: underline; }
     .empty { color: #aaa; font-style: italic; font-size: 13px; }
     .section-head { display: flex; align-items: center; gap: 8px; }
+    .erased-banner { padding: 10px 12px; margin-bottom: 10px; background: #fff8f0; border: 1px solid #f0c8a0; border-radius: 6px; color: #a05000; font-size: 13px; }
   </style>
 </head>
 <body>
@@ -178,7 +179,8 @@ export const HISTORY_HTML = `<!DOCTYPE html>
     <button class="back-btn" id="back-btn">&#8592; Back to threads</button>
 
     <div class="panel">
-      <div class="section-head"><h2>Messages</h2></div>
+      <div class="section-head"><h2>Messages</h2><span id="thread-forget-control"></span></div>
+      <div id="erased-banner"></div>
       <div id="messages-container"><p class="empty">Loading…</p></div>
     </div>
 
@@ -311,6 +313,7 @@ export const HISTORY_HTML = `<!DOCTYPE html>
           renderMessages(data.messages || [], threadId);
           renderFacts(data.distilledFacts || []);
           renderEvents(data.distillationEvents || []);
+          renderThreadControls(data.thread, threadId, (data.messages || []).length);
         })
         .catch(function () {
           clearChildren(messagesContainer);
@@ -319,6 +322,32 @@ export const HISTORY_HTML = `<!DOCTYPE html>
           p.textContent = "Failed to load thread.";
           messagesContainer.appendChild(p);
         });
+    }
+
+    function renderThreadControls(thread, threadId, messageCount) {
+      var control = document.getElementById("thread-forget-control");
+      var banner = document.getElementById("erased-banner");
+      clearChildren(control); clearChildren(banner);
+      if (thread && thread.status === "forgotten") {
+        // Erased husk (terminal): banner, no forget button. §7 architect-latitude on copy (Fork E1 — no
+        // fabricated date; the frozen 3-field meta carries no erase timestamp).
+        var b = document.createElement("div");
+        b.className = "erased-banner";
+        b.textContent = "You erased this conversation's content. Distilled facts remain.";
+        banner.appendChild(b);
+        return;
+      }
+      // Live/active/dismissed thread → the destructive control (deliberate-destruction UX: it lives in
+      // the detail view where the user sees what they will erase — §0.1).
+      var btn = document.createElement("button");
+      btn.className = "btn btn-forget";
+      btn.textContent = "Forget conversation";
+      // FROZEN §0.2 copy [q#019 rider 3] — verbatim, with the REAL message count at confirm time.
+      var confirmHint = "Erase this conversation's content (" + messageCount + " messages)? Distilled facts remain. Cannot be undone.";
+      btn.addEventListener("click", function () {
+        doForget({ target_type: "thread", thread_id: threadId }, threadId, btn, "Forget conversation", "Confirm erase?", confirmHint);
+      });
+      control.appendChild(btn);
     }
 
     function renderMessages(messages, threadId) {
@@ -444,7 +473,7 @@ export const HISTORY_HTML = `<!DOCTYPE html>
     // Second click (or timeout) executes or resets.
     // v2-04: bodyObj is always target_type:"fact" (fact-forget only; message-forget removed).
     // originalLabel is the button's resting text (so reset restores the right label).
-    function doForget(bodyObj, threadId, forgetBtn, originalLabel) {
+    function doForget(bodyObj, threadId, forgetBtn, originalLabel, armedLabel, confirmHint) {
       if (!_authToken) {
         showUnlockHint(forgetBtn);
         return;
@@ -454,7 +483,7 @@ export const HISTORY_HTML = `<!DOCTYPE html>
 
       // Arm: replace button label + style, add Cancel
       forgetBtn.dataset.armed = "1";
-      forgetBtn.textContent = "Confirm forget?";
+      forgetBtn.textContent = armedLabel || "Confirm forget?";
       forgetBtn.className = "btn btn-danger";
 
       var cancelBtn = document.createElement("button");
@@ -463,7 +492,7 @@ export const HISTORY_HTML = `<!DOCTYPE html>
 
       var hint = document.createElement("span");
       hint.className = "inline-hint";
-      hint.textContent = "Cannot be undone";
+      hint.textContent = confirmHint || "Cannot be undone";
 
       var parent = forgetBtn.parentNode;
       parent.insertBefore(cancelBtn, forgetBtn.nextSibling);
@@ -504,6 +533,9 @@ export const HISTORY_HTML = `<!DOCTYPE html>
             loadThread(threadId);
           } else if (r.status === 401) {
             setStatus("401 — unlock first or bad token.", false);
+            resetForget();
+          } else if (r.status === 409) {
+            setStatus("This conversation is open — close it first.", false);   // [critic m8] honest, not raw "Error: 409"
             resetForget();
           } else {
             setStatus("Error: " + r.status, false);

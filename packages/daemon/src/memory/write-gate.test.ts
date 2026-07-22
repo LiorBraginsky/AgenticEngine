@@ -61,7 +61,7 @@ test("forget rewrites the JSONL mirror so plaintext is gone and REDACTION_MARKER
 
 // ---- Step 4.1: forget purges live distilled_facts (grill S2) ----
 
-test("forget IMMEDIATELY purges the live distilled_facts row for the forgotten message (grill S2)", () => {
+test("forget does NOT sweep the derived distilled_facts row (Ruling 2 — fact source-independence)", () => {
   const { store, gate } = fresh();
   const t = store.createThread();
   const [mid] = gate.appendTurn(t, [{ role: "user", content: "secret token abc" }], "s1", CTX);
@@ -72,12 +72,13 @@ test("forget IMMEDIATELY purges the live distilled_facts row for the forgotten m
   );
   expect(store.readDistilledFacts(10).length).toBe(1);
   gate.forget(mid!, CTX, "user requested");
-  // The LIVE slice is empty IMMEDIATELY — not only after a re-derive.
-  expect(store.readDistilledFacts(10).length).toBe(0);
+  // Ruling 2 (ADR-0012 rider): erasing the source message must NOT sweep the derived fact.
+  expect(store.readDistilledFacts(10).length).toBe(1);
+  expect(store.readDistilledFacts(10)[0]!.fact).toBe("secret token abc");
   store.close();
 });
 
-test("forget also purges a thread-level (fixed-marker) fact derived from the forgotten thread (grill S2)", () => {
+test("forget does NOT sweep a thread-level fact (Ruling 2)", () => {
   const { store, gate } = fresh();
   const t = store.createThread();
   const [mid] = gate.appendTurn(t, [{ role: "user", content: "x" }], "s1", CTX);
@@ -86,7 +87,7 @@ test("forget also purges a thread-level (fixed-marker) fact derived from the for
     "fixed-marker",
   );
   gate.forget(mid!, CTX);
-  expect(store.readDistilledFacts(10).length).toBe(0); // thread-level fact purged too
+  expect(store.readDistilledFacts(10).length).toBe(1); // thread-level fact survives (Ruling 2)
   store.close();
 });
 

@@ -184,7 +184,7 @@ test("T1.2(a) LOAD-BEARING: forgetFact(thread-level provenance) — durable dele
 // v2-04: Hatch.forget(messageId) tombstone-guard test removed (Hatch.forgetMessage removed).
 // The WriteGate.forget primitive regression (direct gate.forget) is kept below.
 
-test("T1.2(d) regression: WriteGate.forget(messageId) still tombstones and purges — existing path unchanged", async () => {
+test("WriteGate.forget(messageId) tombstones + scrubs but does NOT sweep facts (Ruling 2)", async () => {
   const hook = new ConsolidationHook(store);
   const dumbTail = new DumbTailProvider();
   registerDistiller(hook, store, dumbTail, new RuleBasedScanner());
@@ -198,7 +198,8 @@ test("T1.2(d) regression: WriteGate.forget(messageId) still tombstones and purge
   // Direct WriteGate.forget still works (not broken by T1.2 additions)
   gate.forget(mid!, { actor: "user", authored_by: "human" });
 
-  expect(store.readDistilledFacts(50).some((f) => f.fact === "to be forgotten")).toBe(false);
+  // Ruling 2 (ADR-0012 rider): source erasure never sweeps facts — the derived fact survives.
+  expect(store.readDistilledFacts(50).some((f) => f.fact === "to be forgotten")).toBe(true);
   const db = store.rawDb();
   const row = db.query("SELECT content FROM messages WHERE id = ?").get(mid!) as { content: string };
   expect(row.content).toBe(REDACTION_MARKER);

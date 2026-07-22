@@ -134,7 +134,7 @@ test("swap-proof (delta+stability): daemon-driven dismiss produces DistillDelta;
 
 // ─── Test 5.2: forget-survives-re-derive ──────────────────────────────────
 
-test("forget-survives-re-derive: tombstoned fact absent from rebuilt slice and retrieve()", async () => {
+test("forget-survives (Ruling 2): source-message forget leaves the derived fact live + still injectable", async () => {
   // Use a fresh isolated store (not the shared one) to avoid cross-test contamination
   const dir = mkdtempSync(join(tmpdir(), "mf02-5b-"));
   const store = new MemoryStore({ dataDir: dir });
@@ -152,25 +152,25 @@ test("forget-survives-re-derive: tombstoned fact absent from rebuilt slice and r
   const beforeForget = store.readDistilledFacts(50);
   expect(beforeForget.some((f) => f.fact === "secret fact")).toBe(true);
 
-  // 3. WriteGate.forget on the on-disk store — immediately purges distilled_facts
+  // 3. WriteGate.forget on the on-disk store — content-erases the source message only;
+  //    Ruling 2 (ADR-0012 rider) forbids sweeping the derived fact.
   gate.forget(mid!, { actor: "user", authored_by: "human" }, "test");
-  expect(store.readDistilledFacts(50).some((f) => f.fact === "secret fact")).toBe(false);
+  expect(store.readDistilledFacts(50).some((f) => f.fact === "secret fact")).toBe(true);
 
-  // 4. The tombstoned message won't re-appear on re-dismiss (incremental: watermark already
-  //    advanced past it; tombstone filter also catches it). Verify directly.
-  // The fact is already gone from the store (purged by forget above).
-  expect(store.readDistilledFacts(50).some((f) => f.fact === "secret fact")).toBe(false);
+  // 4. The fact stays live indefinitely — Ruling 2: facts change/die only via an explicit
+  //    fact-level edit/forget, never as a side-effect of source erasure.
+  expect(store.readDistilledFacts(50).some((f) => f.fact === "secret fact")).toBe(true);
 
-  // 5. Assert: retrieve() also returns empty slice (defense-in-depth)
+  // 5. Assert: retrieve() still injects the surviving fact into a NEW thread's slice
   const slice = await dumbTail.retrieve(store, store.createThread());
-  expect(slice.messages.some((m) => m.content.includes("secret fact"))).toBe(false);
+  expect(slice.messages.some((m) => m.content.includes("secret fact"))).toBe(true);
 
   store.close();
 });
 
 // ─── Test 5.3: forget-purges-the-LIVE-slice (S2 no-window) ───────────────
 
-test("forget-purges-live-slice: live distilled_facts row gone IMMEDIATELY after forget (S2 no-window)", async () => {
+test("forget-survives-live-slice (Ruling 2): distilled_facts row remains after forget", async () => {
   const dir = mkdtempSync(join(tmpdir(), "mf02-5c-"));
   const store = new MemoryStore({ dataDir: dir });
   const gate = new WriteGate(store, new RuleBasedScanner());
@@ -187,11 +187,11 @@ test("forget-purges-live-slice: live distilled_facts row gone IMMEDIATELY after 
   expect(store.readDistilledFacts(10).length).toBeGreaterThan(0);
   expect(store.readDistilledFacts(10).some((f) => f.fact === "live secret")).toBe(true);
 
-  // 3. forget — IMMEDIATELY purges distilled_facts before any re-derive
+  // 3. forget — content-erases the source message; Ruling 2 forbids sweeping the fact
   gate.forget(mid!, { actor: "user", authored_by: "human" }, "S2 test");
 
-  // 4. Assert store.readDistilledFacts is empty BEFORE any re-derive
-  expect(store.readDistilledFacts(10).length).toBe(0);
+  // 4. Assert store.readDistilledFacts still has the row — no sweep, no window
+  expect(store.readDistilledFacts(10).length).toBe(1);
 
   store.close();
 });
@@ -487,7 +487,7 @@ test("smart quarantine-survives-summarization: quarantined source never appears 
 
 // ─── Test: smart forget-survives-re-derive (D12) ─────────────────────────────
 
-test("smart forget-survives-re-derive (D12): tombstoned message does NOT re-appear on re-dismiss", async () => {
+test("smart forget-survives (Ruling 2): source-forget keeps the fact across a re-dismiss", async () => {
   const dir = mkdtempSync(join(tmpdir(), "mq03-smart-forget-"));
   const store = new MemoryStore({ dataDir: dir });
   const gate = new WriteGate(store, new RuleBasedScanner());
@@ -503,27 +503,23 @@ test("smart forget-survives-re-derive (D12): tombstoned message does NOT re-appe
   await hook.dismiss([t]);
   expect(store.readDistilledFacts(50).some((f) => f.fact.includes("secret smart fact"))).toBe(true);
 
-  // Forget the secret message. gate.forget(messageId) drops ALL distilled facts for the
-  // thread via dropDistilledFactsForThread (thread-level provenance). This is by design:
-  // the thread needs re-derive after a message tombstone. The D12 contract is that the
-  // tombstoned message's fact does NOT re-appear on re-dismiss.
+  // Forget the secret message. gate.forget(messageId) content-erases the source message
+  // only — Ruling 2 (ADR-0012 rider) forbids sweeping the derived fact, so it stays live.
   gate.forget(mid!, { actor: "user", authored_by: "human" }, "test-D12");
 
-  // After forget: the secret fact is immediately gone (purged by dropDistilledFactsForThread)
-  expect(store.readDistilledFacts(50).some((f) => f.fact.includes("secret smart fact"))).toBe(false);
+  // After forget: the secret fact is still live (Ruling 2 — no sweep)
+  expect(store.readDistilledFacts(50).some((f) => f.fact.includes("secret smart fact"))).toBe(true);
 
   // Re-dismiss: tombstoned message is filtered out of the new-tail read (content = REDACTION_MARKER),
-  // so the echo-stub never sees "secret smart fact" and does NOT produce it.
+  // so the echo-stub never re-derives it — but the fact from the first dismiss remains live.
   store.appendMessages(t, [{ role: "user", content: "trigger-bump" }], "s3");
   await hook.dismiss([t]);
 
-  // D12: secret fact must remain absent — tombstone filter ensures it never resurfaces
+  // Ruling 2: the fact from the forgotten source message persists across the re-dismiss —
+  // it was never dropped, so there is nothing to re-derive.
   const facts = store.readDistilledFacts(50);
-  expect(facts.some((f) => f.fact.includes("secret smart fact"))).toBe(false);
-  // "trigger-bump" or "safe fact" should be present — proves re-derive ran
-  // (safe fact is included in the new-tail read since gate.forget bumped the marker,
-  //  causing the skip-guard to not fire; the tombstoned turn is below the advanced watermark,
-  //  so the re-dismiss never re-reads it; the REDACTION_MARKER content filter is a second backstop)
+  expect(facts.some((f) => f.fact.includes("secret smart fact"))).toBe(true);
+  // "trigger-bump" or "safe fact" should also be present — proves re-derive ran
   expect(facts.length).toBeGreaterThan(0);
 
   store.close();

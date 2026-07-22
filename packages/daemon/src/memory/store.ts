@@ -781,21 +781,6 @@ export class MemoryStore {
       .all() as { target_id: string; rule: string }[];
   }
 
-  /** DELETE distilled_facts rows by exact provenance match; returns changed row count.
-   * MF-03 5e guard: never deletes a human-authored distilled fact. */
-  dropDistilledFactsByProvenance(provenance: string): number {
-    const result = this.db.query("DELETE FROM distilled_facts WHERE provenance = ? AND authored_by != 'human' RETURNING id").all(provenance);
-    return result.length;
-  }
-
-  /** DELETE distilled_facts rows with provenance "thread:<threadId>"; returns changed count.
-   * MF-03 5e guard: never deletes a human-authored distilled fact. */
-  dropDistilledFactsForThread(threadId: string): number {
-    const provenance = `thread:${threadId}`;
-    const result = this.db.query("DELETE FROM distilled_facts WHERE provenance = ? AND authored_by != 'human' RETURNING id").all(provenance);
-    return result.length;
-  }
-
   /**
    * ONE-TIME MIGRATION ONLY (v2-05 §3.8). NOT a per-dismiss path.
    * DELETE all machine-authored rows from distilled_facts (5e guard: human-pinned

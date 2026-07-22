@@ -100,16 +100,6 @@ export class WriteGate {
     this.store.redactMirrorMessage(threadId, messageId);
     // Append the redaction event line so the audit trail records that a forget occurred.
     this.store.mirrorEvent(threadId, { event: "forget", target_message_id: messageId, actor: ctx.actor, created_at: now });
-    // purge any live distilled_facts rows referencing the forgotten content (grill S2)
-    // Message-level provenance shape (DumbTail). Thread-level provenance was FixedMarker (retired v2-03).
-    // ⚠️ ADR-0012 rider Ruling 2 (fact source-independence, 2026-07-10) TRAP — flagged for 2e
-    // [hybrid-retrieval §4.3, grill #9]: this scrub primitive ALSO sweeps derived facts
-    // (dropDistilledFacts* below), which Ruling 2 FORBIDS for source erasure ("source erasure
-    // never sweeps facts"). 2d does NOT fix this — no user path calls WriteGate.forget today —
-    // but 2e thread-forget CANNOT reuse this primitive unchanged: these fact-sweep calls must be
-    // removed/reworked at 2e design time. Doc-comment only; zero behavior change in this chunk.
-    this.store.dropDistilledFactsByProvenance(messageId);
-    this.store.dropDistilledFactsForThread(threadId);
     // N1: any quarantine_markers row for this messageId is intentionally left — the tombstone
     // already hard-redacts the content, making the quarantine marker harmless (a dead filter
     // on a tombstoned message). Dropping it would require a new store method for ~zero benefit.
@@ -130,7 +120,6 @@ export class WriteGate {
    * via that path, just not via this one.
    *
    * DOES NOT call tombstoneFact — the isMessageId throw stays on the message path (ADR-0015 decision 1).
-   * DOES NOT call dropDistilledFactsByProvenance/dropDistilledFactsForThread — those are message-path.
    * 5e guard: deleteMachineFactsByForget carries authored_by != 'human' guard.
    */
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- ctx and reason are positional (Hatch calls with all 4 args); argsIgnorePattern not configured

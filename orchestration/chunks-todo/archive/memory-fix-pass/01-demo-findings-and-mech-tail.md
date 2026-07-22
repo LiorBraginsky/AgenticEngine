@@ -1,6 +1,8 @@
+> 🗄️ ARCHIVED 2026-07-22 — done. Historical record; do not edit.
+
 # Chunk 1: post-2d fix pass — demo findings (D1-lang · D2 · D4) + mechanical tail
 
-**Status:** in-progress
+**Status:** done
 **Created:** 2026-07-22
 **Phase:** memory-fix-pass (post-2d, backlog §D-post)
 **Estimated size:** ~1 day

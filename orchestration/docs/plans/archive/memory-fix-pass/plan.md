@@ -1,3 +1,5 @@
+> 🗄️ ARCHIVED 2026-07-22 — shipped. Historical record; do not edit.
+
 # memory-fix-pass — post-2d demo findings (D1-lang · D2 · D4) + mechanical tail — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use `superpowers:subagent-driven-development` or `superpowers:executing-plans` to implement this task-by-task. Steps use `- [ ]` checkboxes.
@@ -381,7 +383,7 @@ console.log(`[demo-harness] suite: ${SUITE}`);
 
 ## Status: Implementation + review COMPLETE — ready-to-merge (conductor merges per crawl §11.4)
 
-- Tasks 1–3 implemented RED-first (commits `3b437cd`, `112e788`, `b06a523`, `789f71f`, `0ff5843`, lint-fixup `da328e8`).
+shipped
 - Gates (orchestrator-verified, command evidence): `typecheck` 0 · `lint:strict` 0 · `bun test` **815 pass / 0 fail** (80 files; +14 new tests over main's 801) · frozen `packages/protocol` byte-unchanged · no reducer/mock in diff.
 - `engine-reviewer` vs `main`: **0 blockers** (all 4 seams confirmed; 1 non-blocking Nit = D2-sentence vs passing-change REPLACE, LLM-fuzzy dogfood-watch, no change required).
 - All DoD items MECHANICAL — no behavioral demo gate (chunk DoD item 5; reviewer confirmed daemon-internal, no UI/wire surface).

@@ -213,7 +213,7 @@ tags: [roadmap, milestones]
 > facts VIEW with per-fact provenance, distilled-fact-text EDIT (durable human badge) + message
 > correction, "release the reference" FORGET, and honest locked/daemon-down states (+ `history.html`
 > fallback tails). Spec `specs/archive/2026-07-02-memory-transparency-ui.md` (implemented). **Queue
-> head now: the 2d post-close fix pass** ([[memory-backlog]] §D-post) — **2d hybrid retrieval itself
+> head now: **2e thread-forget** (the 2d post-close fix pass SHIPPED 2026-07-22, PR #107 — [[memory-backlog]] §D-post) — **2d hybrid retrieval itself
 > SHIPPED + CLOSED 2026-07-21.** (provenance-affordance chunk-01 SHIPPED 2026-07-13 via PR #93 — feature
 > closed, spec implemented+archived; chunk-05 D1 dedup fix merged 2026-07-13 — 2c closed.)
 
@@ -262,12 +262,12 @@ rough priority:
   all-facts-below-cap stopgap** above the cap — the cross-language BM25 miss it replaces was the root
   of the demo-3 duplicate-colour defect (Ukrainian tail vs English canonical; the embedding leg is the
   only half that closes it cross-script). **Lior's live §6.1 demo signed 2026-07-21 (all §5 items
-  1–5 GREEN); findings routed as the post-close fix pass ([[memory-backlog]] §D-post — QUEUE HEAD).**
+  1–5 GREEN); findings routed as the post-close fix pass ([[memory-backlog]] §D-post — ✅ SHIPPED 2026-07-22, PR #107; residuals = dogfood-watch).**
 - **Variant B — distilled facts rendered into the SYSTEM prompt** (instead of `[remembered]`
   user-messages). Architecturally cleaner per-turn injection; pairs naturally with 2c/2d. Considered
   and deferred in v2-08 (the `[remembered]`-as-messages format is load-bearing across system-prompt +
   provenance-stamp + tests — too big a rewrite for the recall fix; variant A shipped instead).
-- **thread-forget (2e)** — ← **next feature after the 2d post-close fix pass; NOW UNBLOCKED
+- **thread-forget (2e)** — ← **QUEUE HEAD (fix pass shipped 2026-07-22); NOW UNBLOCKED
   2026-07-21.** A content-erase primitive (reuses the dormant `WriteGate` scrub); the successor to the
   dropped message-forget (ADR-0015 decision 5 superseded). 2d's `memory_search` makes the archive
   searchable, so a "forgotten" conversation can resurface content — the coupling [[memory-backlog]] §C

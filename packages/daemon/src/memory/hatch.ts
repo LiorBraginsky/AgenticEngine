@@ -26,7 +26,7 @@
  */
 export const HATCH_VIEW_FACT_CAP = 1000;
 import type { MemoryStore, DistilledFactRow, DistillationEventRow, MemoryActionEventRow } from "./store.js";
-import type { WriteGate, WriteContext } from "./write-gate.js";
+import type { WriteGate, WriteContext, ForgetThreadResult } from "./write-gate.js";
 
 export interface HatchViewResult {
   /** Full archive for the thread — tombstoned rows surface as REDACTION_MARKER. */
@@ -37,6 +37,10 @@ export interface HatchViewResult {
   distillationEvents: DistillationEventRow[];
   /** 2c chunk-01 (spec §3.9 D9b): durable audit trail of agent memory actions for this thread. */
   memoryActionEvents: MemoryActionEventRow[];
+  /** thread-forget 2e §3.3: additive thread meta — `status` drives the erased-husk banner render.
+   *  null iff the id resolves to no thread. Optional-tolerant: history.html/overlay ignore it if
+   *  absent (runtime-coupling §4 item 4). */
+  thread: { thread_id: string; status: string; last_active_at: number } | null;
 }
 
 export class Hatch {
@@ -64,7 +68,9 @@ export class Hatch {
     const distillationEvents = this.store.readDistillationEvents(threadId);
     // 2c chunk-01 (spec §3.9 D9b): additive read of the memory-action audit trail.
     const memoryActionEvents = this.store.readMemoryActionEvents(threadId);
-    return { messages, distilledFacts, distillationEvents, memoryActionEvents };
+    // thread-forget 2e §3.3: additive thread meta (status drives the erased-husk banner render).
+    const thread = this.store.readThreadMeta(threadId);
+    return { messages, distilledFacts, distillationEvents, memoryActionEvents, thread };
   }
 
   /**
@@ -99,6 +105,17 @@ export class Hatch {
    */
   forgetFactById(factId: string, ctx: WriteContext, reason?: string): void {
     this.gate.forgetFactById(factId, ctx, reason);
+  }
+
+  /**
+   * Forget a whole conversation's CONTENT (thread-forget 2e, spec §3.3). Thin façade over
+   * WriteGate.forgetThread — one atomic scrub tx, ZERO fact-table touches (ADR-0012 rider Ruling 2).
+   * Returns the typed result the route maps: {ok:true}→204, not_found→404, refused_machine→
+   * (unreachable on the human-only HTTP path). The free-text `reason` is accepted for API symmetry
+   * but not persisted as content (WriteGate uses a fixed tombstone reason — NIT-5).
+   */
+  forgetThread(threadId: string, ctx: WriteContext, reason?: string): ForgetThreadResult {
+    return this.gate.forgetThread(threadId, ctx, reason);
   }
 }
 

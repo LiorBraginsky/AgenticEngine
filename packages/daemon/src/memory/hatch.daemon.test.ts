@@ -335,3 +335,19 @@ test("2B: Hatch.view returns memoryActionEvents populated from the store, thread
   expect(result.memoryActionEvents[0]!.fact_text).toBe("fact X");
   expect(result.memoryActionEvents[0]!.action).toBe("forget");
 });
+
+// ─── thread-forget (2e) chunk-02 Task 1: Hatch.forgetThread façade + view.thread meta ──────
+
+test("Hatch.view carries additive thread meta; Hatch.forgetThread flips status to 'forgotten'", async () => {
+  const hatch = new Hatch(store, gate);
+  const t = store.createThread();
+  gate.appendTurn(t, [{ role: "user", content: "hi" }], "s1", { actor: "user", authored_by: "human" });
+  const before = await hatch.view(t);
+  expect(before.thread).toEqual({ thread_id: t, status: "active", last_active_at: expect.any(Number) });
+  expect(before.thread!.status).toBe("active");            // existing fields untouched (regression)
+  expect(Array.isArray(before.distilledFacts)).toBe(true);
+  expect(hatch.forgetThread(t, { actor: "user", authored_by: "human" })).toEqual({ ok: true });
+  const after = await hatch.view(t);
+  expect(after.thread!.status).toBe("forgotten");
+  expect(after.messages.every((m) => m.content === REDACTION_MARKER)).toBe(true);
+});

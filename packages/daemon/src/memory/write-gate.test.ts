@@ -747,3 +747,42 @@ test("scrub between drain scan and upsert → zero vector rows survive (drain-ra
   expect(n).toBe(0);
   store.close();
 });
+
+// ── thread-forget (2e) chunk-02 Task 1: MINOR-2 edit-guard + NIT-5 reason-scrub ──
+
+test("edit() no-ops on a message of a status='forgotten' thread (MINOR-2 — no plaintext re-flush)", () => {
+  const { store, gate, dir } = fresh();
+  const t = store.createThread();
+  const [m1] = gate.appendTurn(t, [{ role: "user", content: "original secret" }], "s1", CTX);
+  gate.forgetThread(t, CTX);                         // thread now terminal ('forgotten'); m1 scrubbed
+  // Attempt to re-introduce plaintext via the message-id-keyed edit path:
+  gate.edit(m1!, "sneaky reintroduced plaintext", CTX, "reopen attempt");
+  const db = store.rawDb();
+  // NO new correction row carrying the plaintext was written:
+  const corr = db.query(
+    "SELECT COUNT(*) AS n FROM mutations WHERE kind='correction' AND target_message_id=? AND replacement_content=?",
+  ).get(m1!, "sneaky reintroduced plaintext") as { n: number };
+  expect(corr.n).toBe(0);
+  // The archive read still returns the redaction marker (nothing resurfaced):
+  const arch = store.readThreadArchive(t);
+  expect(arch.every((r) => r.content === REDACTION_MARKER)).toBe(true);
+  // The mirror holds no reintroduced plaintext:
+  const mirror = readFileSync(join(dir, "threads", `${t}.jsonl`), "utf8");
+  expect(mirror).not.toContain("sneaky reintroduced plaintext");
+  store.close();
+});
+
+test("forgetThread persists a fixed tombstone reason — a content-quoting reason never lands in mutations.reason (NIT-5)", () => {
+  const { store, gate } = fresh();
+  const t = store.createThread();
+  gate.appendTurn(t, [{ role: "user", content: "x" }], "s1", CTX);
+  gate.forgetThread(t, CTX, "erase the part where I said my SSN is 123-45-6789");
+  const db = store.rawDb();
+  const reasons = db.query(
+    "SELECT DISTINCT reason FROM mutations WHERE kind='tombstone' AND target_message_id IN (SELECT id FROM messages WHERE thread_id=?)",
+  ).all(t) as { reason: string | null }[];
+  // The free-text (content-quoting) reason is NOT persisted; a fixed constant is used instead.
+  expect(reasons.every((r) => r.reason === "thread_forget")).toBe(true);
+  expect(reasons.some((r) => (r.reason ?? "").includes("SSN"))).toBe(false);
+  store.close();
+});

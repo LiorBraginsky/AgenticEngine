@@ -7,6 +7,11 @@ import { memDebug } from "./debug-log.js";
 
 export { REDACTION_MARKER };
 
+/** thread-forget 2e (NIT-5): tombstone reason is metadata-not-content. mutations.reason is OUTSIDE
+ *  the erase matrix (survives un-scrubbed), so forgetThread persists a FIXED constant regardless of
+ *  the caller-supplied `reason` — no user free-text can ever reach that un-erasable column. */
+const THREAD_FORGET_REASON = "thread_forget";
+
 /**
  * Context every memory write carries. MF-01 only records `authored_by` (so the
  * mutations/messages provenance columns are populated); MF-03 (5d scan / 5e
@@ -123,6 +128,7 @@ export class WriteGate {
    * machine-ctx refusal). Idempotent: already-tombstoned messages are
    * skipped; a second call is a no-op that still returns { ok: true }.
    */
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- `reason` kept for API symmetry with forget/forgetFact; intentionally NOT persisted (NIT-5)
   forgetThread(threadId: string, ctx: WriteContext, reason?: string): ForgetThreadResult {
     if (ctx.authored_by === "machine") return { ok: false, reason: "refused_machine" };
     if (!this.store.threadExists(threadId)) return { ok: false, reason: "not_found" };
@@ -140,7 +146,7 @@ export class WriteGate {
       );
       const scrub = db.query("UPDATE messages SET content = ? WHERE id = ?");
       for (const { id } of rows) {
-        insTomb.run(crypto.randomUUID(), id, ctx.actor, reason ?? null, ctx.authored_by, now);
+        insTomb.run(crypto.randomUUID(), id, ctx.actor, THREAD_FORGET_REASON, ctx.authored_by, now);
         scrub.run(REDACTION_MARKER, id);
         // tx-less by design — see MemoryStore.deleteMessageDerived (commits with THIS tx; no nested tx; bun:sqlite forbids it)
         this.store.deleteMessageDerived(id);
@@ -289,6 +295,13 @@ export class WriteGate {
     // B1: validate existence BEFORE any INSERT — threadOf throws for unknown ids,
     // preventing an orphaned mutations row with a dangling target_message_id FK.
     const threadId = this.threadOf(messageId);
+    // thread-forget 2e (chunk-01 review MINOR-2): 'forgotten' is terminal. edit() is message-id-keyed —
+    // the §3.3a adoption exclusion and the §0.5 live-guard are thread-adoption-keyed and do NOT cover
+    // this path. Without this, a future edit() caller could re-introduce plaintext into
+    // mutations.replacement_content AND append a plaintext `edit` mirror line onto a just-scrubbed thread.
+    // No-op on a forgotten thread — the same by-construction close §3.3a uses for appendTurn.
+    // (Reachability today = NONE: edit lost its production caller at the 2d message-edit removal.)
+    if (this.store.readThreadMeta(threadId)?.status === "forgotten") return;
     // 5e guard: machine edit of human entry → no-op (human content survives
     // byte-intact). Q2-minimal: no competing row is written; the un-changed
     // original is the behavioral proof. A human edit is always applied.

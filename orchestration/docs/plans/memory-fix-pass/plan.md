@@ -379,6 +379,10 @@ console.log(`[demo-harness] suite: ${SUITE}`);
 - **Tail** items are internal refactors/guards (no dependency, protocol, or boundary change). ADR-0017's embedding lane is unchanged in shape.
 - **Closeout doc note (NOT an ADR):** at merge, update `memory-backlog.md §D-post` — mark D4 resolved (option A: provenance follows the replacing thread; `replaced_facts` keeps prior **text** only, old-thread chain intentionally not built), and mark the `isFactVisibleToThread` / arg-parse / doWarmup items done. This is doc-curator/ledger reconciliation, not a new ADR.
 
-## Status: Phase 3 — Implementation Plan complete (Done)
+## Status: Implementation + review COMPLETE — ready-to-merge (conductor merges per crawl §11.4)
 
-No open questions; all Lior rulings pre-taken. Plan is directly executable by an engine-worker.
+- Tasks 1–3 implemented RED-first (commits `3b437cd`, `112e788`, `b06a523`, `789f71f`, `0ff5843`, lint-fixup `da328e8`).
+- Gates (orchestrator-verified, command evidence): `typecheck` 0 · `lint:strict` 0 · `bun test` **815 pass / 0 fail** (80 files; +14 new tests over main's 801) · frozen `packages/protocol` byte-unchanged · no reducer/mock in diff.
+- `engine-reviewer` vs `main`: **0 blockers** (all 4 seams confirmed; 1 non-blocking Nit = D2-sentence vs passing-change REPLACE, LLM-fuzzy dogfood-watch, no change required).
+- All DoD items MECHANICAL — no behavioral demo gate (chunk DoD item 5; reviewer confirmed daemon-internal, no UI/wire surface).
+- **Post-merge (conductor):** archive chunk + plan (§4.4), reconcile `memory-backlog.md §D-post` (D4 resolved = option A; `isFactVisibleToThread` / `doWarmup` / arg-parse done), queue head → 2e thread-forget.

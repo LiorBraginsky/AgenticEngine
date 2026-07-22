@@ -44,6 +44,11 @@ export interface UpdateFactInput {
   canonical: string;
   confidence: number;
   topics: string[];
+  /** memory-fix-pass D4: when set, a REPLACE re-stamps provenance to the replacing thread.
+   *  Omitted ⇒ provenance is left UNCHANGED (protects existing callers + keeps editFactById's
+   *  provenance-immutability contract separate — see ADR-0012 §4, Lior option A: the
+   *  replaced_facts audit trail records prior TEXT only, never a provenance chain). */
+  provenance?: string;
 }
 
 export interface ReplacedFactRow {
@@ -612,28 +617,29 @@ export class MemoryStore {
       )
       .all(now) as DistilledFactRow[];
 
-    // Phase 2: in-code thread-local filter (MINOR-1).
+    // Phase 2: in-code thread-local filter (MINOR-1), via the shared predicate
+    // (memory-fix-pass: kills the drift between this and MemoryActionPort.search's fact-leg).
     // v2-04: forgotten suppression REMOVED (Ruling 1-b) — durable-delete makes it dead.
     const filtered: DistilledFactRow[] = [];
     for (const row of candidates) {
-      const scope = row.scope ?? "cross-thread";
-      if (scope === "cross-thread" || scope === "global" || scope === null) {
-        filtered.push(row);
-      } else if (scope === "thread-local") {
-        // Resolve origin threads in code (handles comma-joined provenances)
-        const origins = this.originThreadsForProvenance(row.provenance ?? "");
-        if (origins.includes(forThreadId)) {
-          filtered.push(row);
-        }
-      }
-      // Unknown scopes treated as cross-thread (defensive default)
-      else {
-        filtered.push(row);
-      }
+      if (this.isFactVisibleToThread(row, forThreadId, now)) filtered.push(row);
       if (filtered.length >= limit) break;
     }
 
     return filtered;
+  }
+
+  /** Shared fact-visibility predicate (5f + expiry) — ONE rule for readDistilledFactsForThread AND
+   *  MemoryActionPort.search (memory-fix-pass; kills the drift the chunk-05 reviewer flagged).
+   *  Visible iff not expired AND (scope cross-thread/global/unknown OR thread-local with an origin
+   *  thread == threadId). Behavior-identical to both prior inline copies. */
+  isFactVisibleToThread(row: DistilledFactRow, threadId: string, now: number): boolean {
+    if (row.expiry !== null && row.expiry <= now) return false;
+    const scope = row.scope ?? "cross-thread";
+    if (scope === "thread-local") {
+      return this.originThreadsForProvenance(row.provenance ?? "").includes(threadId);
+    }
+    return true;
   }
 
   /**
@@ -1100,9 +1106,17 @@ export class MemoryStore {
       const prior = this.db.query("SELECT fact FROM distilled_facts WHERE id = ?").get(id) as { fact: string } | null;
       if (prior === null) return false;
       this.recordReplacedFact(id, prior.fact, ctx);
-      this.db.query(
-        "UPDATE distilled_facts SET fact = ?, confidence = ?, distiller_version = ?, derived_at = ? WHERE id = ?",
-      ).run(u.fact, u.confidence, distillerVersion, Date.now(), id);
+      // memory-fix-pass D4: provenance re-stamp rides the SAME UPDATE, branched on whether
+      // the caller supplied one — omitted ⇒ unchanged (guards existing callers).
+      if (u.provenance !== undefined) {
+        this.db.query(
+          "UPDATE distilled_facts SET fact = ?, confidence = ?, distiller_version = ?, derived_at = ?, provenance = ? WHERE id = ?",
+        ).run(u.fact, u.confidence, distillerVersion, Date.now(), u.provenance, id);
+      } else {
+        this.db.query(
+          "UPDATE distilled_facts SET fact = ?, confidence = ?, distiller_version = ?, derived_at = ? WHERE id = ?",
+        ).run(u.fact, u.confidence, distillerVersion, Date.now(), id);
+      }
       this.db.query("DELETE FROM fact_fts WHERE fact_id = ?").run(id);
       this.db.query("DELETE FROM fact_topics WHERE fact_id = ?").run(id);
       // hybrid-retrieval chunk-03: the fact's text just changed — its stored vector (if

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { mkdtempSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
-import { MemoryStore, CANDIDATE_TOP_K, ALL_FACTS_CAP, toFtsOrQuery } from "./store.js";
+import { MemoryStore, CANDIDATE_TOP_K, ALL_FACTS_CAP, toFtsOrQuery, type DistilledFactRow } from "./store.js";
 import { WriteGate } from "./write-gate.js";
 import { RuleBasedScanner } from "./scanner/memory-scanner.js";
 import { REDACTION_MARKER } from "./schema.js";
@@ -688,6 +688,30 @@ test("MINOR-1: a thread-local fact with comma-joined provenance injects into its
   store.close();
 });
 
+test("isFactVisibleToThread: cross-thread/global/null visible; expired hidden; thread-local only from origin", () => {
+  const { store } = freshStore();
+  const now = Date.now();
+  const row = (over: Partial<DistilledFactRow>): DistilledFactRow => ({
+    id: "x",
+    fact: "f",
+    provenance: "thread:A",
+    scope: "cross-thread",
+    expiry: null,
+    confidence: 1,
+    authored_by: "machine",
+    ...over,
+  });
+  expect(store.isFactVisibleToThread(row({ scope: "cross-thread", provenance: "thread:A", expiry: null }), "B", now)).toBe(true);
+  // v2-04 store reads a NULL scope column back as `string` (DistilledFactRow's declared type) even
+  // though SQLite can return an actual null for that column — same runtime shape the shared
+  // predicate's own `row.scope ?? "cross-thread"` defends against (store.ts).
+  expect(store.isFactVisibleToThread(row({ scope: null as unknown as string, provenance: "thread:A", expiry: null }), "B", now)).toBe(true);
+  expect(store.isFactVisibleToThread(row({ scope: "cross-thread", provenance: "thread:A", expiry: now - 1 }), "B", now)).toBe(false);
+  expect(store.isFactVisibleToThread(row({ scope: "thread-local", provenance: "thread:A", expiry: null }), "B", now)).toBe(false);
+  expect(store.isFactVisibleToThread(row({ scope: "thread-local", provenance: "thread:A", expiry: null }), "A", now)).toBe(true);
+  store.close();
+});
+
 // ── v2-02: Task 1 — additive schema (fact_fts, fact_topics, sync trigger, thread_distill_state, replaced_facts) ──
 
 test("v2-02 schema: new tables/index/trigger created additively on a fresh store", () => {
@@ -753,6 +777,32 @@ test("v2-02 updateFactById REPLACEs the row in place (same id), refreshes fact_f
   expect(tags).toEqual(["about-user", "family"]);
   const replaced = store.readReplacedFacts(id);
   expect(replaced.some((r) => r.replaced_text === "User has 3 siblings")).toBe(true);
+  store.close();
+});
+
+test("D4 (memory-fix-pass): updateFactById WITH provenance sets it on the row", () => {
+  const { store } = freshStore();
+  const id = store.insertFact({
+    fact: "eyes are green", canonical: "eyes are green", provenance: "thread:A",
+    scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: [],
+  }, "smart-v2");
+  store.updateFactById(id, {
+    fact: "eyes are blue", canonical: "eyes are blue", confidence: 1, topics: [], provenance: "thread:B",
+  }, { actor: "machine", reason: "replace" }, "smart-v2");
+  expect(store.readFactById(id)!.provenance).toBe("thread:B");
+  store.close();
+});
+
+test("D4 (memory-fix-pass): updateFactById WITHOUT provenance leaves the prior value unchanged", () => {
+  const { store } = freshStore();
+  const id = store.insertFact({
+    fact: "eyes are green", canonical: "eyes are green", provenance: "thread:A",
+    scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: [],
+  }, "smart-v2");
+  store.updateFactById(id, {
+    fact: "eyes are blue", canonical: "eyes are blue", confidence: 1, topics: [],
+  }, { actor: "machine", reason: "replace" }, "smart-v2");
+  expect(store.readFactById(id)!.provenance).toBe("thread:A");
   store.close();
 });
 

@@ -56,14 +56,14 @@ export const MEMORY_ACTION_TOOLS = {
     kind: "write",
     description:
       "Remember a new fact about the user, or replace one already in the numbered list. " +
-      "`fact` is the note text in the user's own language. To CHANGE a fact already " +
+      "`fact` is the note text, written in the same language the user used in this turn. To CHANGE a fact already " +
       "shown this turn (the user stated a different value for it), set `replaces_ordinal` " +
       "to its number and `expected_text` to its current text (without the leading number) " +
       "— do NOT emit a near-duplicate. Omit both to add a brand-new fact.",
     input_schema: {
       type: "object",
       properties: {
-        fact: { type: "string", description: "The fact text to remember, in the user's language." },
+        fact: { type: "string", description: "The fact text to remember, in the same language the user used in this turn." },
         replaces_ordinal: { type: "integer", description: "The number of the fact this replaces, if any." },
         expected_text: { type: "string", description: "Current text of the fact being replaced, without the leading number." },
       },

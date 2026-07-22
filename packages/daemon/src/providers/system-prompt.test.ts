@@ -313,3 +313,35 @@ test("hybrid-05: composeSystemPrompt(true, true) adds the search addendum (D6c/D
   expect(p).toContain("Memory window"); // still defers out-of-view forget/edit
   expect(p.startsWith(COMPOSED_SYSTEM_PROMPT_WITH_ACTIONS)).toBe(true); // additive onto WITH_ACTIONS
 });
+
+// ── memory-fix-pass §D-post: D1-lang + D2 steering (capability-PRESENT only) ──
+
+describe("memory-fix-pass §D-post: D1-lang + D2 steering (capability-PRESENT only)", () => {
+  const present = composeSystemPrompt(true).toLowerCase();
+
+  test("D1-lang: present prompt steers language mirroring (language-agnostic)", () => {
+    expect(present).toContain("same language the user used");
+    expect(present).toContain("mirror the user's language");
+    expect(present).toContain("never switch to a different language");
+  });
+
+  test("D2: present prompt forbids unprompted cleanup (propose-then-consent)", () => {
+    expect(present).toContain("only change memory the user actually asked");
+    expect(present).toContain("do not forget or rewrite them on your own");
+    expect(present).toContain("ask whether to clean it up");
+    expect(present).toContain("act only after they agree");
+  });
+
+  test("capability-ABSENT prompt carries NEITHER steering (byte-identity guard)", () => {
+    const absent = composeSystemPrompt(false).toLowerCase();
+    expect(absent).not.toContain("same language the user used");
+    expect(absent).not.toContain("do not forget or rewrite them on your own");
+    // and the standing byte-identity test at :253 still asserts === COMPOSED_SYSTEM_PROMPT
+  });
+
+  test("names NO specific language (positioning ruling)", () => {
+    for (const w of ["ukrainian", "english", "українськ", "spanish", "german"]) {
+      expect(present).not.toContain(w);
+    }
+  });
+});

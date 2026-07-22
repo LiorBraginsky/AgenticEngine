@@ -309,13 +309,8 @@ export class MemoryActionPort {
           // injection projection would exclude. A thread-local fact surfaces ONLY in its origin thread;
           // an expired fact never surfaces. Latent today (applyFactOp hardcodes scope 'cross-thread';
           // expiry dormant) — honoring the invariant keeps a future writer / legacy row from leaking a
-          // private or stale fact cross-thread via search.
-          if (row.expiry !== null && row.expiry <= Date.now()) continue;
-          const scope = row.scope ?? "cross-thread";
-          if (scope === "thread-local" &&
-              !this.store.originThreadsForProvenance(row.provenance ?? "").includes(ctx.threadId)) {
-            continue;
-          }
+          // private or stale fact cross-thread via search. Shared predicate (memory-fix-pass).
+          if (!this.store.isFactVisibleToThread(row, ctx.threadId, Date.now())) continue;
           results.push(this.toHit("fact", "remembered fact", row.fact));
         } else {
           if (this.store.isMessageQuarantined(c.id)) continue; // §0.3 quarantine-excluded

@@ -97,6 +97,10 @@ test("hybrid-05: serializeToolResult frames search results as UNTRUSTED data wit
   expect(parsed.results).toHaveLength(1);
 });
 
+test("D1-lang: memory_remember description steers same-language storage (language-agnostic)", () => {
+  expect(MEMORY_ACTION_TOOLS.memory_remember.description.toLowerCase()).toContain("same language the user used");
+});
+
 test("hybrid-05: serializeToolResult leaves non-search results byte-unchanged", () => {
   const forget: MemoryActionResult = { ok: true, action: "forget", factId: "f1", message: "Forgotten." };
   expect(serializeToolResult(forget)).toBe(JSON.stringify(forget));

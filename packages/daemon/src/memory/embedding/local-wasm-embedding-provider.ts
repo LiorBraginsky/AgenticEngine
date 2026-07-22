@@ -65,6 +65,7 @@ export class LocalWasmEmbeddingProvider implements EmbeddingProvider {
   }
 
   private async doWarmup(): Promise<void> {
+    if (this.ready) return; // early-exit: a prior warmup already built the session (backlog §D-post)
     try {
       const tokenizerPath = join(this.modelDir, FILES.tokenizer);
       const modelPath = join(this.modelDir, FILES.model);

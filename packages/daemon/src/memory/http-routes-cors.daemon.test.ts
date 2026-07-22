@@ -21,7 +21,7 @@ function buildDeps(): { deps: MemoryHttpDeps; token: string } {
   const gate = new WriteGate(store, new RuleBasedScanner());
   const hatch = new Hatch(store, gate);
   const tokenStore = new TokenStore(dataDir);
-  return { deps: { hatch, store, tokenStore }, token: tokenStore.token() };
+  return { deps: { hatch, store, tokenStore, isThreadLive: () => false }, token: tokenStore.token() };
 }
 
 const OVERLAY_ORIGIN = "tauri://localhost";

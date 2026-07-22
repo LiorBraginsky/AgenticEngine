@@ -246,7 +246,7 @@ test("guard: GET /memory/thread/<malformed-%> → 400 bad_target_shape (not 500 
   const tokenStore = new TokenStore(dir);
   const gate = new WriteGate(store, new RuleBasedScanner());
   const hatch = new Hatch(store, gate);
-  const deps = { hatch, store, tokenStore };
+  const deps = { hatch, store, tokenStore, isThreadLive: () => false };
 
   // Hand-build a URL whose pathname contains a malformed percent-sequence.
   // The URL constructor preserves "%ZZ" as-is (it does not throw for it).

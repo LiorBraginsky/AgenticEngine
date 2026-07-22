@@ -26,10 +26,11 @@
  * token gate). This means the 5e machine-clobber guard in WriteGate will NEVER fire on
  * the HTTP path.
  *
- * 409 (refused) is reserved-but-unreachable on this human-only path. The 5e guard only
- * refuses machine ctx, which we never send from HTTP. A 409 path goes live the moment a
- * non-human HTTP actor is introduced (a later ADR); Hatch.editFact/forgetFactById signatures
- * will need to surface the boolean refusal at that point. Per plan §217-244 BINDING decision.
+ * 409 has TWO distinct conditions, differentiated by the `error` body [critic m7]:
+ *   (1) thread_live (thread-forget 2e §0.5) — the route refuses to content-erase a currently-
+ *       live conversation ({error:"thread_live"}). This is the FIRST real 409 case.
+ *   (2) a RESERVED future non-human-actor 5e refusal (never reached on today's human-only HTTP
+ *       path; HTTP_CTX is fixed human). If introduced, it carries a DIFFERENT `error` code.
  *
  * CORS seam (chunk-01, memory-transparency-ui): the exported `handleMemoryHttp` now wraps
  * `route()` (the original dispatch body, unchanged) with a narrow CORS layer so the overlay
@@ -46,11 +47,17 @@ import type { WriteContext } from "./write-gate.js";
 import { HISTORY_HTML } from "./history-page.js";
 import { isOriginAllowed } from "../origin.js";
 
+/** Hoisted (was duplicated at the fact-forget branch + handleEdit) — one module-scope regex. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export interface MemoryHttpDeps {
   hatch: Hatch;
   store: MemoryStore;
   /** Added by T2.1b. Used by T2.1c write routes for bearer-token gating. */
   tokenStore: TokenStore;
+  /** thread-forget 2e §0.5: point-in-time liveness (TOCTOU accepted). A refcount>0 means ≥1
+   *  socket has this thread adopted; erasing a live thread is refused 409. */
+  isThreadLive: (threadId: string) => boolean;
 }
 
 /**
@@ -191,7 +198,7 @@ async function handleForget(req: Request, deps: MemoryHttpDeps): Promise<Respons
   const parsed = await parseBody(req);
   if (!parsed.ok) return Response.json({ error: "bad_body" }, { status: 400 });
 
-  const { target_type, reason, fact_id } = parsed.data;
+  const { target_type, reason, fact_id, thread_id } = parsed.data;
   // reason is optional
   const reasonStr = typeof reason === "string" ? reason : undefined;
 
@@ -209,7 +216,6 @@ async function handleForget(req: Request, deps: MemoryHttpDeps): Promise<Respons
     if (target_type === "fact") {
       // FACT path — durable delete of the stable-id row, never scrubs (B1 structural invariant)
       // v2-07: fact_id REQUIRED and must be uuid-shaped; any other shape → 400 bad_body.
-      const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       if (typeof fact_id === "string" && fact_id && UUID_RE.test(fact_id)) {
         // Precise durable-delete: exactly the targeted stable-id row (never over-deletes)
         deps.hatch.forgetFactById(fact_id, HTTP_CTX, reasonStr);
@@ -218,6 +224,24 @@ async function handleForget(req: Request, deps: MemoryHttpDeps): Promise<Respons
       // fact_id absent or not uuid-shaped → 400 bad_body
       // (The text/provenance forgetFact fallback is removed — it was the over-delete root.)
       return Response.json({ error: "bad_body" }, { status: 400 });
+    } else if (target_type === "thread") {
+      // thread-forget 2e (spec §3.3): additive branch — mirrors the fact branch's UUID discipline.
+      if (typeof thread_id !== "string" || !thread_id || !UUID_RE.test(thread_id)) {
+        return Response.json({ error: "bad_body" }, { status: 400 });
+      }
+      // §0.5 live-guard: refuse to content-erase a currently-live conversation (its append/flush legs
+      // would silently re-acquire plaintext after the erase). thread_live is a DISTINCT 409 from the
+      // reserved future 5e-actor refusal — differentiated by the `error` body [critic m7].
+      if (deps.isThreadLive(thread_id)) {
+        return Response.json({ error: "thread_live" }, { status: 409 });
+      }
+      // NIT-5: the body's free-text `reason` is intentionally NOT forwarded — it would land un-erasable
+      // in mutations.reason. forgetThread persists a fixed tombstone reason; `reason` stays metadata.
+      const result = deps.hatch.forgetThread(thread_id, HTTP_CTX);
+      if (result.ok) return new Response(null, { status: 204 });               // applied AND idempotent repeat
+      if (result.reason === "not_found") return Response.json({ error: "target_not_found" }, { status: 404 });
+      // refused_machine is unreachable on the human-only HTTP path (HTTP_CTX); map defensively.
+      return Response.json({ error: "internal" }, { status: 500 });
     } else {
       // target_type:"message", missing, or any unrecognised value → 400 bad_body
       return Response.json({ error: "bad_body" }, { status: 400 });
@@ -252,7 +276,6 @@ async function handleEdit(req: Request, deps: MemoryHttpDeps): Promise<Response>
     if (typeof replacement !== "string" || replacement === "") {
       return Response.json({ error: "bad_body" }, { status: 400 });
     }
-    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     if (typeof fact_id !== "string" || !fact_id || !UUID_RE.test(fact_id)) {
       return Response.json({ error: "bad_body" }, { status: 400 });
     }

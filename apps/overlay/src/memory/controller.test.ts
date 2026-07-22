@@ -18,7 +18,7 @@ function makeEls(): MemoryControllerEls {
   return {
     listView: host(), detailView: host(),
     threadListEl: host(), messagesEl: host(), factsEl: host(), eventsEl: host(),
-    actionsEl: host(), backBtn: host(),
+    actionsEl: host(), forgetControlEl: host(), backBtn: host(),
   };
 }
 
@@ -365,4 +365,115 @@ test("chunk-04: a down/unreachable transition clears the actions panel to the ho
   f.setMode("down");
   c.onLivenessState("unreachable"); // daemon-kill transition while viewing a thread
   expect(els.actionsEl.textContent).toContain("Daemon unreachable");
+});
+
+// ─── thread-forget 2e (§3.4/3.5): the whole-conversation content-erase UI ───────────────────
+const liveFact = { id: "F1", fact: "likes blue", provenance: "thread:T1", scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine" };
+function eraseBtn(els: MemoryControllerEls): HTMLButtonElement {
+  return Array.from(els.forgetControlEl.querySelectorAll<HTMLButtonElement>(".act-forget")).find((b) => b.textContent === "Erase conversation")!;
+}
+
+test("thread-forget: live thread mounts the control; arm→confirm POSTs target_type:thread; 204 → re-fetch renders the husk banner (no content leak)", async () => {
+  let status = "active";
+  const postCalls: { url: string; init?: RequestInit }[] = [];
+  const fetchFn = (url: string, init?: RequestInit): Promise<Response> => {
+    if (init?.method === "POST") {
+      postCalls.push({ url, init });
+      status = "forgotten"; // the scrub landed → the SAME thread is a husk on the next fetch
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    const body = url.includes("/memory/thread/")
+      ? {
+          messages: [{ id: "m1", role: "user", content: status === "forgotten" ? "[forgotten]" : "my secret plan" }],
+          distilledFacts: [liveFact], distillationEvents: [],
+          thread: { thread_id: "T1", status, last_active_at: 1 },
+        }
+      : { threads: [{ thread_id: "T1", title: "One", last_active_at: 1, status }] };
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+  };
+  const els = makeEls();
+  const c = createMemoryController({ api: { fetchFn, baseUrl: "http://127.0.0.1:7777", token: "TOK" }, els });
+  c.start(); await flush();
+  els.threadListEl.querySelector<HTMLElement>(".thread-list-item")!.click(); await flush();
+
+  // Live thread: message + the "Forget conversation…" control with the REAL count.
+  expect(els.messagesEl.textContent).toContain("my secret plan");
+  const arm = els.forgetControlEl.querySelector<HTMLButtonElement>(".act-forget")!;
+  expect(arm.textContent).toBe("Forget conversation…");
+  arm.click(); // arm
+  expect(els.forgetControlEl.querySelector(".thread-forget-hint")!.textContent).toContain("(1 messages)");
+  eraseBtn(els).click(); await flush(); // confirm → POST 204 → re-fetch
+
+  expect(postCalls.length).toBe(1);
+  expect(postCalls[0]!.url).toBe("http://127.0.0.1:7777/memory/forget");
+  expect(JSON.parse(postCalls[0]!.init!.body as string)).toEqual({ target_type: "thread", thread_id: "T1" });
+
+  // Husk: banner replaces the message list, no content leak, no forget control.
+  expect(els.messagesEl.querySelector(".erased-banner")).not.toBeNull();
+  expect(els.messagesEl.textContent).toContain("You erased this conversation's content");
+  expect(els.messagesEl.textContent).not.toContain("my secret plan"); // no-content-leak (q#019 rider 1)
+  expect(els.forgetControlEl.querySelector(".act-forget")).toBeNull();
+  // Ruling-2 proof: the surviving fact STILL renders on the husk, controls live.
+  expect(els.factsEl.textContent).toContain("likes blue");
+  expect(els.factsEl.querySelector(".act-forget")).not.toBeNull();
+});
+
+test("thread-forget: an already-forgotten thread renders the banner + NO control, facts still render (Ruling-2)", async () => {
+  const fetchFn = (url: string): Promise<Response> => {
+    const body = url.includes("/memory/thread/")
+      ? {
+          messages: [{ id: "m1", role: "user", content: "[forgotten]" }],
+          distilledFacts: [liveFact], distillationEvents: [],
+          thread: { thread_id: "T1", status: "forgotten", last_active_at: 1 },
+        }
+      : { threads: [{ thread_id: "T1", title: null, last_active_at: 1, status: "forgotten" }] };
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+  };
+  const els = makeEls();
+  const c = createMemoryController({ api: { fetchFn, baseUrl: "http://127.0.0.1:7777", token: "TOK" }, els });
+  c.start(); await flush();
+  els.threadListEl.querySelector<HTMLElement>(".thread-list-item")!.click(); await flush();
+  expect(els.messagesEl.querySelector(".erased-banner")).not.toBeNull();
+  expect(els.forgetControlEl.querySelector(".act-forget")).toBeNull(); // terminal husk — no control
+  expect(els.factsEl.textContent).toContain("likes blue");            // fact survives (Ruling-2)
+});
+
+test("thread-forget: 409 → honest 'conversation is open' message; nothing erased", async () => {
+  const fetchFn = (url: string, init?: RequestInit): Promise<Response> => {
+    if (init?.method === "POST") return Promise.resolve(new Response(JSON.stringify({ error: "thread_live" }), { status: 409 }));
+    const body = url.includes("/memory/thread/")
+      ? { messages: [{ id: "m1", role: "user", content: "still here" }], distilledFacts: [], distillationEvents: [], thread: { thread_id: "T1", status: "active", last_active_at: 1 } }
+      : { threads: [{ thread_id: "T1", title: "One", last_active_at: 1, status: "active" }] };
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+  };
+  const els = makeEls();
+  const c = createMemoryController({ api: { fetchFn, baseUrl: "http://127.0.0.1:7777", token: "TOK" }, els });
+  c.start(); await flush();
+  els.threadListEl.querySelector<HTMLElement>(".thread-list-item")!.click(); await flush();
+  els.forgetControlEl.querySelector<HTMLButtonElement>(".act-forget")!.click(); // arm
+  eraseBtn(els).click(); await flush(); // confirm → POST 409
+
+  expect(els.forgetControlEl.textContent).toContain("This conversation is open"); // honest 409
+  expect(els.messagesEl.querySelector(".erased-banner")).toBeNull();  // NOT erased
+  expect(els.messagesEl.textContent).toContain("still here");         // messages intact (no fake success)
+});
+
+test("thread-forget: Cancel disarms — NO POST fired", async () => {
+  let posts = 0;
+  const fetchFn = (url: string, init?: RequestInit): Promise<Response> => {
+    if (init?.method === "POST") { posts += 1; return Promise.resolve(new Response(null, { status: 204 })); }
+    const body = url.includes("/memory/thread/")
+      ? { messages: [{ id: "m1", role: "user", content: "hi" }], distilledFacts: [], distillationEvents: [], thread: { thread_id: "T1", status: "active", last_active_at: 1 } }
+      : { threads: [{ thread_id: "T1", title: "One", last_active_at: 1, status: "active" }] };
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+  };
+  const els = makeEls();
+  const c = createMemoryController({ api: { fetchFn, baseUrl: "http://127.0.0.1:7777", token: "TOK" }, els });
+  c.start(); await flush();
+  els.threadListEl.querySelector<HTMLElement>(".thread-list-item")!.click(); await flush();
+  els.forgetControlEl.querySelector<HTMLButtonElement>(".act-forget")!.click(); // arm
+  els.forgetControlEl.querySelector<HTMLButtonElement>(".act-cancel")!.click(); // cancel
+  await flush();
+  expect(posts).toBe(0);
+  expect(els.forgetControlEl.querySelector<HTMLButtonElement>(".act-forget")!.textContent).toBe("Forget conversation…");
 });

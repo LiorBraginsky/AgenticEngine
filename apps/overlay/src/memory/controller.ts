@@ -19,8 +19,9 @@
 import type { ShellState } from "../memory-liveness.js";
 import type { MemoryApiDeps } from "./memory-api.js";
 import { fetchThreads, fetchThread } from "./memory-api.js";
-import { renderThreadList, renderMessages, renderFacts, renderEvents, renderAuditEvents, renderState } from "./render.js";
-import { forgetFact, editFact, type WriteResult } from "./memory-write.js";
+import { renderThreadList, renderMessages, renderFacts, renderEvents, renderAuditEvents, renderState, renderForgottenBanner } from "./render.js";
+import { buildForgetThreadControl } from "./actions.js";
+import { forgetFact, editFact, forgetThread, type WriteResult } from "./memory-write.js";
 
 export interface MemoryControllerEls {
   listView: HTMLElement;
@@ -30,6 +31,7 @@ export interface MemoryControllerEls {
   factsEl: HTMLElement;
   eventsEl: HTMLElement;
   actionsEl: HTMLElement; // 2c chunk-04 (D9b): render-only agent memory-action audit list
+  forgetControlEl: HTMLElement; // thread-forget 2e: the "Forget conversation…" control / 409 message
   backBtn: HTMLElement;
 }
 export interface MemoryControllerDeps {
@@ -82,19 +84,36 @@ export function createMemoryController(deps: MemoryControllerDeps): MemoryContro
     renderState(els.factsEl, "Loading…");
     renderState(els.eventsEl, "Loading…");
     renderState(els.actionsEl, "Loading…");
+    els.forgetControlEl.replaceChildren(); // no stale control/409 message during a load
     const r = await fetchThread(deps.api, threadId);
     if (gen !== loadGen) return; // stale load, invalidated by a down transition -> skip
     if (r.kind === "unauthorized") {
       renderState(els.messagesEl, LOCKED); renderState(els.factsEl, LOCKED);
       renderState(els.eventsEl, LOCKED); renderState(els.actionsEl, LOCKED);
+      els.forgetControlEl.replaceChildren();
       return;
     }
     if (r.kind === "unreachable") {
       renderState(els.messagesEl, DOWN); renderState(els.factsEl, DOWN);
       renderState(els.eventsEl, DOWN); renderState(els.actionsEl, DOWN);
+      els.forgetControlEl.replaceChildren();
       return;
     }
-    renderMessages(els.messagesEl, r.data.messages ?? []);
+    // thread-forget 2e §3.5: an erased husk (status='forgotten') renders the honest banner in
+    // place of the message list and offers NO forget control (terminal state) — but the facts
+    // section still renders (surviving facts = the visible Ruling-2 proof). A live/dismissed
+    // thread renders its messages + the destructive "Forget conversation…" control.
+    const forgotten = r.data.thread?.status === "forgotten";
+    if (forgotten) {
+      renderForgottenBanner(els.messagesEl);
+      els.forgetControlEl.replaceChildren();
+    } else {
+      renderMessages(els.messagesEl, r.data.messages ?? []);
+      // N = the REAL message count at render time (payload in scope here, not controller state [critic m6]).
+      els.forgetControlEl.replaceChildren(
+        buildForgetThreadControl(r.data.messages?.length ?? 0, () => void forgetThreadAction(threadId)),
+      );
+    }
     renderFacts(els.factsEl, r.data.distilledFacts ?? [], openThread, {
       onForget: (factId) => void forgetAction(factId),
       onEditFact: (factId, newText) => void editFactAction(factId, newText), // chunk-05
@@ -132,6 +151,7 @@ export function createMemoryController(deps: MemoryControllerDeps): MemoryContro
       renderState(els.factsEl, msg);
       renderState(els.eventsEl, msg);
       renderState(els.actionsEl, msg);
+      els.forgetControlEl.replaceChildren(); // don't leave a destructive control over a down/locked view
     } else {
       renderState(els.threadListEl, msg, "li");
     }
@@ -146,7 +166,16 @@ export function createMemoryController(deps: MemoryControllerDeps): MemoryContro
       case "unauthorized":  applyDownState("unauthorized"); return; // 🔒 LOCKED
       case "unreachable":   applyDownState("unreachable"); return;  // DOWN — no fake success
       case "bad_request":   renderActionError(); return;            // client contract bug (unexpected)
+      case "thread_live":   renderThreadLiveMessage(); return;      // thread-forget 2e §0.5 — open convo
     }
+  }
+
+  /** thread-forget 2e §0.5: the honest 409 render — the conversation is open, so it can't be
+   *  erased yet (a scrub would re-acquire plaintext on the next turn/flush). Localized to the
+   *  forget-control area (never wipes the facts section the way applyDownState does); a nav or
+   *  a liveness recovery re-fetch restores the arm control. */
+  function renderThreadLiveMessage(): void {
+    renderState(els.forgetControlEl, "This conversation is open — close it and try again.", "div");
   }
 
   /** Honest inline error for a 400 (should not happen with correct bodies) — never fake success. */
@@ -157,6 +186,7 @@ export function createMemoryController(deps: MemoryControllerDeps): MemoryContro
       renderState(els.factsEl, msg);
       renderState(els.eventsEl, msg);
       renderState(els.actionsEl, msg);
+      els.forgetControlEl.replaceChildren();
     } else {
       renderState(els.threadListEl, msg, "li");
     }
@@ -164,6 +194,14 @@ export function createMemoryController(deps: MemoryControllerDeps): MemoryContro
 
   async function forgetAction(factId: string): Promise<void> {
     handleWriteResult(await forgetFact(deps.api, factId));
+  }
+
+  // thread-forget 2e (§3.4): erase a whole conversation's content. On `ok` the house pattern's
+  // refreshCurrentView() re-fetches → the same thread now returns status='forgotten' → the husk
+  // banner render appears (no optimistic mutation). 409 → the honest "conversation is open"
+  // message (§0.5); down/locked → the existing honest states (never a fake "erased").
+  async function forgetThreadAction(threadId: string): Promise<void> {
+    handleWriteResult(await forgetThread(deps.api, threadId));
   }
 
   // chunk-05 (FACT-EDIT): NO session set for the badge — data-driven. On `ok`, refreshCurrentView()

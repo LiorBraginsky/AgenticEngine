@@ -4,7 +4,7 @@
  * callback, and the expiry/confidence "shown only when non-default" rule.
  */
 import { test, expect } from "bun:test";
-import { renderFacts, renderEvents, renderAuditEvents, renderThreadList, renderMessages } from "./render.js";
+import { renderFacts, renderEvents, renderAuditEvents, renderThreadList, renderMessages, renderForgottenBanner } from "./render.js";
 import type { DistilledFactView, DistillationEventView, MemoryActionEventView, ThreadSummary } from "./types.js";
 
 function host(): HTMLElement { const d = document.createElement("div"); document.body.appendChild(d); return d; }
@@ -111,6 +111,24 @@ test("renderFacts: persistent 'yours' badge iff authored_by==='human' (data-driv
   const factTextEl = rows[0]!.children[0] as HTMLElement;
   expect(badge!.parentElement).toBe(factTextEl);
   expect(badge!.parentElement).not.toBe(rows[0]);
+});
+
+// thread-forget 2e (§3.5): the erased-husk banner.
+test("renderForgottenBanner: renders the neutral erased banner, no content-derived string", () => {
+  const el = host();
+  renderForgottenBanner(el);
+  const banner = el.querySelector(".erased-banner")!;
+  expect(banner).not.toBeNull();
+  expect(banner.textContent).toBe("You erased this conversation's content. Distilled facts remain.");
+});
+
+test("renderForgottenBanner: replaces prior content (message list → banner), no leak of prior text", () => {
+  const el = host();
+  renderMessages(el, [{ id: "m1", role: "user", content: "my secret plaintext" }]); // pre-erase render
+  expect(el.textContent).toContain("my secret plaintext");
+  renderForgottenBanner(el); // erase → banner replaces the message list
+  expect(el.textContent).not.toContain("my secret plaintext"); // no-content-leak (q#019 rider 1)
+  expect(el.querySelector(".message-row")).toBeNull();
 });
 
 // chunk-04 (2c D9b): render-only agent memory-action audit trail.

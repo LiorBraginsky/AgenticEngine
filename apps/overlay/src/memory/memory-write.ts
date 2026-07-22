@@ -22,6 +22,7 @@ export type WriteResult =
   | { kind: "unauthorized" }  // 401 — token rejected (locked)
   | { kind: "stale" }         // 404 target_not_found — target gone; a refresh reconciles the view
   | { kind: "bad_request" }   // 400 bad_body / bad_target_shape — client contract bug; never fake success
+  | { kind: "thread_live" }   // 409 thread_live — thread-forget 2e §0.5: the conversation is open
   | { kind: "unreachable" };  // 5xx / network error / timeout — daemon down
 
 async function post(deps: MemoryApiDeps, path: string, body: unknown): Promise<WriteResult> {
@@ -41,6 +42,7 @@ async function post(deps: MemoryApiDeps, path: string, body: unknown): Promise<W
     if (res.status === 401) return { kind: "unauthorized" };
     if (res.status === 404) return { kind: "stale" };
     if (res.status === 400) return { kind: "bad_request" };
+    if (res.status === 409) return { kind: "thread_live" }; // thread-forget 2e §0.5 (fact ops never 409)
     return { kind: "unreachable" }; // 5xx or any other unexpected status
   } catch {
     return { kind: "unreachable" }; // network failure / abort
@@ -60,4 +62,13 @@ export function forgetFact(deps: MemoryApiDeps, factId: string): Promise<WriteRe
  *  and stamps authored_by:"human" server-side (5e-protected). A 404 → the fact is gone (stale). */
 export function editFact(deps: MemoryApiDeps, factId: string, replacement: string): Promise<WriteResult> {
   return post(deps, "/memory/edit", { target_type: "fact", fact_id: factId, replacement, reason: "hatch-fact-edit" });
+}
+
+/** Forget a whole conversation's CONTENT (thread-forget 2e, spec §3.3). Scrubs every message
+ *  (content + vectors + FTS + mirror) but — per ADR-0012 rider Ruling 2 — leaves every distilled
+ *  fact untouched. Keys on the thread's uuid (target_type:"thread" + thread_id). The daemon returns
+ *  204 (applied AND idempotent re-erase), 409 thread_live (§0.5 — the conversation is open), or
+ *  404 (unknown thread). NO `reason` sent: the route intentionally drops body free-text (NIT-5). */
+export function forgetThread(deps: MemoryApiDeps, threadId: string): Promise<WriteResult> {
+  return post(deps, "/memory/forget", { target_type: "thread", thread_id: threadId });
 }

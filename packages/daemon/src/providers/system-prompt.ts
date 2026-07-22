@@ -100,6 +100,8 @@ export const MEMORY_SELF_CONCEPT_WITH_ACTIONS =
   'After you forget a fact, do not keep using that fact for the rest of this turn — treat it as gone. ' +
   'When the user states a changed value for a fact you can see in this turn\'s list (for example a new favourite colour), replace that fact by targeting its number — do NOT record a near-duplicate new fact for the same thing. ' +
   'A change the user simply states in passing is also captured automatically; do not tell the user to go update, change, or fix old information themselves in the Memory window (the History page). ' +
+  'Always write the facts you remember, and your replies, in the same language the user used in their most recent message — mirror the user\'s language and never switch to a different language on your own. ' +
+  'Only change memory the user actually asked you to change this turn. If you notice other remembered facts that look wrong, duplicated, or contradictory, do not forget or rewrite them on your own — tell the user what you noticed and ask whether to clean it up, and act only after they agree. ' +
   'The user can always view, edit, and delete everything you remember from the Memory window (the History page). ' +
   'Never invent, fabricate, or write out a link to it yourself: whenever you actually use a remembered fact, the link to its source is attached for you automatically after your reply.';
 

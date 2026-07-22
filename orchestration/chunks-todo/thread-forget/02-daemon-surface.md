@@ -95,3 +95,20 @@ Runtime-coupling notes: spec §4 items 3/4/6/7.
 
 - Increment-site precision for the registry (which exact lines in the `session_start` handling)
   is architect-time (spec §7); the structure + decrement-on-close are spec-frozen.
+- **[carried from chunk-01 review 2026-07-22 — hard-reviewer MINOR-2, DORMANT]** `WriteGate.edit`
+  is message-id-keyed and has NO status check, so calling it on a tombstoned message of a
+  `status='forgotten'` thread re-introduces plaintext into `mutations.replacement_content` AND
+  appends a plaintext `edit` line to the just-scrubbed mirror (probe-proven; every DB *read* still
+  returns `[forgotten]`, so nothing resurfaces to a reader/`memory_search` until a re-erase
+  recovers it). Reachability today = NONE (`WriteGate.edit` lost its last production caller at the
+  2d message-edit removal). The chunk-02 live-guard (§0.5) and §3.3a adoption exclusion are
+  thread-adoption-keyed and do NOT close this message-id-keyed write path. **Cheap structural close
+  (mirror of §3.3a), consider folding into this chunk's guard family:** `edit()` no-ops (or refuses)
+  on a message whose thread is `status='forgotten'`. At minimum leave a one-line residual so a
+  future `edit` caller can't silently reopen the breach class §3.3a closes for `appendTurn`.
+- **[carried from chunk-01 review 2026-07-22 — hard-reviewer NIT-5]** `mutations.reason` is OUTSIDE
+  the erase matrix (tombstone/correction `reason` survives un-scrubbed). Today all callers pass
+  constants, so it's moot — but THIS chunk adds the HTTP body's optional free-text `reason`
+  (`{target_type:"thread", thread_id, reason?}`). If a user ever types content-quoting text there,
+  it lands unerasable in the tombstone `reason` column. Decide in this chunk: scrub `reason` in the
+  thread-forget path, or sanitize/document that `reason` is metadata-not-content.

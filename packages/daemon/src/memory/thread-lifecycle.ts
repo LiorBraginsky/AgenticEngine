@@ -69,7 +69,13 @@ export class ThreadLifecycle {
 
   async beginTurn(inbound: SessionStart): Promise<{ threadId: string; priorMessages: SessionMessage[]; injectedFactIds: string[] }> {
     const requested = inbound.thread_id;
-    if (requested && this.store.threadExists(requested)) {
+    // thread-forget 2e §3.3a: a status='forgotten' thread id is terminal — NOT adoptable and NOT
+    // reusable. Treat it as UNKNOWN (fall through to mint) AND never pass it as adoptId (that
+    // createThread INSERT would collide with the surviving husk PK). Both the known-thread and
+    // adoptId branches gain the exclusion (spec §4 item 7). One PK read serves both.
+    const requestedMeta = requested ? this.store.readThreadMeta(requested) : null;
+    const requestedForgotten = requestedMeta?.status === "forgotten";
+    if (requested && requestedMeta && !requestedForgotten) {
       // v2-08 fix A: a known-thread turn ALSO re-injects the cross-thread distilled
       // slice (the [remembered] facts) BEFORE the thread's own tail, so a follow-up
       // turn (turn 2+) keeps cross-thread memory. New-thread branch is unchanged.
@@ -88,7 +94,7 @@ export class ThreadLifecycle {
     // session_ack carries no thread_id) and the daemon agree on the durable id
     // without any wire change. Non-UUID garbage is NOT adopted → fresh mint
     // (gotcha #9: no garbage durable keys). Single write path through createThread.
-    const adoptId = requested && isUuidShaped(requested) ? requested : undefined;
+    const adoptId = requested && isUuidShaped(requested) && !requestedForgotten ? requested : undefined;
     const newThreadId = this.store.createThread(undefined, adoptId);
     // v2-06 FIX-A: on the new-thread FIRST turn, await whenIdle() before retrieve()
     // so retrieve always reads facts committed by the most-recently-started distill run.

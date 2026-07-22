@@ -42,3 +42,31 @@ test("A: loadThreadList has an explicit 401 -> locked branch (not 'No threads')"
   expect(HISTORY_HTML).toContain("r.status === 401");
   expect(HISTORY_HTML).toContain("renderLocked");
 });
+
+// ── thread-forget (2e) chunk-02 Task 3: history.html fallback ────────────────
+
+test("HISTORY_HTML pins the FROZEN §0.2 confirm copy template (q#019 rider 3)", () => {
+  expect(HISTORY_HTML).toContain(`"Erase this conversation's content (" + messageCount + " messages)? Distilled facts remain. Cannot be undone."`);
+});
+
+test("HISTORY_HTML sends target_type:'thread' and renders an honest 409 line", () => {
+  expect(HISTORY_HTML).toContain(`target_type: "thread"`);
+  expect(HISTORY_HTML).toContain("This conversation is open — close it first.");
+});
+
+// ── thread-forget (2e) chunk-02 review fix pass: NIT-1 (null-thread guard) ──
+
+test("renderThreadControls renders NOTHING (no control, no banner) for a nonexistent thread — NIT-1", () => {
+  // hatch.view returns thread:null when the id resolves to no thread. Before the fix, the
+  // `thread && thread.status === "forgotten"` check short-circuited to false on null and fell
+  // through to the LIVE branch, rendering a destructive "Forget conversation" button (with a
+  // nonsensical "(0 messages)" hint) for a thread that does not exist. Pin the explicit early
+  // return that makes null a THIRD, do-nothing case (distinct from both "forgotten" and "live").
+  const body = HISTORY_HTML.match(/function renderThreadControls\(thread, threadId, messageCount\) \{([\s\S]*?)\n    \}/);
+  expect(body).not.toBeNull();
+  const guardIndex = body![1]!.indexOf("if (!thread) return;");
+  const forgottenBranchIndex = body![1]!.indexOf('thread.status === "forgotten"');
+  expect(guardIndex).toBeGreaterThan(-1);
+  expect(forgottenBranchIndex).toBeGreaterThan(-1);
+  expect(guardIndex).toBeLessThan(forgottenBranchIndex); // the null guard runs BEFORE the forgotten check
+});

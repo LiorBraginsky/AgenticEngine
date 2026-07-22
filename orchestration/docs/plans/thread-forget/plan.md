@@ -1,483 +1,696 @@
-# Thread-forget (2e) — Chunk 01: Ruling-2 reconciliation + `forgetThread` primitive — Implementation Plan
+# Thread-forget (2e) — Chunk 02: the daemon surface (HTTP intent-dispatch, live-guard, adoption exclusion, history.html) — Implementation Plan
 
-## Status: In progress (Phase 2 — implementation)
+> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax. Per repo `CLAUDE.md`: branch `chunk/02-daemon-surface`, commit per task with the `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>` trailer, PR to `main`, auto-merge only on the all-green gate set.
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Per repo `CLAUDE.md`: work happens on the ALREADY-CREATED branch `chunk/01-forget-thread-primitive` (do NOT create a new branch), commit per task with the `Co-Authored-By: Claude Opus 4.8 (1M context)` trailer, PR to `main`, auto-merge only on the all-green gate set.
+**Goal:** Wire the daemon surface of thread-forget onto the chunk-01 primitive: an additive `target_type:"thread"` branch on `POST /memory/forget` (404/400/409/204 taxonomy), the `Hatch.forgetThread` façade + `hatch.view` thread-meta widening, an `isThreadLive` refcount registry in `index.ts` (the §0.5 live-guard), the §3.3a erased-id adoption exclusion, and the history.html fallback (button + arm→confirm + banner + honest 409 line) — plus close the two chunk-01 review residuals (edit-guard MINOR-2, reason NIT-5) structurally.
 
-**Goal:** Land the daemon store+gate layer of thread-forget: reconcile the per-message `WriteGate.forget` to ADR-0012 Ruling 2 (source erasure never sweeps facts) and add `WriteGate.forgetThread` — a single atomic transaction that content-erases a whole conversation while every derived fact lives on byte-identical.
+**Architecture:** Daemon-only. The guard rides HTTP `MemoryHttpDeps` (daemon-internal), **not** the WS wire — `@agentic/protocol` and the mock reducer stay byte-unchanged. `WriteGate.forgetThread` / `redactMirrorThread` already exist on `main` (chunk-01, PR #110); this chunk adds callers + guards on top. Ruling 2 (no fact-side touches) is inherited structurally from chunk-01 and re-verified by the executed probe.
 
-**Architecture:** Pure daemon work under `packages/daemon/src/memory/`. No HTTP, no Hatch façade, no UI, no lifecycle surface (those are chunks 02/03). The primitive must land fully tested before any caller exists. Ruling-2 safety is *structural* (by-construction absence of fact-table references), not review vigilance — the same posture ADR-0015 B1 used.
+**Tech Stack:** TypeScript on Bun, `bun:sqlite` (synchronous single-writer, no nested transactions), `Bun.serve` WS + HTTP on `127.0.0.1:7777`, `bun test`, per-thread JSONL mirror files, a served `history.html` string (no framework/build step).
 
-**Tech Stack:** TypeScript on Bun, `bun:sqlite` (synchronous single-writer, no nested transactions), `bun test`, per-thread JSONL mirror files.
+## Global Constraints (verbatim from spec + chunk — apply to every task)
 
-## Global Constraints (verbatim from spec + chunk, apply to every task)
-
-- **ADR-0012 rider Ruling 2 (BINDING):** erasing source content (a message, or a whole thread) MUST NOT sweep facts derived from it. Facts change/die ONLY via manual edit / prompted edit / explicit fact-forget.
-- **STRUCTURAL Ruling-2 rule:** `forgetThread` contains **zero references** to `distilled_facts`, `forgotten_facts`, `fact_fts`, `fact_topics`, `fact_embeddings`. Enforced by construction, pinned behaviorally.
-- **ATOMIC-ERASE INVARIANT (q#019 rider 2):** all DB scrub writes commit as ONE `db.transaction` — no partial-erase state is ever observable DB-side. The mirror pass is the sole post-tx step.
-- **DB-first ordering:** DB tx commits, THEN the mirror rewrite + audit line (mirror I/O cannot join the sqlite tx; the crash window is a documented accepted state — do NOT build a reconcile).
-- **NO `bumpThreadMarker`** in `forgetThread` (deliberate asymmetry, §3.1 [critic m5]). The per-message `forget` KEEPS its `bumpThreadMarker` call.
-- **`REDACTION_MARKER`** = `"[forgotten]"`, exported from `packages/daemon/src/memory/schema.ts:36`, re-exported from `write-gate.ts:8`.
-- **Verification model (§5):** real SQLite + real daemon path. Permitted stubs ONLY = LLM `clientFactory` + `EmbeddingProvider` fixtures. No mocked store internals (fault-injection spies for atomicity are the one allowed seam — spec §5 "inject a throwing statement").
-- **Frozen surfaces byte-unchanged:** `@agentic/protocol` + the mock reducer — this chunk touches neither (`git diff --stat` must show no changes outside `packages/daemon/src/memory/`).
-- **DoD grep:** `grep -rn dropDistilledFacts packages/ apps/` → zero non-comment hits.
+- **ADR-0012 rider Ruling 2 (BINDING):** thread-forget MUST NOT touch any fact artifact. This chunk adds no fact-table reference anywhere; the probe re-proves facts survive byte-identical.
+- **Frozen surfaces byte-unchanged:** `@agentic/protocol` + the mock reducer. `git diff --stat` must show **no** changes under `packages/protocol/` or the mock provider/reducer. The guard is HTTP-deps only (spec chunk `## Scope` Out).
+- **ADR-0013:** thread-forget is a Bearer-gated write on `POST /memory/forget`; `HTTP_CTX = {actor:"user", authored_by:"human"}` is fixed server-side (`http-routes.ts:61`). The body widening is additive (no frozen wire).
+- **ADR-0015 intent-dispatch:** reuse the existing `target_type` discriminator; mirror the fact branch's UUID discipline (`http-routes.ts:212`).
+- **ADR-0014 adoption semantics:** untouched except the §3.3a `'forgotten'` exclusion.
+- **`REDACTION_MARKER`** = `"[forgotten]"` (`schema.ts:36`, re-exported `write-gate.ts:8`).
+- **`status='forgotten'`** is a THIRD `listThreads` value (today `active|dismissed`) — additive; every render must tolerate it (§4 item 3).
+- **`isThreadLive` fail-closed:** a refcount leak = a permanently-unerasable thread (annoying, not unsafe). Test the DECREMENT.
+- **Point-in-time liveness (TOCTOU accepted, stated):** no lock (§0.5).
+- **Verification model (§5):** real SQLite + real daemon path. Permitted stubs ONLY = LLM `clientFactory` + `EmbeddingProvider` fixtures (and a minimal injected `AgentProvider` chat stub for the WS live-guard test — the same seam the demo harness uses). No mocked store internals.
+- **Behavioral DoD** (history.html arm→confirm→erase; banner; 409 line) is **"requires runtime proof (the EXECUTED probe stdout)"** — never "verified" from code-reading (PIPELINE §6.1). The full user-facing §6.1 sign-off is chunk-03, not this chunk.
 
 ---
 
 ## Reality check
 
-**Verification method:** every anchor below was resolved against `main @ 951ded9` via Read/Grep. The spec's anchors were "verified @ 6785b35" and are hypotheses; the table below is authoritative. **All spec line anchors are accurate — no numeric drift.** But the spec's *test enumeration* is materially incomplete (see the DRIFT block — this is the one finding a worker must be handed explicitly).
+**Verification method:** every anchor was resolved against `main @ 5149995` (HEAD; chunk-01 PR #110 merged) via Read/Grep. The spec's anchors were verified `@ 6785b35` and are hypotheses; this table is authoritative.
 
-**Code-reading disclaimer (PIPELINE §6.1):** everything below is a static-source fact ("this code path exists"). None of it is a runtime/behavioral confirmation. The behavioral DoD (facts actually survive end-to-end; erased content truly unsearchable) requires the chunk-03 live demo to confirm — this chunk's `bun test` green is necessary evidence, not the behavioral sign-off.
+**Code-reading disclaimer (PIPELINE §6.1):** everything below is a static-source fact ("this code path exists"). None is a runtime confirmation. The behavioral DoD (history.html erase works end-to-end; erased content truly unsearchable) **requires the EXECUTED probe stdout** (Task 3) and the chunk-03 live demo — `bun test` green is necessary evidence, not the behavioral sign-off.
 
-| Spec anchor | Verified location @ 951ded9 | Status |
+| Anchor (task/spec) | Verified location @ 5149995 | Status |
 |---|---|---|
-| `WriteGate.forget` per-message method | `write-gate.ts:71-116` | ✓ |
-| The two fact-sweep calls (:111-112) | `write-gate.ts:111-112` (`dropDistilledFactsByProvenance` / `dropDistilledFactsForThread`) | ✓ exact |
-| The trap comment (:104-110) | `write-gate.ts:104-110` | ✓ exact |
-| Tombstone-insert shape (:81-82) | `write-gate.ts:80-82` (INSERT INTO mutations … 'tombstone' … replacement_content NULL) | ✓ |
-| Tx-less `deleteMessageDerived` call (:84-90) | `write-gate.ts:90`, comment `84-89` | ✓ |
-| DB-first-then-mirror ordering (:92-102) | `write-gate.ts:92-102` | ✓ |
-| `editFact` machine-refusal stance (:222) | `write-gate.ts:222` (`if (ctx.authored_by === "machine") return false;`) | ✓ exact |
-| 5e machine-only guard (:76) | `write-gate.ts:76` | ✓ exact |
-| `edit` mirror line carrying `replacement` (:257) | `write-gate.ts:257` (`mirrorEvent(… {event:"edit", …, replacement, …})`) | ✓ exact |
-| `dropDistilledFacts*` in store (:786-797) | `store.ts:786-789` + `791-797` | ✓ exact |
-| `deleteMessageDerived` (:1644-1647) | `store.ts:1644-1647` (no own tx, by design) | ✓ exact |
-| `redactMirrorMessage` read-parse-rewrite (:1041-1059) | `store.ts:1041-1059` | ✓ exact |
-| missing-file no-op (:1043) | `store.ts:1043` | ✓ |
-| unparseable-line preservation (:1050-1051) | `store.ts:1050-1051` | ✓ |
-| `readNewTailSince` (:1518-1522) | `store.ts:1498` (method), map at `1518-1522` | ✓ |
-| drain pending-scan exclusion (:1594-1603) | `store.ts:1594-1603` (`pendingMessageEmbeddings`: content ≠ marker AND no tombstone) | ✓ exact |
-| in-tx re-check `upsertMessageEmbedding` (:1624-1639) | `store.ts:1624-1639` (skips absent/scrubbed/tombstoned) | ✓ exact |
-| COALESCE correction read (:951-957) | `store.ts:951-957` (`readArchiveMessagesByIds`); same COALESCE also `1503-1510` (`readNewTailSince`) | ✓ exact |
-| `mutations.replacement_content` column | `schema.ts:64` | ✓ exact |
-| `memory_action_events` shape w/ `fact_text` (:166-175) | `schema.ts:166-175` (`thread_id`:168, `action`:169, `outcome`:170, `fact_text`:171) | ✓ exact |
-| smart-distiller no-op filter (:524-542) | `providers/smart-distiller-provider.ts:524-542` (filter marker/quarantine → `tail.length===0` → early return, NO LLM call) | ✓ (path is `providers/`, not root — minor path drift) |
-| dumb-tail filter (:44-54) | `providers/dumb-tail-provider.ts:44-54` | ✓ (path is `providers/`) |
+| `WriteGate.forgetThread` (chunk-01 shipped) | `write-gate.ts:126-164` | ✓ exists |
+| `WriteGate.forget` per-message tombstone INSERT shape | `write-gate.ts:90-92` | ✓ |
+| `WriteGate.edit` (MINOR-2 target — message-id-keyed, NO status check) | `write-gate.ts:286-309`; `threadOf` at `:291`; 5e guard `:295` | ✓ exact |
+| `forgetThread` tombstone INSERT threads `reason` (NIT-5 target) | `write-gate.ts:139-143` (`reason` bound at `:143`) | ✓ exact |
+| `editFact` machine-refusal stance | `write-gate.ts:269` (`if (ctx.authored_by === "machine") return false;`) | ⚠ **drift** — spec/chunk-01 cited `:222`; the stance moved to `:269` (behavior intact) |
+| `Hatch` class + `HatchViewResult` + `view()` | `hatch.ts:42-46`, iface `:31-40`, `view` `:56-68` | ✓ (no `forgetThread` façade yet — to add) |
+| `MemoryHttpDeps` interface | `http-routes.ts:49-54` (`hatch, store, tokenStore`) | ✓ (no `isThreadLive` — to add) |
+| `handleForget` (fact branch + UUID discipline) | `http-routes.ts:184-228`; `UUID_RE` `:212`; also `:255` (handleEdit) | ✓ (dup regex — hoist) |
+| Header comment reserving 409 | `http-routes.ts:29-32` | ✓ exact (to update per critic m7) |
+| `HTTP_CTX` fixed human ctx | `http-routes.ts:61` | ✓ exact |
+| Token gate returns 401 (not 403) | `http-routes.ts:186-188` | ✓ (test header comment saying "403" is stale; code is 401) |
+| `index.ts` session_start increment site | `index.ts:204-210` (`touchedThreadIds.add` at `:210`) | ✓ exact |
+| `index.ts` `close(ws)` handler | `index.ts:304-342`; flush loop `:307-319`; dismiss block `:321-341` | ✓ exact |
+| `index.ts` `endTurn` + `sessions.delete` | `index.ts:294` / `:295` | ✓ exact |
+| `index.ts` `memoryDeps` construction | `index.ts:123` (`{ hatch, store, tokenStore }`) | ✓ exact |
+| `index.ts` module-level mutable state precedent | `const sessions` `index.ts:31` | ✓ (the `liveThreads` map sits alongside) |
+| `SocketData.touchedThreadIds` | `index.ts:39` | ✓ |
+| `ThreadLifecycle.beginTurn` known-thread + mint branches | `thread-lifecycle.ts:70-122`; known `:72-84`; `adoptId`/`createThread` `:91-92` | ✓ exact |
+| `beginTurn` never flips status on re-adoption | `thread-lifecycle.ts:72-84` | ✓ |
+| `store.createThread(title?, adoptId?)` (PK collision if adoptId reused) | `store.ts:245-255` | ✓ exact |
+| `store.threadExists` / `listThreads` / `readThreadArchive` | `store.ts:257` / `:1002-1006` (returns `status`) / `:893-918` | ✓ (`listThreads` already selects `status`) |
+| `store.readThreadMeta` (to add — single-thread status reader) | **absent** (grep clean) | ✓ no collision |
+| `store.redactMirrorThread` (chunk-01 shipped) | `store.ts:1054-1071` | ✓ exists |
+| `threads` columns / `status` default + comment | `schema.ts:39-45` (`status` `:43`, comment already lists `'forgotten'`) | ✓ (chunk-01 updated comment) |
+| `memory_action_events` columns | `schema.ts:166-175` | ✓ |
+| history.html fact-forget arm→confirm (`doForget`) | `history-page.ts:447-514` | ✓ exact |
+| history.html 5s auto-reset | `history-page.ts:485` (`setTimeout(resetForget, 5000)`); arm block `:455-485` | ⚠ **drift** — spec cited `:457-466`; the 5s timer is at `:485` |
+| history.html title→id fallback | `history-page.ts:288` (`t.title || t.thread_id`) | ✓ exact |
+| history.html `doForget` generic error branch (raw "Error: N") | `history-page.ts:508-511` (`setStatus("Error: " + r.status …)` `:509`) | ✓ exact (critic m8 target) |
+| history.html detail-view panels (Messages/Facts/Events) | `history-page.ts:177-194`; `loadThread` `:307-322` | ✓ |
+| `forget-roundtrip-probe.ts` (probe template) | `packages/daemon/scripts/forget-roundtrip-probe.ts` | ✓ exact template |
+| Direct-deps `MemoryHttpDeps` construction sites (break on required new field) | `http-routes-cors.daemon.test.ts:24` (`buildDeps`); `http-routes.daemon.test.ts:249` | ✓ both must add `isThreadLive` |
+| `thread-lifecycle.test.ts` `fresh()` seam | `thread-lifecycle.test.ts:15-19` (constructs store+lifecycle, plain-object session_start) | ✓ |
+| `SessionStart` envelope shape (`thread_id?` optional) | `packages/protocol/src/envelope.ts:27-39` | ✓ (additive optional — no wire change) |
 
-**Supporting facts confirmed by reading:**
-- `mirrorEvent(threadId, payload: Record<string, unknown>)` at `store.ts:1028`; private `mirror` appends `JSON.stringify(payload)+"\n"` at `store.ts:1721`. Message lines carry `content` (`store.ts:279`), `edit` lines carry `replacement` (`write-gate.ts:257`).
-- Thread status write path: dismiss uses a raw `UPDATE threads SET status = 'dismissed'` at `consolidation-hook.ts:43`. **There is NO dedicated store method for status** — `forgetThread` does the same raw `UPDATE threads SET status='forgotten', title=NULL` inside its tx. `schema.ts:43` comment still reads `-- 'active' | 'dismissed'`; `'forgotten'` is an additive TEXT value (no schema change) — update that comment.
-- `threadExists(threadId)` exists at `store.ts:257` — use it for the not-found guard.
-- `bumpThreadMarker` exists at `store.ts:1449` (do NOT call it from `forgetThread`).
-- `insertFact(...)` at `store.ts:1073` writes `distilled_facts` + `fact_fts` + `fact_topics` in one tx (via `writeFactDerived`, `store.ts:1566`); `upsertFactEmbedding` at `store.ts:1608`. Use these to seed the headline test so fts/topics/embeddings counts are meaningful.
-- No existing `forgetThread` / `redactMirrorThread` symbol anywhere (grep clean) — no collision.
-- Cross-thread injection is provable at store level via `ThreadLifecycle.beginTurn(...)` → `priorMessages` carrying `[remembered] …` (pattern at `distiller-integration.daemon.test.ts:219-222`) or `DumbTailProvider.retrieve(store, newThreadId)`.
-- `assertDerivedInSync` + `deleteFactById` sync-gate test already exists (`store.test.ts:1030-1035`); `deleteFactById` orphan-embeddings test exists (`embedding-storage.test.ts:118-122`). So the fact-side delete→derived-sync invariant is already covered independently of the `drop*` methods — the `drop*` tests are safe to delete.
+**Behavioral DoD status:** `requires runtime proof (the EXECUTED probe)` — NOT verified. (PIPELINE §6.1.)
 
-### ⚠️ DRIFT — spec/chunk test enumeration is INCOMPLETE (handed to the worker)
-
-The chunk file (§3.2) enumerates only `write-gate.test.ts:64,80`, `store.test.ts:80,91,1037,1045`, `embedding-storage.test.ts:125,136`. Grep found **four additional behavioral tests that pin the forbidden fact-sweep** and will go RED the instant the sweep is removed — none are listed in the chunk:
-
-1. `distiller-integration.daemon.test.ts:137` — `"forget-survives-re-derive: tombstoned fact absent from rebuilt slice and retrieve()"` — asserts fact purged (`:157`, `:162`) and retrieve-slice empty (`:166`).
-2. `distiller-integration.daemon.test.ts:173` — `"forget-purges-live-slice … (S2 no-window)"` — asserts `readDistilledFacts.length === 0` (`:194`).
-3. `distiller-integration.daemon.test.ts:490` — `"smart forget-survives-re-derive (D12) …"` — asserts fact absent (`:513`, `:522`); comment `:506-509` explicitly relies on `dropDistilledFactsForThread`.
-4. `hatch.daemon.test.ts:187` — `"T1.2(d) regression: WriteGate.forget(messageId) still tombstones and purges …"` — asserts fact absent (`:201`); the tombstone/scrub assertions (`:203-204`) stay valid.
-
-**This is NOT a design fork** — these tests pin behavior Ruling 2 now forbids, so they reconcile the exact same way the two enumerated `write-gate` tests do (flip to "facts survive"). It IS under-enumeration in the frozen chunk, so it is folded into Step 1 below and flagged in the chunk file `## Notes`. Per PIPELINE §7.2 this reconciles to an already-accepted decision (Ruling 2) and is therefore in-scope to execute, not an escalation.
-
-**No genuine spec-vs-code contradiction found** that would change the design. One consequence worth naming (not a fork): test #3's title (`… does NOT re-appear on re-dismiss`) inverts meaning — post-reconciliation the fact simply persists throughout (it was never dropped), which is Ruling 2 working. Rename it to reflect survival.
+**No genuine spec-vs-code contradiction found.** One spec-internal tension (banner "on `<date>`" has no source in the spec-frozen 3-field `thread` meta) is resolved in `## Approaches` under §7 architect-latitude, not escalated.
 
 ---
 
-## Approaches
+## Approaches (genuine forks only)
 
-The spec forecloses most choices; one genuine implementation fork is worth recording.
+**Fork A — the `isThreadLive` registry placement.**
+- **Option A1 — module-level `Map<threadId,number>` (RECOMMENDED).** Matches spec §0.5 verbatim ("index.ts maintains a module-level Map") and the shipped `const sessions` precedent (`index.ts:31`). Keys are UUIDs → no cross-`startDaemon` collision in tests; a daemon restart clears the map (fail-open on restart, which is the safe direction). Cons: shared mutable module state (mitigated by UUID keys, exactly as `sessions`).
+- **Option A2 — per-`startDaemon` closure `const`.** Perfect test isolation. Cons: deviates from the spec's "module-level" wording. Since §0.5 froze the STRUCTURE (a `Map<threadId,refcount>`, inc on bind, dec on close) and explicitly says "module-level", A1 honors the freeze. **Chosen: A1**; if the worker hits test-isolation flakiness, A2 is a byte-equivalent fallback (same map, same inc/dec sites — placement only). Do not otherwise redesign.
 
-**Fork: how `forgetThread` erases N messages.**
+**Fork B — the source of `hatch.view`'s additive `thread` meta.**
+- **Option B1 — a dedicated `store.readThreadMeta(threadId)` single-row read (RECOMMENDED).** One indexed `SELECT` on the PK. It triples as the reader for `beginTurn` (§3.3a) and the `edit` guard (MINOR-2) — DRY, one method, three consumers.
+- **Option B2 — reuse `listThreads().find()`.** Scans every thread per view. Rejected — wasteful and doesn't serve the two hot-path consumers cleanly. **Chosen: B1.**
 
-- **Option A — loop `WriteGate.forget(id)` N times.** Pros: maximal reuse. Cons: **rejected by the spec (§3.1 "alongside, not wrapping N calls of, the per-message forget")** and *impossible* correctly — each `forget` opens its own `db.transaction`, so N calls = N transactions = the ATOMIC-ERASE INVARIANT is violated (a crash mid-loop leaves a half-erased thread). It would also fire N `redactMirrorMessage` full-file rewrites and N `bumpThreadMarker` bumps (both explicitly unwanted).
-- **Option B — one bespoke `db.transaction` reusing the per-message *mechanics* (tombstone INSERT + content scrub + `deleteMessageDerived`) inline over all messages, plus the status/audit/correction scrubs, then ONE `redactMirrorThread` pass + ONE `thread_forget` mirror line.** Pros: satisfies the atomic invariant, single mirror rewrite, no marker bump. Cons: some SQL duplicated from `forget` (acceptable — the shapes are frozen and identical).
+**Fork C — MINOR-2 (dormant `edit` guard): implement vs annotate.**
+- **Option C1 — implement the cheap structural close + RED-first test (RECOMMENDED).** `edit()` no-ops when its message's thread is `status='forgotten'` (mirror of §3.3a for the message-id-keyed path). A few lines, closes the class structurally so a future `edit` caller cannot re-introduce plaintext into `mutations.replacement_content` + a plaintext `edit` mirror line onto a scrubbed thread. Reachability today = NONE, so it is safe and cheap.
+- **Option C2 — annotate-only (a one-line residual).** Cheaper now, but leaves the breach class open. **Chosen: C1** (the residual note explicitly recommends the structural close; it's a few lines).
 
-**Chosen: Option B** — the only option consistent with §3.1's ATOMIC-ERASE INVARIANT and the "alongside, not wrapping" directive.
+**Fork D — NIT-5 (`mutations.reason` free-text): scrub vs document.**
+- **Option D1 — scrub-by-constant, structural (RECOMMENDED).** (1) The HTTP route does NOT forward the body's free-text `reason` into `forgetThread`. (2) `forgetThread` persists a FIXED `THREAD_FORGET_REASON = "thread_forget"` into its tombstone `reason` column, ignoring the caller-supplied `reason`. This structurally guarantees no user content can reach the un-erasable `mutations.reason` column via any current-or-future caller. The body still ACCEPTS `reason?` (fact-path parity, no 400) — it is simply metadata-not-content and unpersisted on this path.
+- **Option D2 — document-only.** Relies on caller/user discipline (the exact thing that fails). In an *erase* feature, an unenforced content leak is a bad look. **Chosen: D1.**
 
-**Test-seam choices (spec §7 open-at-build, decided here):**
-- *Atomicity fault-injection:* `spyOn(store, "deleteMessageDerived").mockImplementationOnce(() => { throw … })` to throw on the 2nd message inside the tx; assert `forgetThread` throws and the thread is fully un-erased. This is fault-injection on a real method (allowed), not a behavior-substituting mock.
-- *Distill-no-op:* construct `SmartDistillerProvider({ client: <spy> })`; after `forgetThread`, call `distill` and assert the client spy was never invoked (the all-`REDACTION_MARKER` tail short-circuits before the LLM call at `smart-distiller-provider.ts:530-542`).
-- *Drain-interleave:* deterministic construction (no timing) — `pendingMessageEmbeddings` scan → `forgetThread` → `upsertMessageEmbedding(id,…)` returns `"skipped"` via the in-tx re-check → assert zero `message_embeddings` rows for the thread. `EmbeddingProvider` fixture vectors for determinism.
+**Fork E — the erased-husk banner date (history.html).**
+- **Option E1 — no fabricated date (RECOMMENDED).** Banner: `"You erased this conversation's content. Distilled facts remain."` Uses only `status`. §7 lists "Exact UI copy (both surfaces) + banner styling" as architect-time, so wording is my call. The spec §0.3 phrase "on `<date>`" has NO source in the spec-frozen 3-field meta (`{thread_id, status, last_active_at}`), and `last_active_at` ≠ erase time (a thread erased long after its last activity would show a wrong date) — rendering a date would be dishonest.
+- **Option E2 — bump `last_active_at` to erase-time.** Makes the meta carry the date, but reorders the thread list (`listThreads ORDER BY last_active_at DESC`) — a side effect the §3.1 matrix does not authorize (`threads` row: only `status`+`title` change). Rejected.
+- **Option E3 — widen the meta with a derived `forgotten_at` (max tombstone `created_at`).** Accurate, but deviates from the spec-stated 3-field meta and forces a chunk-03 overlay `types.ts` change. **Deferred to chunk-03/Lior** if the demo wants an erase-date. **Chosen: E1** for chunk-02.
 
-## Chosen Approach
-
-`WriteGate.forgetThread(threadId, ctx, reason?)` returns a typed discriminated result (never-throw for caller-input cases, gotcha #9); `MemoryStore.redactMirrorThread(threadId)` is the bulk mirror pass. Signatures the chunk-02 route will consume:
+## Chosen Approach (summary of new/changed signatures the tasks consume)
 
 ```ts
-// write-gate.ts
-export type ForgetThreadResult =
-  | { ok: true }                                  // applied — incl. idempotent repeat
-  | { ok: false; reason: "not_found" }            // unknown thread → route maps 404
-  | { ok: false; reason: "refused_machine" };     // machine ctx → human-only by construction
+// store.ts (MemoryStore) — NEW
+readThreadMeta(threadId: string): { thread_id: string; status: string; last_active_at: number } | null
 
-forgetThread(threadId: string, ctx: WriteContext, reason?: string): ForgetThreadResult
+// write-gate.ts — NEW module const + CHANGED forgetThread persist + NEW edit guard
+const THREAD_FORGET_REASON = "thread_forget";       // NIT-5 (Fork D): tombstone reason is metadata-not-content
+// forgetThread: tombstone INSERT binds THREAD_FORGET_REASON (not the caller's `reason`)
+// edit(): early no-op when store.readThreadMeta(threadOf(id))?.status === "forgotten"  (MINOR-2, Fork C)
 
-// store.ts (MemoryStore)
-redactMirrorThread(threadId: string): void
+// hatch.ts — NEW façade + widened view
+forgetThread(threadId: string, ctx: WriteContext, reason?: string): ForgetThreadResult   // thin delegate
+interface HatchViewResult { …; thread: { thread_id: string; status: string; last_active_at: number } | null }
+
+// http-routes.ts — additive dep + branch
+interface MemoryHttpDeps { …; isThreadLive: (threadId: string) => boolean }
+// POST /memory/forget gains: else if (target_type === "thread") → 400|409|404|204
+
+// index.ts — module-level registry
+const liveThreads = new Map<string, number>();
+const isThreadLive = (id: string) => (liveThreads.get(id) ?? 0) > 0;   // passed into memoryDeps
+// increment on first-add to ws.data.touchedThreadIds (session_start); decrement per touched id in close(ws)
+
+// thread-lifecycle.ts — §3.3a
+// beginTurn treats a status==='forgotten' requested id as UNKNOWN (mint fresh; never adoptId-reuse)
 ```
 
-Note: the live-thread 409 guard and `isThreadLive` are chunk-02 (route layer), NOT here. Internal faults (disk/DB errors) propagate as throws (fail-loud) — only `not_found`/`refused_machine` are typed results.
+`ForgetThreadResult` (from chunk-01, `write-gate.ts:27-30`): `{ ok: true } | { ok: false; reason: "not_found" } | { ok: false; reason: "refused_machine" }`.
 
 ## ADR worthy: no
 
-Per spec §0.6 (recorded for sign-off, agreed by conductor; Lior signed the §0.1–0.6 package at §5.2). This chunk *executes* two already-accepted decisions: ADR-0015's retained hard-scrub primitive and ADR-0012 rider Ruling 2 (which names 2e and binds it). The §3.2 fact-sweep removal is *reconciliation to an already-accepted decision* (PIPELINE §7.2 lane), not a new decision. No new dependency, no new wire/protocol surface, no new boundary. Nothing to route to `adr-curator`.
+Per spec §0.6 (recorded for the §5.2 sign-off; Lior signed the §0.1–0.6 package). This chunk **executes** accepted decisions: ADR-0013 (additive body on a Bearer route), ADR-0015 (intent-dispatch reuse), ADR-0014 (adoption semantics — only the `'forgotten'` exclusion changes), ADR-0012 rider Ruling 2 (no fact-side touches). The `isThreadLive` refcount registry is the concrete *implementation* of the §0.5 guard the spec already ruled (spec §0.5: "a spec decision… recorded in the spec, not a bus fork") — new daemon-internal module state, but no new dependency, no new wire/protocol surface, and no daemon/frontend boundary change (the predicate rides HTTP deps, daemon-internal). Nothing to route to `adr-curator`.
+
+## Flags for the orchestrator (escalate)
+
+**None.** No spec-vs-frozen-artifact contradiction found (the §7.2 citation test). The one spec-internal tension (banner date, §0.3 "on `<date>`" vs the 3-field meta) is resolved in Approaches Fork E under §7 architect-latitude, keeping chunk-02 unblocked; chunk-03/Lior owns any erase-date widening.
 
 ---
 
 ## Steps
 
-Three sequential tasks. Step 1 is RED-first reconciliation (the flipped tests MUST fail on pre-change code). Steps share the store/gate contract, so they are strictly sequential (no parallel lanes).
+Three sequential tasks. Task 2 consumes Task 1's `Hatch.forgetThread` + `store.readThreadMeta`; Task 3 consumes Task 2's route. Each is independently reviewable. RED-first where a test pins new/changed behavior on existing code.
 
 ---
 
-### Task 1: Ruling-2 reconciliation — remove the fact-sweep, flip the pinning tests (RED-first)
+### Task 1: daemon-internal seam — `readThreadMeta`, the two residual guards (MINOR-2 + NIT-5), the §3.3a adoption exclusion, and the `Hatch.forgetThread` façade + view widening
 
 **Files:**
-- Modify: `packages/daemon/src/memory/write-gate.ts` (remove `:104-112`; clean stale doc at `:133`)
-- Modify: `packages/daemon/src/memory/store.ts` (delete `:786-797`)
-- Modify: `packages/daemon/src/memory/schema.ts:43` (comment: add `'forgotten'` to the status enum note)
-- Test (flip, RED-first): `packages/daemon/src/memory/write-gate.test.ts:64,80`
-- Test (flip, RED-first — DRIFT): `packages/daemon/src/memory/distiller-integration.daemon.test.ts:137,173,490`; `packages/daemon/src/memory/hatch.daemon.test.ts:187`
-- Test (delete, method-caller removal): `packages/daemon/src/memory/store.test.ts:80,91,1037,1045`; `packages/daemon/src/memory/embedding/embedding-storage.test.ts:125,136`
+- Modify: `packages/daemon/src/memory/store.ts` (add `readThreadMeta`)
+- Modify: `packages/daemon/src/memory/write-gate.ts` (edit-guard `:286-309`; `THREAD_FORGET_REASON` const + tombstone bind `:143`)
+- Modify: `packages/daemon/src/memory/thread-lifecycle.ts` (`beginTurn` `:70-92` — §3.3a)
+- Modify: `packages/daemon/src/memory/hatch.ts` (`forgetThread` façade; `HatchViewResult.thread` + `view` `:56-68`)
+- Test: `packages/daemon/src/memory/write-gate.test.ts` (edit-guard RED, reason-constant RED)
+- Test: `packages/daemon/src/memory/thread-lifecycle.test.ts` (adoption-exclusion RED)
+- Test: `packages/daemon/src/memory/hatch.daemon.test.ts` (façade + `view.thread` meta)
 
 **Interfaces:**
-- Consumes: nothing new.
-- Produces: `WriteGate.forget` no longer references any fact table; `store.dropDistilledFactsByProvenance` / `dropDistilledFactsForThread` no longer exist.
+- Consumes: `store.rawDb`, `store.createThread` (`:245`), `store.threadExists` (`:257`), `store.appendMessages`, `WriteGate.forgetThread` (`:126`), `WriteGate.edit` (`:286`), `WriteGate.threadOf` (`:333`), `ForgetThreadResult` (`write-gate.ts:27`), `WriteContext`.
+- Produces: `store.readThreadMeta`, `Hatch.forgetThread`, `HatchViewResult.thread`. Task 2 consumes `Hatch.forgetThread`; `readThreadMeta` is consumed here by `beginTurn` + `edit`.
 
-- [ ] **Step 1.1: Flip the six behavioral tests to pin facts-survive (RED gate).** In each, change the post-`gate.forget(...)` assertion from "fact purged" to "fact survives byte-identical," and rename the test to reflect Ruling 2. Exact edits:
-  - `write-gate.test.ts:64` — rename to `"forget does NOT sweep the derived distilled_facts row (Ruling 2 — fact source-independence)"`; after `gate.forget(mid!, CTX, "user requested")` replace `expect(store.readDistilledFacts(10).length).toBe(0)` with `expect(store.readDistilledFacts(10).length).toBe(1)` and add `expect(store.readDistilledFacts(10)[0]!.fact).toBe("secret token abc")`.
-  - `write-gate.test.ts:80` — rename to `"forget does NOT sweep a thread-level fact (Ruling 2)"`; replace `expect(store.readDistilledFacts(10).length).toBe(0)` with `expect(store.readDistilledFacts(10).length).toBe(1)`.
-  - `distiller-integration.daemon.test.ts:137` — rename to `"forget-survives (Ruling 2): source-message forget leaves the derived fact live + still injectable"`; flip `:157` and `:162` `.toBe(false)` → `.toBe(true)`; flip `:166` `expect(slice.messages.some(m => m.content.includes("secret fact"))).toBe(false)` → `.toBe(true)`.
-  - `distiller-integration.daemon.test.ts:173` — rename to `"forget-survives-live-slice (Ruling 2): distilled_facts row remains after forget"`; flip `:194` `.toBe(0)` → `.toBe(1)` (use `.length` equality, not `.toBe(0)`).
-  - `distiller-integration.daemon.test.ts:490` — rename to `"smart forget-survives (Ruling 2): source-forget keeps the fact across a re-dismiss"`; flip `:513` and `:522` `.toBe(false)` → `.toBe(true)`; rewrite the `:506-509` comment to state Ruling 2 (no `dropDistilledFactsForThread` reference).
-  - `hatch.daemon.test.ts:187` — rename to `"WriteGate.forget(messageId) tombstones + scrubs but does NOT sweep facts (Ruling 2)"`; flip `:201` `.toBe(false)` → `.toBe(true)`; keep `:203-204` (content === REDACTION_MARKER) as-is.
-
-- [ ] **Step 1.2: Run the flipped tests — verify they FAIL on current code (RED evidence for the PR).**
-  Run: `cd packages/daemon && bun test src/memory/write-gate.test.ts src/memory/distiller-integration.daemon.test.ts src/memory/hatch.daemon.test.ts`
-  Expected: the six renamed tests FAIL (current `forget` still sweeps → facts gone → `length 1`/`.toBe(true)` assertions fail). Capture this output for the PR (chunk DoD "RED-first evidence").
-
-- [ ] **Step 1.3: Remove the fact-sweep from `WriteGate.forget`.** In `write-gate.ts`, delete lines `104-112` (the trap comment block AND the two `this.store.dropDistilledFacts…` calls). Keep everything else in `forget` unchanged — the tombstone INSERT (`:80-82`), content scrub (`:83`), `deleteMessageDerived` (`:90`), `bumpThreadMarker` (`:96`), `redactMirrorMessage` (`:100`), `mirrorEvent` forget line (`:102`), and the N1 quarantine comment (`:113-115`) all stay. Also update the now-stale doc line `write-gate.ts:133` (in `forgetFact`'s JSDoc) — remove the `"DOES NOT call dropDistilledFactsByProvenance/dropDistilledFactsForThread — those are message-path"` sentence (the methods no longer exist; m3 no-silent-contradictions).
-
-- [ ] **Step 1.4: Delete the caller-less store methods.** In `store.ts`, delete `dropDistilledFactsByProvenance` (`:784-789`) and `dropDistilledFactsForThread` (`:791-797`) in full (including their JSDoc). Leave `dropAllDistilledFacts` (`:799-807`) untouched — it has a live migration caller.
-
-- [ ] **Step 1.5: Delete the now-uncompilable `drop*` tests; confirm sync-gate intent is already covered.** Delete these tests outright (their methods are gone; the fact-delete→derived-sync invariant they asserted is already independently covered by the existing `deleteFactById` sync-gate test at `store.test.ts:1030-1035` and the `deleteFactById` orphan-embeddings test at `embedding-storage.test.ts:118-122`):
-  - `store.test.ts:80-89` (`dropDistilledFactsByProvenance removes only…`)
-  - `store.test.ts:91-103` (`dropDistilledFactsForThread removes…`)
-  - `store.test.ts:1037-1043` (`v2-02 SYNC GATE: dropDistilledFactsByProvenance…`)
-  - `store.test.ts:1045-1051` (`v2-02 SYNC GATE: dropDistilledFactsForThread…`)
-  - `embedding-storage.test.ts:125-134` (`dropDistilledFactsByProvenance leaves zero orphan…`)
-  - `embedding-storage.test.ts:136-146` (`dropDistilledFactsForThread leaves zero orphan…`)
-  Do NOT delete the neighboring `dropAllDistilledFacts` / `deleteFactById` sync tests. (The positive "thread-forget never touches fact tables" assertion is added in Task 2's headline test — that is where the count-invariant *intent* migrates.)
-
-- [ ] **Step 1.6: Update the schema status comment.** In `schema.ts:43`, change `status TEXT NOT NULL DEFAULT 'active',  -- 'active' | 'dismissed'` to `-- 'active' | 'dismissed' | 'forgotten' (2e thread-forget)`.
-
-- [ ] **Step 1.7: Run tests + grep — verify GREEN and zero non-comment `dropDistilledFacts` hits.**
-  Run: `cd packages/daemon && bun test src/memory/` then `grep -rn dropDistilledFacts packages/ apps/`
-  Expected: full memory suite GREEN (the six flipped tests now pass; the six deleted tests are gone). Grep returns zero hits (comments cleaned too, so even non-comment filter is moot).
-
-- [ ] **Step 1.8: Commit** (on the existing branch `chunk/01-forget-thread-primitive` — do NOT create a new branch).
-
----
-
-### Task 2: `forgetThread` + `redactMirrorThread` — the one-tx scrub with zero fact touches
-
-**Files:**
-- Modify: `packages/daemon/src/memory/store.ts` (add `redactMirrorThread`)
-- Modify: `packages/daemon/src/memory/write-gate.ts` (add `ForgetThreadResult` + `forgetThread`)
-- Test: `packages/daemon/src/memory/write-gate.test.ts` (new `forgetThread` suite)
-
-**Interfaces:**
-- Consumes: `store.threadExists` (`store.ts:257`), `store.deleteMessageDerived` (`store.ts:1644`, tx-less), `store.mirrorEvent` (`store.ts:1028`), `store.rawDb()`, `REDACTION_MARKER`.
-- Produces: `WriteGate.forgetThread(threadId, ctx, reason?) → ForgetThreadResult`; `MemoryStore.redactMirrorThread(threadId): void`. Chunk-02 consumes both.
-
-- [ ] **Step 2.1: Write the failing headline + completeness tests first.** Add to `write-gate.test.ts` (reuse the `fresh()` helper at `:10-14`). Seed via the real store primitives so fts/topics/embeddings counts are real. Use raw-SQL snapshots for byte-identity.
+- [ ] **Step 1.1: Write the edit-guard RED test (MINOR-2).** Append to `write-gate.test.ts` (reuse its `fresh()` + `CTX` + `readFileSync`/`join` helpers as the existing suite does).
 
 ```ts
-// ── THE RULING-2 HEADLINE (facts survive a whole-thread forget) ──
-test("forgetThread does NOT touch facts — every distilled_facts row byte-identical (Ruling 2)", () => {
-  const { store, gate } = fresh();
-  const t = store.createThread();
-  const [mid] = gate.appendTurn(t, [{ role: "user", content: "my name is Lior" }], "s1", CTX);
-  // one machine fact + one human-edited fact, both provenance = this thread
-  const fMachine = store.insertFact({ fact: "user's name is Lior", provenance: mid!, scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", canonical: "name lior", topics: ["identity"] }, "smart");
-  const fHuman = store.insertFact({ fact: "prefers TypeScript", provenance: `thread:${t}`, scope: "global", expiry: null, confidence: 1, authored_by: "human", canonical: "prefers typescript", topics: ["prefs"] }, "smart");
-  const db = store.rawDb();
-  const snap = (sql: string) => JSON.stringify(db.query(sql).all());
-  const factsBefore = snap("SELECT id, fact, authored_by, provenance FROM distilled_facts ORDER BY id");
-  const ftsBefore = snap("SELECT fact_id, canonical, topic FROM fact_fts ORDER BY fact_id");
-  const topicsBefore = snap("SELECT fact_id, topic FROM fact_topics ORDER BY fact_id, topic");
-  const forgottenBefore = snap("SELECT * FROM forgotten_facts ORDER BY id");
-
-  const res = gate.forgetThread(t, CTX, "user erased conversation");
-  expect(res).toEqual({ ok: true });
-
-  expect(snap("SELECT id, fact, authored_by, provenance FROM distilled_facts ORDER BY id")).toBe(factsBefore);
-  expect(snap("SELECT fact_id, canonical, topic FROM fact_fts ORDER BY fact_id")).toBe(ftsBefore);
-  expect(snap("SELECT fact_id, topic FROM fact_topics ORDER BY fact_id, topic")).toBe(topicsBefore);
-  expect(snap("SELECT * FROM forgotten_facts ORDER BY id")).toBe(forgottenBefore);
-  // the surviving fact still injects into a NEW thread's slice
-  // (reuse the beginTurn/ retrieve pattern — worker: mirror distiller-integration.daemon.test.ts:219-222)
-  store.close();
-});
-
-// ── ERASURE-COMPLETENESS MATRIX (§3.1 table) ──
-test("forgetThread scrubs content, vectors, fts, corrections, audit, husk — all in one pass", () => {
+test("edit() no-ops on a message of a status='forgotten' thread (MINOR-2 — no plaintext re-flush)", () => {
   const { store, gate, dir } = fresh();
   const t = store.createThread();
-  const [m1] = gate.appendTurn(t, [{ role: "user", content: "secret one" }], "s1", CTX);
-  const [m2] = gate.appendTurn(t, [{ role: "assistant", content: "secret two" }], "s1", CTX);
-  gate.edit(m1!, "corrected secret", CTX, "fix"); // legacy correction plaintext in mutations
-  // audit-trail row for this thread (memory_action_events)
-  store.rawDb().query("INSERT INTO memory_action_events (id, thread_id, action, outcome, fact_text, actor, created_at) VALUES (?, ?, 'forget', 'applied', 'quoted content', 'agent', ?)").run(crypto.randomUUID(), t, Date.now());
-
-  const res = gate.forgetThread(t, CTX);
-  expect(res).toEqual({ ok: true });
+  const [m1] = gate.appendTurn(t, [{ role: "user", content: "original secret" }], "s1", CTX);
+  gate.forgetThread(t, CTX);                         // thread now terminal ('forgotten'); m1 scrubbed
+  // Attempt to re-introduce plaintext via the message-id-keyed edit path:
+  gate.edit(m1!, "sneaky reintroduced plaintext", CTX, "reopen attempt");
   const db = store.rawDb();
-  // every message content == marker
-  const contents = db.query("SELECT content FROM messages WHERE thread_id = ?").all(t) as {content:string}[];
-  expect(contents.every(c => c.content === REDACTION_MARKER)).toBe(true);
-  // one tombstone per message
-  const tombs = db.query("SELECT COUNT(*) AS n FROM mutations WHERE kind='tombstone' AND target_message_id IN (SELECT id FROM messages WHERE thread_id=?)").get(t) as {n:number};
-  expect(tombs.n).toBe(2);
-  // zero message_embeddings / message_fts for the thread
-  expect((db.query("SELECT COUNT(*) AS n FROM message_embeddings WHERE message_id IN (SELECT id FROM messages WHERE thread_id=?)").get(t) as {n:number}).n).toBe(0);
-  expect((db.query("SELECT COUNT(*) AS n FROM message_fts WHERE message_id IN (SELECT id FROM messages WHERE thread_id=?)").get(t) as {n:number}).n).toBe(0);
-  // correction plaintext scrubbed, row kept
-  const corr = db.query("SELECT replacement_content FROM mutations WHERE kind='correction' AND target_message_id=?").get(m1!) as {replacement_content:string};
-  expect(corr.replacement_content).toBe(REDACTION_MARKER);
-  // audit fact_text scrubbed, row kept
-  const aud = db.query("SELECT fact_text, action, outcome FROM memory_action_events WHERE thread_id=?").get(t) as {fact_text:string;action:string;outcome:string};
-  expect(aud.fact_text).toBe(REDACTION_MARKER);
-  expect(aud.action).toBe("forget"); expect(aud.outcome).toBe("applied");
-  // husk
-  const th = db.query("SELECT status, title FROM threads WHERE thread_id=?").get(t) as {status:string;title:string|null};
-  expect(th.status).toBe("forgotten"); expect(th.title).toBeNull();
-  // mirror: no plaintext in message OR edit lines, plus a thread_forget event line
+  // NO new correction row carrying the plaintext was written:
+  const corr = db.query(
+    "SELECT COUNT(*) AS n FROM mutations WHERE kind='correction' AND target_message_id=? AND replacement_content=?",
+  ).get(m1!, "sneaky reintroduced plaintext") as { n: number };
+  expect(corr.n).toBe(0);
+  // The archive read still returns the redaction marker (nothing resurfaced):
+  const arch = store.readThreadArchive(t);
+  expect(arch.every((r) => r.content === REDACTION_MARKER)).toBe(true);
+  // The mirror holds no reintroduced plaintext:
   const mirror = readFileSync(join(dir, "threads", `${t}.jsonl`), "utf8");
-  expect(mirror).not.toContain("secret one");
-  expect(mirror).not.toContain("secret two");
-  expect(mirror).not.toContain("corrected secret");
-  expect(mirror).toContain(REDACTION_MARKER);
-  expect(mirror).toContain("thread_forget");
+  expect(mirror).not.toContain("sneaky reintroduced plaintext");
   store.close();
 });
+```
 
-// ── typed results ──
-test("forgetThread returns not_found for an unknown thread (never-throw)", () => {
-  const { store, gate } = fresh();
-  expect(gate.forgetThread("no-such-id", CTX)).toEqual({ ok: false, reason: "not_found" });
-  store.close();
-});
-test("forgetThread refuses a machine ctx outright (content-erase is human-only)", () => {
+- [ ] **Step 1.2: Write the reason-scrub RED test (NIT-5).** Append to `write-gate.test.ts`.
+
+```ts
+test("forgetThread persists a fixed tombstone reason — a content-quoting reason never lands in mutations.reason (NIT-5)", () => {
   const { store, gate } = fresh();
   const t = store.createThread();
   gate.appendTurn(t, [{ role: "user", content: "x" }], "s1", CTX);
-  expect(gate.forgetThread(t, { actor: "agent", authored_by: "machine" })).toEqual({ ok: false, reason: "refused_machine" });
-  // nothing erased
-  expect((store.rawDb().query("SELECT content FROM messages WHERE thread_id=?").get(t) as {content:string}).content).toBe("x");
-  store.close();
-});
-
-// ── idempotence ──
-test("forgetThread is idempotent — second call adds no tombstones, still ok", () => {
-  const { store, gate } = fresh();
-  const t = store.createThread();
-  gate.appendTurn(t, [{ role: "user", content: "a" }], "s1", CTX);
-  gate.appendTurn(t, [{ role: "user", content: "b" }], "s1", CTX);
-  expect(gate.forgetThread(t, CTX)).toEqual({ ok: true });
-  const count = () => (store.rawDb().query("SELECT COUNT(*) AS n FROM mutations WHERE kind='tombstone'").get() as {n:number}).n;
-  const after1 = count();
-  expect(gate.forgetThread(t, CTX)).toEqual({ ok: true });
-  expect(count()).toBe(after1); // no new tombstones
-  store.close();
-});
-
-// ── atomicity (fault injection) ──
-test("forgetThread is all-or-nothing — a mid-tx fault leaves the thread fully un-erased", () => {
-  const { store, gate } = fresh();
-  const t = store.createThread();
-  gate.appendTurn(t, [{ role: "user", content: "keep one" }], "s1", CTX);
-  gate.appendTurn(t, [{ role: "user", content: "keep two" }], "s1", CTX);
-  const spy = spyOn(store, "deleteMessageDerived").mockImplementationOnce(() => {}).mockImplementationOnce(() => { throw new Error("injected mid-tx fault"); });
-  expect(() => gate.forgetThread(t, CTX)).toThrow("injected mid-tx fault");
-  spy.mockRestore();
+  gate.forgetThread(t, CTX, "erase the part where I said my SSN is 123-45-6789");
   const db = store.rawDb();
-  const contents = db.query("SELECT content FROM messages WHERE thread_id=?").all(t) as {content:string}[];
-  expect(contents.map(c => c.content).sort()).toEqual(["keep one", "keep two"]); // un-erased
-  expect((db.query("SELECT COUNT(*) AS n FROM mutations WHERE kind='tombstone'").get() as {n:number}).n).toBe(0);
-  expect((db.query("SELECT status FROM threads WHERE thread_id=?").get(t) as {status:string}).status).toBe("active");
+  const reasons = db.query(
+    "SELECT DISTINCT reason FROM mutations WHERE kind='tombstone' AND target_message_id IN (SELECT id FROM messages WHERE thread_id=?)",
+  ).all(t) as { reason: string | null }[];
+  // The free-text (content-quoting) reason is NOT persisted; a fixed constant is used instead.
+  expect(reasons.every((r) => r.reason === "thread_forget")).toBe(true);
+  expect(reasons.some((r) => (r.reason ?? "").includes("SSN"))).toBe(false);
   store.close();
 });
 ```
-  *Worker note:* import `spyOn` from `bun:test` (already imported in `store.test.ts:1`; add to `write-gate.test.ts` imports). If `insertFact`'s `InsertFactInput` shape differs, match the real signature at `store.ts:1073` (fields: `fact, provenance, scope, expiry, confidence, authored_by, canonical, topics`). For message embeddings in the completeness test, seed a fixture vector via `store.upsertMessageEmbedding(id, MODEL, DIMS, vec)` before the forget (mirror `embedding-storage.test.ts` fixture helpers) so the "zero rows after" assertion is meaningful. All snapshot SQL / column names above are the architect's best-read of the schema — the worker verifies each against `schema.ts` and adapts if a column name differs.
 
-- [ ] **Step 2.2: Run the new tests — verify they FAIL (methods don't exist yet).**
-  Run: `cd packages/daemon && bun test src/memory/write-gate.test.ts`
-  Expected: FAIL — `gate.forgetThread is not a function` / `store.redactMirrorThread is not a function`.
+- [ ] **Step 1.3: Write the §3.3a adoption-exclusion RED test.** Append to `thread-lifecycle.test.ts`. `fresh()` there returns `{store, lifecycle}` without a gate — construct a gate inline for the forget.
 
-- [ ] **Step 2.3: Implement `redactMirrorThread` in `store.ts`.** Add next to `redactMirrorMessage` (after `store.ts:1059`). One pass, redact `message`→`content` and `edit`→`replacement`, preserve everything else (incl. unparseable), missing file = no-op, do NOT delete the file:
+```ts
+test("§3.3a: session_start with a status='forgotten' id mints a FRESH thread; the husk is byte-untouched", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mf01-tl-2e-"));
+  const store = new MemoryStore({ dataDir: dir });
+  const gate = new WriteGate(store, new RuleBasedScanner());
+  const lifecycle = new ThreadLifecycle(store, gate);
+  // Seed + erase a thread → a 'forgotten' husk with a real UUID id
+  const t = await lifecycle.beginTurn({ type: "session_start", trigger: "user", text: "hello" });
+  lifecycle.endTurn(t.threadId, "sess-a", [{ role: "user", content: "hello" }]);
+  expect(gate.forgetThread(t.threadId, { actor: "user", authored_by: "human" })).toEqual({ ok: true });
+  const db = store.rawDb();
+  const huskBefore = JSON.stringify(
+    db.query("SELECT status, title, last_active_at FROM threads WHERE thread_id=?").get(t.threadId),
+  );
+  // Re-summon with the erased id → must NOT adopt the husk; must mint a fresh distinct id
+  const again = await lifecycle.beginTurn({ type: "session_start", trigger: "user", text: "again", thread_id: t.threadId });
+  expect(again.threadId).not.toBe(t.threadId);            // RED on current code: it adopts the husk (===)
+  expect(store.threadExists(again.threadId)).toBe(true);  // a genuinely new thread exists
+  // Husk unchanged (status still forgotten, no new messages appended to it)
+  expect(JSON.stringify(db.query("SELECT status, title, last_active_at FROM threads WHERE thread_id=?").get(t.threadId))).toBe(huskBefore);
+  expect((db.query("SELECT COUNT(*) AS n FROM messages WHERE thread_id=? AND content!=?").get(t.threadId, REDACTION_MARKER) as { n: number }).n).toBe(0);
+  store.close();
+});
+```
+*Worker note:* add the imports `MemoryStore`, `WriteGate`, `RuleBasedScanner`, `mkdtempSync`, `tmpdir`, `join`, `REDACTION_MARKER` to `thread-lifecycle.test.ts` if not already present (mirror `write-gate.test.ts` imports).
+
+- [ ] **Step 1.4: Run the three RED tests — verify they FAIL on current code (RED evidence for the PR).**
+  Run: `cd packages/daemon && bun test src/memory/write-gate.test.ts src/memory/thread-lifecycle.test.ts`
+  Expected: edit-guard test FAILS (a correction row with the plaintext IS written today); reason-scrub test FAILS (chunk-01 binds the passed `reason` at `write-gate.ts:143`); adoption test FAILS (`again.threadId === t.threadId` — current `beginTurn` adopts the husk). Capture output for the PR.
+
+- [ ] **Step 1.5: Add `store.readThreadMeta` (Fork B1).** In `store.ts`, add next to `listThreads` (after `:1006`):
 
 ```ts
 /**
- * Bulk mirror scrub for a whole-thread forget (spec §3.1a). ONE read-parse-rewrite pass
- * over the per-thread JSONL: every `event:"message"` line's `content` AND every
- * `event:"edit"` line's `replacement` become REDACTION_MARKER. All other lines are
- * preserved (append-only audit intent); unparseable lines are left intact (matches
- * redactMirrorMessage). Missing file → no-op. The file is NEVER deleted (rows-stay/
- * content-goes, same as the DB). DB-first ordering: call this AFTER the scrub tx commits.
+ * Single-thread meta read (thread-forget 2e §3.3): status + last_active_at for ONE thread,
+ * or null if absent. PK lookup — cheap. Consumed by Hatch.view (erased-husk banner render),
+ * ThreadLifecycle.beginTurn (§3.3a erased-id exclusion), and WriteGate.edit (the forgotten-
+ * thread write guard, chunk-01 review MINOR-2).
  */
-redactMirrorThread(threadId: string): void {
-  const mirrorPath = join(this.threadsDir, `${threadId}.jsonl`);
-  if (!existsSync(mirrorPath)) return;
-  const lines = readFileSync(mirrorPath, "utf8").split("\n");
-  const rewritten = lines.map((line) => {
-    if (!line) return line; // preserve trailing newline's empty string
-    let parsed: Record<string, unknown>;
-    try {
-      parsed = JSON.parse(line) as Record<string, unknown>;
-    } catch {
-      return line; // unparseable — leave intact
-    }
-    if (parsed["event"] === "message") return JSON.stringify({ ...parsed, content: REDACTION_MARKER });
-    if (parsed["event"] === "edit") return JSON.stringify({ ...parsed, replacement: REDACTION_MARKER });
-    return line;
-  });
-  writeFileSync(mirrorPath, rewritten.join("\n"));
+readThreadMeta(threadId: string): { thread_id: string; status: string; last_active_at: number } | null {
+  return this.db
+    .query("SELECT thread_id, status, last_active_at FROM threads WHERE thread_id = ?")
+    .get(threadId) as { thread_id: string; status: string; last_active_at: number } | null;
 }
 ```
-  *Worker note:* verify the real field name for the threads-dir (`this.threadsDir`) and the mirror filename pattern against `redactMirrorMessage` (`store.ts:1041-1059`) — reuse whatever it uses exactly. Confirm `existsSync`/`readFileSync`/`writeFileSync`/`join` are already imported in `store.ts`.
+*Worker note:* `bun:sqlite` `.get()` returns the row or `null` for no match — confirm against a neighboring `.get()` usage (e.g. `threadExists` at `:258`).
 
-- [ ] **Step 2.4: Implement `ForgetThreadResult` + `forgetThread` in `write-gate.ts`.** Add the type near `WriteContext` (after `:20`) and the method after `forget` (after `:116`):
+- [ ] **Step 1.6: Implement the MINOR-2 edit-guard.** In `write-gate.ts` `edit()`, immediately after `const threadId = this.threadOf(messageId);` (`:291`), insert:
 
 ```ts
-export type ForgetThreadResult =
-  | { ok: true }
-  | { ok: false; reason: "not_found" }
-  | { ok: false; reason: "refused_machine" };
+// thread-forget 2e (chunk-01 review MINOR-2): 'forgotten' is terminal. edit() is message-id-keyed —
+// the §3.3a adoption exclusion and the §0.5 live-guard are thread-adoption-keyed and do NOT cover
+// this path. Without this, a future edit() caller could re-introduce plaintext into
+// mutations.replacement_content AND append a plaintext `edit` mirror line onto a just-scrubbed thread.
+// No-op on a forgotten thread — the same by-construction close §3.3a uses for appendTurn.
+// (Reachability today = NONE: edit lost its production caller at the 2d message-edit removal.)
+if (this.store.readThreadMeta(threadId)?.status === "forgotten") return;
+```
 
+- [ ] **Step 1.7: Implement the NIT-5 reason-constant.** In `write-gate.ts`, add a module const near the top (after `export { REDACTION_MARKER };` at `:8`):
+
+```ts
+/** thread-forget 2e (NIT-5): tombstone reason is metadata-not-content. mutations.reason is OUTSIDE
+ *  the erase matrix (survives un-scrubbed), so forgetThread persists a FIXED constant regardless of
+ *  the caller-supplied `reason` — no user free-text can ever reach that un-erasable column. */
+const THREAD_FORGET_REASON = "thread_forget";
+```
+Then in `forgetThread`, change the tombstone INSERT bind at `:143` from `reason ?? null` to `THREAD_FORGET_REASON`, and mark the now-unpersisted param: add `// eslint-disable-next-line @typescript-eslint/no-unused-vars -- `reason` kept for API symmetry with forget/forgetFact; intentionally NOT persisted (NIT-5)` directly above the `forgetThread(` signature line (`:126`), mirroring the pattern at `forgetFact` `:183` / `forgetFactById` `:211`.
+  *Worker note:* first `grep -n "mutations.*reason\|\.reason" src/memory/write-gate.test.ts` in the shipped `forgetThread` suite — confirm no existing test asserts the tombstone `reason` equals a passed string (the chunk-01 completeness test asserts content/count/husk, not `reason`). If one exists, reconcile it to expect `"thread_forget"`.
+
+- [ ] **Step 1.8: Implement the §3.3a exclusion.** In `thread-lifecycle.ts` `beginTurn`, replace the `requested`/known-thread guard + `adoptId` logic (`:71-92`) with:
+
+```ts
+const requested = inbound.thread_id;
+// thread-forget 2e §3.3a: a status='forgotten' thread id is terminal — NOT adoptable and NOT
+// reusable. Treat it as UNKNOWN (fall through to mint) AND never pass it as adoptId (that
+// createThread INSERT would collide with the surviving husk PK). Both the known-thread and
+// adoptId branches gain the exclusion (spec §4 item 7). One PK read serves both.
+const requestedMeta = requested ? this.store.readThreadMeta(requested) : null;
+const requestedForgotten = requestedMeta?.status === "forgotten";
+if (requested && requestedMeta && !requestedForgotten) {
+  // … existing known-thread adopt body UNCHANGED (:73-83) …
+}
+// … existing whenIdle / retrieve block UNCHANGED …
+const adoptId = requested && isUuidShaped(requested) && !requestedForgotten ? requested : undefined;
+const newThreadId = this.store.createThread(undefined, adoptId);
+```
+*Worker note:* `requestedMeta` truthy ⟺ the thread exists, so it replaces the `this.store.threadExists(requested)` check in the known-thread guard (one query instead of two). Leave the whenIdle/retrieve/return bodies byte-unchanged.
+
+- [ ] **Step 1.9: Add the `Hatch.forgetThread` façade + `view` widening.** In `hatch.ts`: add `ForgetThreadResult` to the `write-gate.js` type import (`:29`); add the `thread` field to `HatchViewResult` (`:31-40`):
+
+```ts
+/** thread-forget 2e §3.3: additive thread meta — `status` drives the erased-husk banner render.
+ *  null iff the id resolves to no thread. Optional-tolerant: history.html/overlay ignore it if
+ *  absent (runtime-coupling §4 item 4). */
+thread: { thread_id: string; status: string; last_active_at: number } | null;
+```
+In `view()` (`:56-68`), add `const thread = this.store.readThreadMeta(threadId);` and return it: `return { messages, distilledFacts, distillationEvents, memoryActionEvents, thread };`. Add the façade after `forgetFactById` (`:102`):
+
+```ts
 /**
- * forgetThread — content-erase a WHOLE conversation in ONE atomic tx (spec §3.1).
- * ZERO fact-table touches (ADR-0012 rider Ruling 2 — facts are source-independent;
- * structural, like ADR-0015 B1). NO bumpThreadMarker (§3.1 [critic m5] — 'forgotten'
- * is terminal). Human-only by construction (defense-in-depth mirror of editFact's
- * machine refusal, write-gate.ts:222). Idempotent: already-tombstoned messages are
- * skipped; a second call is a no-op that still returns { ok: true }.
+ * Forget a whole conversation's CONTENT (thread-forget 2e, spec §3.3). Thin façade over
+ * WriteGate.forgetThread — one atomic scrub tx, ZERO fact-table touches (ADR-0012 rider Ruling 2).
+ * Returns the typed result the route maps: {ok:true}→204, not_found→404, refused_machine→
+ * (unreachable on the human-only HTTP path). The free-text `reason` is accepted for API symmetry
+ * but not persisted as content (WriteGate uses a fixed tombstone reason — NIT-5).
  */
 forgetThread(threadId: string, ctx: WriteContext, reason?: string): ForgetThreadResult {
-  if (ctx.authored_by === "machine") return { ok: false, reason: "refused_machine" };
-  if (!this.store.threadExists(threadId)) return { ok: false, reason: "not_found" };
-  const db = this.store.rawDb();
-  const now = Date.now();
-  const tx = db.transaction(() => {
-    // not-yet-tombstoned messages only (idempotence)
-    const rows = db.query(
-      `SELECT m.id AS id FROM messages m
-        WHERE m.thread_id = ?
-          AND NOT EXISTS (SELECT 1 FROM mutations x WHERE x.target_message_id = m.id AND x.kind = 'tombstone')`,
-    ).all(threadId) as { id: string }[];
-    const insTomb = db.query(
-      "INSERT INTO mutations (id, target_message_id, kind, actor, reason, replacement_content, authored_by, created_at) VALUES (?, ?, 'tombstone', ?, ?, NULL, ?, ?)",
-    );
-    const scrub = db.query("UPDATE messages SET content = ? WHERE id = ?");
-    for (const { id } of rows) {
-      insTomb.run(crypto.randomUUID(), id, ctx.actor, reason ?? null, ctx.authored_by, now);
-      scrub.run(REDACTION_MARKER, id);
-      // tx-less by design (store.ts:1644) — commits with THIS tx (no nested tx; bun:sqlite forbids it)
-      this.store.deleteMessageDerived(id);
-    }
-    // husk (q#019 rider 1): status flip + defensive title scrub (no future content-derived title survives)
-    db.query("UPDATE threads SET status = 'forgotten', title = NULL WHERE thread_id = ?").run(threadId);
-    // §0.4 audit-trail scrub (rows KEPT — action/outcome/actor/timestamps survive)
-    db.query("UPDATE memory_action_events SET fact_text = ? WHERE thread_id = ?").run(REDACTION_MARKER, threadId);
-    // [critic MAJOR-2] legacy correction-plaintext scrub (COALESCE read would resurface it)
-    db.query(
-      `UPDATE mutations SET replacement_content = ?
-        WHERE kind = 'correction'
-          AND target_message_id IN (SELECT id FROM messages WHERE thread_id = ?)`,
-    ).run(REDACTION_MARKER, threadId);
-  });
-  tx(); // ATOMIC-ERASE INVARIANT: all writes above commit together or not at all
-  // DB-first ordering (write-gate.ts:92-102): mirror is the sole post-tx step (§3.1a crash window accepted)
-  this.store.redactMirrorThread(threadId);
-  this.store.mirrorEvent(threadId, { event: "thread_forget", actor: ctx.actor, created_at: now });
-  return { ok: true };
+  return this.gate.forgetThread(threadId, ctx, reason);
 }
 ```
-  *Worker note:* verify every column name in the INSERT/UPDATE statements against the real `schema.ts` (`mutations` columns, `memory_action_events` columns, `threads` PK column name — the reality check says PK is `thread_id`, confirm). Match the exact `mutations` INSERT column list the per-message `forget` uses (`write-gate.ts:80-82`) so the tombstone shape is identical. Confirm `crypto.randomUUID()` is how ids are minted elsewhere in this file.
 
-  *Structural Ruling-2 check the worker must self-verify:* the method body contains NO token `distilled_facts`, `forgotten_facts`, `fact_fts`, `fact_topics`, `fact_embeddings`, `dropDistilledFacts`, `bumpThreadMarker`.
+- [ ] **Step 1.10: Write the façade + view-meta test.** Append to `hatch.daemon.test.ts` (mirror its real store/gate/hatch construction):
 
-- [ ] **Step 2.5: Run the Task-2 tests — verify GREEN.**
-  Run: `cd packages/daemon && bun test src/memory/write-gate.test.ts`
-  Expected: PASS (headline, completeness, not_found, refused_machine, idempotence, atomicity all green).
+```ts
+test("Hatch.view carries additive thread meta; Hatch.forgetThread flips status to 'forgotten'", async () => {
+  // build a real store+gate+hatch on a fresh dataDir (mirror the file's existing setup)
+  const t = store.createThread();
+  gate.appendTurn(t, [{ role: "user", content: "hi" }], "s1", { actor: "user", authored_by: "human" });
+  const before = await hatch.view(t);
+  expect(before.thread).toEqual({ thread_id: t, status: "active", last_active_at: expect.any(Number) });
+  expect(before.thread!.status).toBe("active");            // existing fields untouched (regression)
+  expect(Array.isArray(before.distilledFacts)).toBe(true);
+  expect(hatch.forgetThread(t, { actor: "user", authored_by: "human" })).toEqual({ ok: true });
+  const after = await hatch.view(t);
+  expect(after.thread!.status).toBe("forgotten");
+  expect(after.messages.every((m) => m.content === REDACTION_MARKER)).toBe(true);
+});
+```
 
-- [ ] **Step 2.6: Commit** (existing branch).
+- [ ] **Step 1.11: Run Task-1 tests — verify GREEN.**
+  Run: `cd packages/daemon && bun test src/memory/write-gate.test.ts src/memory/thread-lifecycle.test.ts src/memory/hatch.daemon.test.ts`
+  Expected: PASS (the three RED tests now green; façade/view/edit-guard/adoption all pass). Then `cd packages/daemon && bun test src/memory/` to confirm no collateral regression (esp. existing `beginTurn` adoption tests at `thread-lifecycle.test.ts:35-49` still pass — a non-forgotten unknown/UUID id still adopts/mints as before).
+
+- [ ] **Step 1.12: Commit** (branch `chunk/02-daemon-surface`).
 
 ---
 
-### Task 3: Race/no-op coverage + full-gate verification
+### Task 2: the HTTP surface + the `isThreadLive` refcount registry (§0.5)
 
 **Files:**
-- Test: `packages/daemon/src/memory/write-gate.test.ts` (or a new `forget-thread.daemon.test.ts` for the distiller/drain integration cases — worker's choice; use `.daemon.test.ts` suffix if it needs `ConsolidationHook`/providers, matching the existing convention).
+- Modify: `packages/daemon/src/memory/http-routes.ts` (`MemoryHttpDeps.isThreadLive`; hoist `UUID_RE`; `target_type:"thread"` branch; header comment `:29-32`)
+- Modify: `packages/daemon/src/index.ts` (module-level `liveThreads`; `isThreadLive`; increment `:210`; decrement in `close` `:307-319`+; `memoryDeps` `:123`)
+- Modify: `packages/daemon/src/memory/http-routes-cors.daemon.test.ts` (`buildDeps` add `isThreadLive`)
+- Modify: `packages/daemon/src/memory/http-routes.daemon.test.ts` (direct-deps `:249` add `isThreadLive`)
+- Test (new): `packages/daemon/src/memory/thread-forget.daemon.test.ts` (full taxonomy + 409 direct-deps + live-guard both sides + decrement-proven + view meta over HTTP)
 
 **Interfaces:**
-- Consumes: `SmartDistillerProvider({ client })`, `store.pendingMessageEmbeddings`, `store.upsertMessageEmbedding`, `ConsolidationHook`, `DumbTailProvider`.
-- Produces: no new production code (this task is proof-of-contract; if a test reveals a real defect, fix it and note it).
+- Consumes: `Hatch.forgetThread` + `HatchViewResult.thread` (Task 1), `HTTP_CTX` (`:61`), `TokenStore.verify`, `store.createThread`/`appendMessages`, `startDaemon`.
+- Produces: `MemoryHttpDeps.isThreadLive`; the `target_type:"thread"` route; `liveThreads` registry. Task 3's history.html + probe consume the route.
 
-- [ ] **Step 3.1: Write the distill-no-op test (zero ops, NO LLM call).** Spy on the LLM client; prove the all-`REDACTION_MARKER` tail short-circuits before the client call:
+- [ ] **Step 2.1: Write the full HTTP taxonomy test file (RED — the thread branch does not exist).** Create `thread-forget.daemon.test.ts`. Mirror `http-routes.daemon.test.ts`'s boot idiom (pre-seed store, `startDaemon(0)`, `EMBEDDING_PROVIDER=none`, `LLM_PROVIDER=mock`). Cover:
 
 ```ts
-test("distill over an erased thread is a no-op — zero ops, no LLM call", async () => {
-  const { store, gate } = fresh();
-  const t = store.createThread();
-  gate.appendTurn(t, [{ role: "user", content: "will be erased" }], "s1", CTX);
-  const spyClient = { /* shape matches the SmartDistiller client iface */ };
-  const complete = spyOn(spyClient, "complete" /* or the real method name */);
-  const smart = new SmartDistillerProvider({ client: spyClient });
-  gate.forgetThread(t, CTX);                       // tombstones + scrubs every message
-  const delta = await smart.distill(store, t);     // all-[forgotten] tail → filtered empty → short-circuit
-  expect(delta.ops).toEqual([]);
-  expect(complete).not.toHaveBeenCalled();         // no LLM call (smart-distiller-provider.ts:530-542)
-  store.close();
+// ── direct-deps taxonomy (real store/hatch/tokenStore; isThreadLive faked) ──
+// 409: fake isThreadLive → true
+test("POST /memory/forget target_type:thread on a LIVE thread → 409 {error:'thread_live'}", async () => {
+  const { deps, token, threadId } = buildDepsWithSeededThread({ isThreadLive: () => true });
+  const req = new Request("http://127.0.0.1:7777/memory/forget", {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+    body: JSON.stringify({ target_type: "thread", thread_id: threadId }),
+  });
+  const res = await handleMemoryHttp(req, new URL(req.url), deps);
+  expect(res.status).toBe(409);
+  expect((await res.json() as { error: string }).error).toBe("thread_live");
+});
+// 400 non-UUID thread_id; 400 missing thread_id; 400 target_type:"message"/garbage (unchanged)
+// 404 unknown UUID-shaped thread_id (isThreadLive:()=>false)
+// 401 no token
+// 204 applied + 204 idempotent repeat (second POST on the same erased thread)
+```
+Provide a `buildDepsWithSeededThread({ isThreadLive })` helper (mirror `http-routes-cors.daemon.test.ts:18-25`) returning `{ deps, token, threadId }` with a real `MemoryStore`/`WriteGate`/`Hatch`/`TokenStore` and a pre-seeded active thread + one message. For the 204/idempotent cases pass `isThreadLive: () => false`.
+*Worker note:* the 400-non-UUID / message / garbage / missing-field assertions pin that the existing fact/message/garbage behavior is unchanged. Use `token = tokenStore.token()` (as the cors test does).
+
+- [ ] **Step 2.2: Write the live-guard both-sides + decrement WS integration test (RED).** In the same file, boot a real daemon with an injected minimal chat stub (single-turn, no picker round-trip) so the WS turn is deterministic:
+
+```ts
+function liveGuardStub(): AgentProvider {
+  return {
+    id: "thread-forget-liveguard-stub",
+    async advance(state, inbound) {
+      if (inbound.type === "session_start") {
+        const session_id = crypto.randomUUID(), call_id = crypto.randomUUID();
+        return {
+          ok: true,
+          nextState: { phase: "done", session_id, messages: [{ role: "user", content: inbound.text ?? "" }] },
+          outbound: [
+            { type: "session_ack", session_id, client_session_id: inbound.client_session_id },
+            { type: "tool_call", session_id, call_id, payload: { tool: "show_text", args: { text: { primitive: "text", content: "ok" } } } },
+            { type: "session_end", session_id, reason: "completed" },
+          ],
+          finalText: "ok",
+        };
+      }
+      return { ok: true, nextState: state ?? { phase: "done", session_id: "", messages: [] }, outbound: [] };
+    },
+  };
+}
+
+test("live-guard both sides: open socket → 409; close (decrement) → same thread erases 204", async () => {
+  // pre-seed an ACTIVE thread in the shared dataDir, then startDaemon(0, liveGuardStub())
+  const forget = () => fetch(`http://127.0.0.1:${PORT}/memory/forget`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ target_type: "thread", thread_id: seededThreadId }),
+  });
+  const ws = new WebSocket(`ws://127.0.0.1:${PORT}`, { headers: { Origin: "tauri://localhost" }, protocols: [token] });
+  await new Promise<void>((resolve, reject) => {
+    ws.addEventListener("open", () => ws.send(JSON.stringify({
+      type: "session_start", trigger: "user", text: "live", client_session_id: crypto.randomUUID(), thread_id: seededThreadId,
+    })));
+    ws.addEventListener("message", (e: MessageEvent) => {
+      if (JSON.parse(e.data as string).type === "session_end") resolve();   // increment landed before advance ran
+    });
+    ws.addEventListener("error", () => reject(new Error("ws error")));
+  });
+  // socket still OPEN → thread live → 409
+  expect((await forget()).status).toBe(409);
+  // close → decrement (+dismiss); wait a tick for the async close handler
+  await new Promise<void>((r) => { ws.addEventListener("close", () => r()); ws.close(); });
+  await new Promise((r) => setTimeout(r, 150));
+  // decrement proven: the SAME thread now erases cleanly → 204
+  expect((await forget()).status).toBe(204);
+  // idempotent repeat still 204
+  expect((await forget()).status).toBe(204);
 });
 ```
-  *Worker note:* read `providers/smart-distiller-provider.ts` constructor + the client method name it calls; wire the spy to that exact method. If a real echo-stub helper (`makeEchoStub`) already exists in `distiller-integration.daemon.test.ts`, wrap it with `spyOn` on the invoked method rather than hand-rolling the client shape. Match `distill`'s real return shape (`delta.ops` vs whatever it returns).
+Also add a **view-meta over HTTP** assertion after erase: `GET /memory/thread/:id` → `body.thread.status === "forgotten"` and every `body.messages[].content === "[forgotten]"`.
+*Worker note:* import `AgentProvider` from `../providers/provider.js`. Receiving `session_end` guarantees the `session_start` increment landed (increment is at `index.ts:210`, before `advance()` at `:274`). If Bun's `WebSocket` options differ, mirror the memory-demo-harness `wsTurn` call shape (`packages/daemon/scripts/memory-demo-harness.ts:581`).
 
-- [ ] **Step 3.2: Write the drain-interleave test (thread-scale scrub-race, deterministic — 2d D3b pattern).**
+- [ ] **Step 2.3: Run the taxonomy + live-guard tests — verify FAIL (branch/dep absent).**
+  Run: `cd packages/daemon && bun test src/memory/thread-forget.daemon.test.ts`
+  Expected: FAIL — the `target_type:"thread"` body currently hits the final `else` → 400 (so 409/404/204 assertions fail); and `MemoryHttpDeps` has no `isThreadLive` (typecheck error in `buildDepsWithSeededThread`). This is the RED gate.
+
+- [ ] **Step 2.4: Add `isThreadLive` to `MemoryHttpDeps` + hoist `UUID_RE` + update the header comment.** In `http-routes.ts`:
+  - Extend the interface (`:49-54`): add `` /** thread-forget 2e §0.5: point-in-time liveness (TOCTOU accepted). A refcount>0 means ≥1 socket has this thread adopted; erasing a live thread is refused 409. */ isThreadLive: (threadId: string) => boolean; ``
+  - Hoist the UUID regex to module scope (it is duplicated at `:212` and `:255`): add near the top `const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;` and delete both local `const UUID_RE = …` declarations, referencing the module const.
+  - Update the header comment `:29-32` to: `` /** * 409 has TWO distinct conditions, differentiated by the `error` body [critic m7]: * (1) thread_live (thread-forget 2e §0.5) — the route refuses to content-erase a currently- * live conversation ({error:"thread_live"}). This is the FIRST real 409 case. * (2) a RESERVED future non-human-actor 5e refusal (never reached on today's human-only HTTP * path; HTTP_CTX is fixed human). If introduced, it carries a DIFFERENT `error` code. */ ``
+
+- [ ] **Step 2.5: Add the `target_type:"thread"` branch.** In `handleForget`, add `thread_id` to the destructure (`:194`) and insert this branch before the final `else` (`:221`):
 
 ```ts
-test("scrub between drain scan and upsert → zero vector rows survive (drain-race, thread-scale)", () => {
-  const { store, gate } = fresh();
-  const t = store.createThread();
-  const [m1] = gate.appendTurn(t, [{ role: "user", content: "vec me one" }], "s1", CTX);
-  const [m2] = gate.appendTurn(t, [{ role: "user", content: "vec me two" }], "s1", CTX);
-  const MODEL = "test-model"; const DIMS = 2; const vec = new Uint8Array([1, 2, /* … DIMS*4 bytes for f32 */]);
-  const pending = store.pendingMessageEmbeddings(MODEL, 100); // scan sees both, pre-scrub
-  expect(pending.map(p => p.id).sort()).toEqual([m1!, m2!].sort());
-  gate.forgetThread(t, CTX);                                   // scrub lands AFTER the scan
-  for (const p of pending) {
-    expect(store.upsertMessageEmbedding(p.id, MODEL, DIMS, vec)).toBe("skipped"); // in-tx re-check refuses
+} else if (target_type === "thread") {
+  // thread-forget 2e (spec §3.3): additive branch — mirrors the fact branch's UUID discipline.
+  if (typeof thread_id !== "string" || !thread_id || !UUID_RE.test(thread_id)) {
+    return Response.json({ error: "bad_body" }, { status: 400 });
   }
-  const n = (store.rawDb().query("SELECT COUNT(*) AS n FROM message_embeddings WHERE message_id IN (SELECT id FROM messages WHERE thread_id=?)").get(t) as {n:number}).n;
-  expect(n).toBe(0);
-  store.close();
+  // §0.5 live-guard: refuse to content-erase a currently-live conversation (its append/flush legs
+  // would silently re-acquire plaintext after the erase). thread_live is a DISTINCT 409 from the
+  // reserved future 5e-actor refusal — differentiated by the `error` body [critic m7].
+  if (deps.isThreadLive(thread_id)) {
+    return Response.json({ error: "thread_live" }, { status: 409 });
+  }
+  // NIT-5: the body's free-text `reason` is intentionally NOT forwarded — it would land un-erasable
+  // in mutations.reason. forgetThread persists a fixed tombstone reason; `reason` stays metadata.
+  const result = deps.hatch.forgetThread(thread_id, HTTP_CTX);
+  if (result.ok) return new Response(null, { status: 204 });               // applied AND idempotent repeat
+  if (result.reason === "not_found") return Response.json({ error: "target_not_found" }, { status: 404 });
+  // refused_machine is unreachable on the human-only HTTP path (HTTP_CTX); map defensively.
+  return Response.json({ error: "internal" }, { status: 500 });
+}
+```
+*Worker note:* `reasonStr` (`:196`) is now unused only if the fact branch stops referencing it — it does not, so leave it. `deps.hatch.forgetThread` is never-throw for caller-input; internal faults still throw → caught by the surrounding `try/catch` → `mapWriteError` → 500.
+
+- [ ] **Step 2.6: Wire the `liveThreads` registry in `index.ts` (Fork A1).**
+  - Add module-level after `const sessions` (`:31`): `` /** thread-forget 2e §0.5 [critic MAJOR-1]: module-level refcount registry (matches `sessions`). * refcount because two sockets can adopt one thread. inc on first session_start-bind, dec per * touched id on close. isThreadLive rides MemoryHttpDeps (daemon-internal — NOT the wire). */ const liveThreads = new Map<string, number>(); ``
+  - Inside `startDaemon`, before `const memoryDeps` (`:123`): `const isThreadLive = (id: string): boolean => (liveThreads.get(id) ?? 0) > 0;` and change `:123` to `const memoryDeps = { hatch, store, tokenStore, isThreadLive };`.
+  - **Increment site** — replace `:210` (`if (turnThreadId) (ws.data.touchedThreadIds ??= new Set<string>()).add(turnThreadId);`) with:
+
+```ts
+if (turnThreadId) {
+  const touched = (ws.data.touchedThreadIds ??= new Set<string>());
+  // Increment ONLY on FIRST bind of this thread by this socket (Set dedupes; guard prevents a
+  // same-socket double-count). Refcount because two sockets can adopt one thread (§0.5).
+  if (!touched.has(turnThreadId)) {
+    touched.add(turnThreadId);
+    liveThreads.set(turnThreadId, (liveThreads.get(turnThreadId) ?? 0) + 1);
+  }
+}
+```
+  - **Decrement site** — in `close(ws)`, immediately AFTER the sessionIds flush loop (`:319`) and BEFORE the CM-03 dismiss block (`:321`):
+
+```ts
+// §0.5 live-registry decrement — release EVERY thread this socket incremented. Fail-closed: a
+// missed decrement = a permanently-unerasable thread (annoying, not unsafe; §4 item 6), so this
+// runs unconditionally, independent of the dismiss batch below. Symmetric with the inc guard
+// (one inc per touched id ⇒ one dec per touched id). Module map is UUID-keyed → daemon-instance
+// safe (like `sessions`); a daemon restart clears it (fail-open on restart).
+for (const id of ws.data.touchedThreadIds ?? []) {
+  const n = (liveThreads.get(id) ?? 0) - 1;
+  if (n <= 0) liveThreads.delete(id);
+  else liveThreads.set(id, n);
+}
+```
+
+- [ ] **Step 2.7: Update the two direct-deps `MemoryHttpDeps` construction sites (typecheck fix).**
+  - `http-routes-cors.daemon.test.ts:24`: change to `return { deps: { hatch, store, tokenStore, isThreadLive: () => false }, token: tokenStore.token() };`
+  - `http-routes.daemon.test.ts:249`: change to `const deps = { hatch, store, tokenStore, isThreadLive: () => false };`
+
+- [ ] **Step 2.8: Run Task-2 tests — verify GREEN.**
+  Run: `cd packages/daemon && bun test src/memory/thread-forget.daemon.test.ts src/memory/http-routes.daemon.test.ts src/memory/http-routes-cors.daemon.test.ts`
+  Expected: PASS (taxonomy 400/404/409/204/idempotent; live-guard both sides; decrement proven; view meta over HTTP; the two direct-deps files still green). Then `cd packages/daemon && bun test src/memory/` for no collateral regression.
+
+- [ ] **Step 2.9: Commit** (branch `chunk/02-daemon-surface`).
+
+---
+
+### Task 3: history.html fallback + the EXECUTED probe (Strike-5) + full-gate verification
+
+**Files:**
+- Modify: `packages/daemon/src/memory/history-page.ts` (thread-forget button + arm→confirm frozen §0.2 copy + erased banner + 409 line + CSS)
+- Create: `packages/daemon/scripts/thread-forget-probe.ts` (executed Strike-5 probe)
+- Test: `packages/daemon/src/memory/history-page.test.ts` (frozen-copy + branch string guards — create if absent, else extend the existing `SANITIZE_TOKEN_FN` test file)
+
+**Interfaces:**
+- Consumes: the `target_type:"thread"` route (Task 2), `HatchViewResult.thread` (Task 1), `startDaemon`, `store.createThread`/`appendMessages`/`insertFact`, `HybridRanker`.
+- Produces: history.html thread-forget UX; the probe stdout (behavioral runtime proof).
+
+- [ ] **Step 3.1: Add the erased-banner CSS + detail-view containers.** In `history-page.ts` `<style>`, add:
+
+```css
+.erased-banner { padding: 10px 12px; margin-bottom: 10px; background: #fff8f0; border: 1px solid #f0c8a0; border-radius: 6px; color: #a05000; font-size: 13px; }
+```
+In the Messages panel section-head (`:181`), change to `<div class="section-head"><h2>Messages</h2><span id="thread-forget-control"></span></div>` and add `<div id="erased-banner"></div>` directly above `<div id="messages-container">…`.
+
+- [ ] **Step 3.2: Parametrize `doForget` for the frozen thread-forget copy + add the 409 line.** In `history-page.ts`:
+  - Extend the `doForget` signature to `doForget(bodyObj, threadId, forgetBtn, originalLabel, armedLabel, confirmHint)`; default `armedLabel = "Confirm forget?"` and `confirmHint = "Cannot be undone"`. Use `armedLabel` at the arm step (`:457`, replacing the literal `"Confirm forget?"`) and `confirmHint` for the hint text (`:466`, replacing the literal `"Cannot be undone"`). The existing fact-forget call site (`:389-392`) is UNCHANGED (relies on defaults).
+  - In the `executeForget` fetch `.then` (`:502-512`), insert a 409 branch before the generic `else`:
+
+```js
+} else if (r.status === 409) {
+  setStatus("This conversation is open — close it first.", false);   // [critic m8] honest, not raw "Error: 409"
+  resetForget();
+} else {
+  setStatus("Error: " + r.status, false);
+  resetForget();
+}
+```
+
+- [ ] **Step 3.3: Render the thread-forget control + banner from the widened view.** In `history-page.ts` `loadThread`'s `.then` (`:310-314`), add `renderThreadControls(data.thread, threadId, (data.messages || []).length);` and define:
+
+```js
+function renderThreadControls(thread, threadId, messageCount) {
+  var control = document.getElementById("thread-forget-control");
+  var banner = document.getElementById("erased-banner");
+  clearChildren(control); clearChildren(banner);
+  if (thread && thread.status === "forgotten") {
+    // Erased husk (terminal): banner, no forget button. §7 architect-latitude on copy (Fork E1 — no
+    // fabricated date; the frozen 3-field meta carries no erase timestamp).
+    var b = document.createElement("div");
+    b.className = "erased-banner";
+    b.textContent = "You erased this conversation's content. Distilled facts remain.";
+    banner.appendChild(b);
+    return;
+  }
+  // Live/active/dismissed thread → the destructive control (deliberate-destruction UX: it lives in
+  // the detail view where the user sees what they will erase — §0.1).
+  var btn = document.createElement("button");
+  btn.className = "btn btn-forget";
+  btn.textContent = "Forget conversation";
+  // FROZEN §0.2 copy [q#019 rider 3] — verbatim, with the REAL message count at confirm time.
+  var confirmHint = "Erase this conversation's content (" + messageCount + " messages)? Distilled facts remain. Cannot be undone.";
+  btn.addEventListener("click", function () {
+    doForget({ target_type: "thread", thread_id: threadId }, threadId, btn, "Forget conversation", "Confirm erase?", confirmHint);
+  });
+  control.appendChild(btn);
+}
+```
+*Worker note:* the frozen copy is a user-facing contract — do NOT pluralize "messages" (verbatim). The 204 handler already calls `loadThread(threadId)`, so post-erase the banner + husk render via re-fetch (the house no-optimistic-mutation pattern).
+
+- [ ] **Step 3.4: Add the frozen-copy + branch string-guard test.** In `history-page.test.ts` (create if only `SANITIZE_TOKEN_FN` is tested today; import `HISTORY_HTML`):
+
+```ts
+test("HISTORY_HTML pins the FROZEN §0.2 confirm copy template (q#019 rider 3)", () => {
+  expect(HISTORY_HTML).toContain(`"Erase this conversation's content (" + messageCount + " messages)? Distilled facts remain. Cannot be undone."`);
+});
+test("HISTORY_HTML sends target_type:'thread' and renders an honest 409 line", () => {
+  expect(HISTORY_HTML).toContain(`target_type: "thread"`);
+  expect(HISTORY_HTML).toContain("This conversation is open — close it first.");
 });
 ```
-  *Worker note:* match the real vector byte-width the store expects (read `embedding-storage.test.ts` for `DIMS`/`vec()` fixture helper; reuse it). Match the real return contract of `upsertMessageEmbedding` (the reality check says it returns a status string incl. `"skipped"` — verify at `store.ts:1624-1639`) and the real shape of `pendingMessageEmbeddings` rows (`p.id` field name).
 
-- [ ] **Step 3.3: Run the new tests — verify GREEN.**
-  Run: `cd packages/daemon && bun test src/memory/`
-  Expected: PASS. (If either test reveals a real defect in a shared path, apply `superpowers:systematic-debugging`, fix, and note it in the PR — do not weaken the assertion.)
+- [ ] **Step 3.5: Write the EXECUTED probe (Strike-5).** Create `packages/daemon/scripts/thread-forget-probe.ts`, modeled on `forget-roundtrip-probe.ts`. It proves the `history.html/HTTP → Hatch → WriteGate` erase on a FRESH store, deterministic (no LLM/embedding model; `EMBEDDING_PROVIDER=none`):
 
-- [ ] **Step 3.4: Full-gate verification.**
-  Run: `bun test` (repo root) · `bun run lint:strict` · typecheck (project's tsc command) · `git diff --stat`
-  Expected: all tests green; lint:strict 0 errors; typecheck clean; `git diff --stat` shows changes ONLY under `packages/daemon/src/memory/` (frozen surfaces `@agentic/protocol` + mock reducer byte-unchanged). Confirm `grep -rn dropDistilledFacts packages/ apps/` still returns zero.
+```
+Banner: "thread-forget-probe — Strike-5 EXECUTED evidence (thread-forget 2e, chunk-02)".
+1. process.env.AGENTIC_DATA_DIR = mkdtempSync; LLM_PROVIDER=mock; EMBEDDING_PROVIDER=none.
+2. Pre-seed via a fresh MemoryStore BEFORE boot:
+   - threadId = createThread("probe-thread")
+   - appendMessages(threadId, [{user:"secret one"},{assistant:"secret two"}], "probe-session")   // writes message_fts too
+   - factId = insertFact({ fact:"user's name is Lior", canonical:"name lior", provenance:`thread:${threadId}`,
+       scope:"cross-thread", expiry:null, confidence:1, authored_by:"machine", topics:["identity"] }, "probe")
+   - Snapshot: factsBefore = JSON of SELECT id,fact,authored_by,provenance FROM distilled_facts ORDER BY id.
+   - Log: message_fts count for thread, distilled_facts count. close().
+3. startDaemon(0); read auth-token from disk.
+4. POST /memory/forget {target_type:"thread", thread_id: threadId} with Bearer → assert 204 (print status).
+   POST again → assert 204 (idempotent).
+5. Reopen a fresh MemoryStore + assert (print each line):
+   - messages scrubbed:  every messages.content === "[forgotten]"                       → "messages scrubbed: true"
+   - facts intact:       JSON of distilled_facts === factsBefore (byte-identical)        → "facts intact (byte-identical): true"
+   - archive-search MISS: COUNT(message_fts WHERE message_id IN thread) === 0 AND
+                          COUNT(message_embeddings … ) === 0                              → "archive leg empty (fts+vec): true"
+   - fact-leg HIT:       new HybridRanker(store, null).searchFacts("Lior name") surfaces factId  → "fact leg still surfaces the fact: true"
+   - husk:               threads.status === "forgotten" AND title IS NULL                 → "husk (forgotten, title NULL): true"
+   - mirror clean:       read threads/<id>.jsonl → NOT contains "secret one"/"secret two"; contains "[forgotten]" and "thread_forget"  → "mirror holds no plaintext: true"
+6. GET /memory/thread/:id (Bearer) → assert body.thread.status === "forgotten" AND every message === "[forgotten]"
+   AND body.distilledFacts still contains the fact                                       → "HTTP surface honest (husk status + fact survives): true"
+7. On any failure: console.error + process.exit(1). On success: "PROBE PASSED" banner + process.exit(0).
+   Register process.on("exit") cleanup (rmSync tmpDir), exactly like forget-roundtrip-probe.ts.
+```
+*Worker note:* the row-count + `HybridRanker(store,null).searchFacts` assertions are the deterministic structural proof of the archive-miss/fact-hit asymmetry (§3.6). The FULL live search-leg behavioral proof (`memory_search` over WS with a real LLM) is the chunk-03 §6.1 demo item 4, NOT this probe. `insertFact`/`HybridRanker` signatures: see `forget-roundtrip-probe.ts:93-105` and `memory-demo-harness.ts:460`.
 
-- [ ] **Step 3.5: Commit** (existing branch).
+- [ ] **Step 3.6: RUN the probe — capture stdout for the PR (Strike-5; NOT type-check only).**
+  Run: `bun run packages/daemon/scripts/thread-forget-probe.ts`
+  Expected: `PROBE PASSED` + all six proof lines `true`, exit 0. **Paste the full stdout into the PR body** — this is the runtime proof for the behavioral DoD. (If it fails, apply `superpowers:systematic-debugging`; do not weaken assertions.)
+
+- [ ] **Step 3.7: Full-gate verification.**
+  Run (repo root): `bun test` · `bun run lint:strict` · the project typecheck command · `git diff --stat`
+  Expected: all tests green; `lint:strict` 0 errors; typecheck clean. **`git diff --stat` shows NO changes under `packages/protocol/` or the mock provider/reducer** (frozen surfaces byte-unchanged). Confirm the probe stdout from Step 3.6 is in the PR body.
+
+- [ ] **Step 3.8: Commit + open the PR** (branch `chunk/02-daemon-surface` → `main`). PR body: the seven chunk `## Done criteria` checkboxes with command evidence + the probe stdout + the three RED-first captures (Step 1.4, Step 2.3). Auto-merge only on the all-green gate set.
 
 ---
 
 ## Self-review (spec coverage)
 
-- **§3.2 fact-sweep removal + flipped tests (RED-first) + `drop*` deletion** → Task 1 (incl. the 4 DRIFT tests the chunk under-enumerated).
-- **§3.1 `forgetThread`** — one tx, tombstone+scrub+`deleteMessageDerived`, status/title husk, audit scrub, correction scrub, machine refusal, not_found, idempotence, NO marker bump, structural Ruling-2 → Task 2.
-- **§3.1a `redactMirrorThread`** — bulk message+edit redaction, preserve/unparseable/missing-file, no delete, post-tx + `thread_forget` line, DB-first → Task 2.
-- **§5 tests** — headline (Ruling 2), completeness matrix, atomicity, idempotence, typed results → Task 2; distill-no-op (spy, zero LLM), drain-interleave → Task 3.
-- **Scope OUT** (HTTP/Hatch/`isThreadLive`/409, UI, `beginTurn` erased-id exclusion, startup mirror-reconcile, deleting facts) — correctly absent; deferred to chunks 02/03 per §6/§7.2.
+| Spec decision | Task covering it |
+|---|---|
+| §3.3 HTTP `target_type:"thread"` branch + 400/404/409/204 + idempotent | Task 2 (Steps 2.4–2.5, tests 2.1) |
+| §3.3 `Hatch.forgetThread` façade | Task 1 (Step 1.9) |
+| §3.3 `hatch.view` additive `thread:{thread_id,status,last_active_at}` meta | Task 1 (Step 1.9–1.10); over HTTP in Task 2 (Step 2.2) |
+| §3.3 header comment: `thread_live` distinct 409 [critic m7] | Task 2 (Step 2.4) |
+| §0.5 live-registry `Map<threadId,refcount>` + inc/dec sites + `isThreadLive` dep + TOCTOU-accepted | Task 2 (Step 2.6); decrement proven test 2.2 |
+| §3.3a erased-id NOT adoptable/reusable (both branches) | Task 1 (Step 1.8, RED test 1.3) |
+| §0.1/§3.5 history.html button + arm→confirm + FROZEN §0.2 copy w/ real N | Task 3 (Steps 3.1–3.4) |
+| §0.3/§3.5 erased-husk banner (history.html; no content leak — neutral label, no date per Fork E1) | Task 3 (Step 3.3) |
+| §3.5 history.html honest 409 line [critic m8] | Task 3 (Step 3.2) |
+| §4 item 3 `status='forgotten'` third value tolerated by renders | Task 3 (Step 3.3 husk branch); Task 1 view meta |
+| §4 item 4 `HatchView` widening optional-tolerant | Task 1 (Step 1.9, nullable field) |
+| §4 item 6 `isThreadLive` refcount discipline + fail-closed decrement | Task 2 (Step 2.6, test 2.2) |
+| §4 item 7 `beginTurn` status check ↔ adoption | Task 1 (Step 1.8) |
+| chunk-01 residual MINOR-2 (dormant `edit` guard) — Fork C1 structural close | Task 1 (Step 1.6, RED test 1.1) |
+| chunk-01 residual NIT-5 (`mutations.reason` free-text) — Fork D1 scrub-by-constant | Task 1 (Step 1.7, RED test 1.2) + route drops free-text (Step 2.5) |
+| §5 HTTP taxonomy incl. 409 (fake `isThreadLive`) + idempotent + message/garbage still 400 | Task 2 (test 2.1) |
+| §5 live-guard both sides + decrement-on-close proven | Task 2 (test 2.2) |
+| §5 adoption exclusion (fresh id; husk untouched) | Task 1 (test 1.3) |
+| §5 EXECUTED probe (messages scrubbed · facts intact · archive miss + fact hit · mirror clean) | Task 3 (Steps 3.5–3.6) |
+| §5 frozen byte-diff empty (protocol + mock reducer) | Task 3 (Step 3.7) |
+| §7 architect-time: exact increment sites (pinned `index.ts:210` + close decrement) | Task 2 (Step 2.6) |
+| **OUT** (chunk-03): overlay Memory window UI, overlay `types.ts` widening, the live §6.1 demo | Correctly absent — deferred to chunk-03 |
+| **OUT** (rejected/frozen): `status='dismissed'` liveness gate, WS/mock-reducer change, dismiss-race lock | Correctly absent (q#019 / spec §3.7 note) |
+
+**Placeholder scan:** none — every code step shows the exact code/SQL; test steps show assertions; commands show expected output.
+**Type consistency:** `readThreadMeta` return shape, `HatchViewResult.thread`, `ForgetThreadResult`, `MemoryHttpDeps.isThreadLive`, and the route's result mapping are consistent across Tasks 1→2→3.
+
+---
+
+## Status: Done
+
+**Plan is complete but NOT yet persisted** — this environment gave me no file-writing tool (only Read/Grep/Glob/Skill/WebFetch). The full plan above is ready to be saved verbatim to `/Users/lior/WebstormProjects/playground/AgenticEngine/orchestration/docs/plans/thread-forget/plan.md` (the slot is free; chunk-01's plan is archived at `orchestration/docs/plans/archive/thread-forget/plan-01-forget-thread-primitive.md`). Please write it there.
+
+Key outcomes for the orchestrator:
+- **Chunk-01 confirmed landed on `main @ 5149995`** — `WriteGate.forgetThread` (`write-gate.ts:126-164`), `MemoryStore.redactMirrorThread` (`store.ts:1054-1071`). This chunk builds callers + guards on top.
+- **ADR worthy: no** — confirmed per spec §0.6 (executes accepted ADR-0013/0015/0014/0012-rider decisions; the `isThreadLive` registry implements the already-ruled §0.5 guard, daemon-internal, no wire/boundary change).
+- **Two chunk-01 residuals closed structurally** (Approaches Forks C + D): MINOR-2 `edit()` guard (RED-first) and NIT-5 `reason` scrub-by-constant (RED-first) — both a few lines, both close the class by construction rather than annotation.
+- **Two cosmetic anchor drifts** from the spec's `6785b35` baseline (no design impact): `editFact` machine-refusal moved `:222`→`:269`; history.html 5s auto-reset is at `:485` (spec cited `:457-466`).
+- **One spec-internal tension resolved, not escalated:** the §0.3 banner "on `<date>`" has no source in the frozen 3-field meta → banner renders no fabricated date (Fork E1, §7 latitude); erase-date widening deferred to chunk-03/Lior.
+- **Behavioral DoD is runtime-proof-gated:** the history.html erase flow is proven by the EXECUTED `thread-forget-probe.ts` stdout (Task 3) — marked "requires runtime proof," never "verified" from code-reading (PIPELINE §6.1). The full user-facing §6.1 sign-off is chunk-03.
+
+Files most relevant to the work (all absolute):
+- Plan target: `/Users/lior/WebstormProjects/playground/AgenticEngine/orchestration/docs/plans/thread-forget/plan.md`
+- `/Users/lior/WebstormProjects/playground/AgenticEngine/packages/daemon/src/memory/http-routes.ts`
+- `/Users/lior/WebstormProjects/playground/AgenticEngine/packages/daemon/src/memory/hatch.ts`
+- `/Users/lior/WebstormProjects/playground/AgenticEngine/packages/daemon/src/memory/write-gate.ts`
+- `/Users/lior/WebstormProjects/playground/AgenticEngine/packages/daemon/src/memory/store.ts`
+- `/Users/lior/WebstormProjects/playground/AgenticEngine/packages/daemon/src/memory/thread-lifecycle.ts`
+- `/Users/lior/WebstormProjects/playground/AgenticEngine/packages/daemon/src/memory/history-page.ts`
+- `/Users/lior/WebstormProjects/playground/AgenticEngine/packages/daemon/src/index.ts`
+- `/Users/lior/WebstormProjects/playground/AgenticEngine/packages/daemon/scripts/forget-roundtrip-probe.ts` (probe template)
+
+**_AI ENGINEERING_**
+- **Human-in-the-loop as safety boundary** — the whole feature is a *sovereign-surface* action-gating pattern: a destructive content-erase is deliberately withheld from the agent's tool plane (ADR-0016 closed set) and confined to a human-only HTTP path with a fixed `authored_by:"human"` context, so a prompt-injection can never erase history. The `refused_machine` result is defense-in-depth on that boundary.
+- **Least-privilege tool scoping / capability absence** — §3.6 makes "no agent-side `memory_forget_thread` tool" the deliberate design; the agent's honest answer to erased content is *absence* (the archive leg finds nothing), while the derived fact legitimately survives — a designed asymmetry, not a leak.
+- **Provenance & tombstoning over deletion** — the "husk" (rows stay, content→`[forgotten]`, `status='forgotten'`) is an *append-only audit / immutable-event-log* posture: the erase is itself an observable event, and the JSONL mirror is redacted-in-place rather than deleted, preserving the audit trail while destroying content.
+- **TOCTOU / concurrency control** — the `isThreadLive` refcount registry is a point-in-time liveness check (no lock) guarding a race where a live conversation's in-flight turn would re-flush plaintext after the erase; the accepted TOCTOU window + fail-closed decrement discipline is a classic single-writer concurrency trade-off documented rather than over-engineered.
+agentId: aed6ffced60c42b60 (use SendMessage with to: 'aed6ffced60c42b60', summary: '<5-10 word recap>' to continue this agent)
+<usage>subagent_tokens: 236184
+tool_uses: 29
+duration_ms: 1010846</usage>

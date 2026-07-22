@@ -609,7 +609,9 @@ test("forgetThread scrubs content, vectors, fts, corrections, audit, husk — al
   const t = store.createThread();
   const [m1] = gate.appendTurn(t, [{ role: "user", content: "secret one" }], "s1", CTX);
   const [m2] = gate.appendTurn(t, [{ role: "assistant", content: "secret two" }], "s1", CTX);
-  gate.edit(m1!, "corrected secret", CTX, "fix"); // legacy correction plaintext in mutations
+  // legacy correction plaintext + a content-quoting `reason` in mutations (MINOR-1 target — the
+  // removed message-edit HTTP path used to forward user free-text into this column)
+  gate.edit(m1!, "corrected secret", CTX, "erase the part where I said my SSN is 123-45-6789");
   // seed real message-embedding vectors so the "zero rows after" assertion is meaningful
   expect(store.upsertMessageEmbedding(m1!, EMBED_MODEL, EMBED_DIMS, fixtureVec(1))).toBe("written");
   expect(store.upsertMessageEmbedding(m2!, EMBED_MODEL, EMBED_DIMS, fixtureVec(2))).toBe("written");
@@ -630,9 +632,11 @@ test("forgetThread scrubs content, vectors, fts, corrections, audit, husk — al
   // zero message_embeddings / message_fts for the thread
   expect((db.query("SELECT COUNT(*) AS n FROM message_embeddings WHERE message_id IN (SELECT id FROM messages WHERE thread_id=?)").get(t) as { n: number }).n).toBe(0);
   expect((db.query("SELECT COUNT(*) AS n FROM message_fts WHERE message_id IN (SELECT id FROM messages WHERE thread_id=?)").get(t) as { n: number }).n).toBe(0);
-  // correction plaintext scrubbed, row kept
-  const corr = db.query("SELECT replacement_content FROM mutations WHERE kind='correction' AND target_message_id=?").get(m1!) as { replacement_content: string };
+  // correction plaintext AND its sibling content-quoting `reason` scrubbed, row kept (MINOR-1)
+  const corr = db.query("SELECT replacement_content, reason FROM mutations WHERE kind='correction' AND target_message_id=?").get(m1!) as { replacement_content: string; reason: string | null };
   expect(corr.replacement_content).toBe(REDACTION_MARKER);
+  expect(corr.reason).toBe(REDACTION_MARKER);
+  expect(corr.reason ?? "").not.toContain("SSN");
   // audit fact_text scrubbed, row kept
   const aud = db.query("SELECT fact_text, action, outcome FROM memory_action_events WHERE thread_id=?").get(t) as { fact_text: string; action: string; outcome: string };
   expect(aud.fact_text).toBe(REDACTION_MARKER);
@@ -745,5 +749,70 @@ test("scrub between drain scan and upsert → zero vector rows survive (drain-ra
   }
   const n = (store.rawDb().query("SELECT COUNT(*) AS n FROM message_embeddings WHERE message_id IN (SELECT id FROM messages WHERE thread_id=?)").get(t) as { n: number }).n;
   expect(n).toBe(0);
+  store.close();
+});
+
+// ── thread-forget (2e) chunk-02 Task 1: MINOR-2 edit-guard + NIT-5 reason-scrub ──
+
+test("edit() no-ops on a message of a status='forgotten' thread (MINOR-2 — no plaintext re-flush)", () => {
+  const { store, gate, dir } = fresh();
+  const t = store.createThread();
+  const [m1] = gate.appendTurn(t, [{ role: "user", content: "original secret" }], "s1", CTX);
+  gate.forgetThread(t, CTX);                         // thread now terminal ('forgotten'); m1 scrubbed
+  // Attempt to re-introduce plaintext via the message-id-keyed edit path:
+  gate.edit(m1!, "sneaky reintroduced plaintext", CTX, "reopen attempt");
+  const db = store.rawDb();
+  // NO new correction row carrying the plaintext was written:
+  const corr = db.query(
+    "SELECT COUNT(*) AS n FROM mutations WHERE kind='correction' AND target_message_id=? AND replacement_content=?",
+  ).get(m1!, "sneaky reintroduced plaintext") as { n: number };
+  expect(corr.n).toBe(0);
+  // The archive read still returns the redaction marker (nothing resurfaced):
+  const arch = store.readThreadArchive(t);
+  expect(arch.every((r) => r.content === REDACTION_MARKER)).toBe(true);
+  // The mirror holds no reintroduced plaintext:
+  const mirror = readFileSync(join(dir, "threads", `${t}.jsonl`), "utf8");
+  expect(mirror).not.toContain("sneaky reintroduced plaintext");
+  store.close();
+});
+
+test("forgetThread persists a fixed tombstone reason — a content-quoting reason never lands in mutations.reason (NIT-5)", () => {
+  const { store, gate } = fresh();
+  const t = store.createThread();
+  gate.appendTurn(t, [{ role: "user", content: "x" }], "s1", CTX);
+  gate.forgetThread(t, CTX, "erase the part where I said my SSN is 123-45-6789");
+  const db = store.rawDb();
+  const reasons = db.query(
+    "SELECT DISTINCT reason FROM mutations WHERE kind='tombstone' AND target_message_id IN (SELECT id FROM messages WHERE thread_id=?)",
+  ).all(t) as { reason: string | null }[];
+  // The free-text (content-quoting) reason is NOT persisted; a fixed constant is used instead.
+  expect(reasons.every((r) => r.reason === "thread_forget")).toBe(true);
+  expect(reasons.some((r) => (r.reason ?? "").includes("SSN"))).toBe(false);
+  store.close();
+});
+
+// ── thread-forget (2e) chunk-02 review fix pass: MAJOR-2 (appendTurn race guard) ──
+
+test("appendTurn no-ops on a status='forgotten' thread (MAJOR-2 — the beginTurn-await-window race: erase always wins)", () => {
+  const { store, gate, dir } = fresh();
+  const t = store.createThread();
+  gate.appendTurn(t, [{ role: "user", content: "before erase" }], "s1", CTX);
+  expect(gate.forgetThread(t, CTX)).toEqual({ ok: true });
+  // Simulate a turn landing AFTER the erase committed (the beginTurn-await-window race described
+  // in the review: beginTurn's §3.3a adoption check ran BEFORE a concurrent forgetThread committed,
+  // so by the time endTurn flushes via appendTurn, the thread is already 'forgotten').
+  const idsAfter = gate.appendTurn(t, [{ role: "user", content: "sneaky post-erase plaintext" }], "s2", CTX);
+  expect(idsAfter).toEqual([]); // no-op: no row written, no id minted
+  const db = store.rawDb();
+  const nonMarkerCount = (
+    db.query("SELECT COUNT(*) AS n FROM messages WHERE thread_id=? AND content!=?").get(t, REDACTION_MARKER) as { n: number }
+  ).n;
+  expect(nonMarkerCount).toBe(0); // no plaintext row landed on the husk
+  const arch = store.readThreadArchive(t);
+  expect(arch.every((r) => r.content === REDACTION_MARKER)).toBe(true);
+  const mirror = readFileSync(join(dir, "threads", `${t}.jsonl`), "utf8");
+  expect(mirror).not.toContain("sneaky post-erase plaintext");
+  const status = db.query("SELECT status FROM threads WHERE thread_id=?").get(t) as { status: string };
+  expect(status.status).toBe("forgotten"); // still terminal — the race never reopens it
   store.close();
 });

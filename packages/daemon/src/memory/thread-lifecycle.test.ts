@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { MemoryStore } from "./store.js";
-import { WriteGate } from "./write-gate.js";
+import { WriteGate, REDACTION_MARKER } from "./write-gate.js";
 import { ThreadLifecycle } from "./thread-lifecycle.js";
 import { DumbTailProvider } from "./providers/dumb-tail-provider.js";
 import { RuleBasedScanner } from "./scanner/memory-scanner.js";
@@ -212,5 +212,30 @@ test("v2-07: whenIdle that never resolves times out and beginTurn still resolves
   expect(timeoutLogFound).toBe(true);
 
   errSpy.mockRestore();
+  store.close();
+});
+
+// ---- thread-forget (2e) chunk-02 Task 1: §3.3a adoption exclusion ----
+
+test("§3.3a: session_start with a status='forgotten' id mints a FRESH thread; the husk is byte-untouched", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "mf01-tl-2e-"));
+  const store = new MemoryStore({ dataDir: dir });
+  const gate = new WriteGate(store, new RuleBasedScanner());
+  const lifecycle = new ThreadLifecycle(store, gate);
+  // Seed + erase a thread → a 'forgotten' husk with a real UUID id
+  const t = await lifecycle.beginTurn({ type: "session_start", trigger: "user", text: "hello" });
+  lifecycle.endTurn(t.threadId, "sess-a", [{ role: "user", content: "hello" }]);
+  expect(gate.forgetThread(t.threadId, { actor: "user", authored_by: "human" })).toEqual({ ok: true });
+  const db = store.rawDb();
+  const huskBefore = JSON.stringify(
+    db.query("SELECT status, title, last_active_at FROM threads WHERE thread_id=?").get(t.threadId),
+  );
+  // Re-summon with the erased id → must NOT adopt the husk; must mint a fresh distinct id
+  const again = await lifecycle.beginTurn({ type: "session_start", trigger: "user", text: "again", thread_id: t.threadId });
+  expect(again.threadId).not.toBe(t.threadId);            // RED on current code: it adopts the husk (===)
+  expect(store.threadExists(again.threadId)).toBe(true);  // a genuinely new thread exists
+  // Husk unchanged (status still forgotten, no new messages appended to it)
+  expect(JSON.stringify(db.query("SELECT status, title, last_active_at FROM threads WHERE thread_id=?").get(t.threadId))).toBe(huskBefore);
+  expect((db.query("SELECT COUNT(*) AS n FROM messages WHERE thread_id=? AND content!=?").get(t.threadId, REDACTION_MARKER) as { n: number }).n).toBe(0);
   store.close();
 });

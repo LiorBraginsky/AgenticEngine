@@ -29,6 +29,10 @@ export const DAEMON_HOST = "127.0.0.1"; // loopback only (ADR-0003 p.3)
 export const DAEMON_PORT = 7777;
 
 const sessions = new Map<string, ProviderSessionState>();
+/** thread-forget 2e §0.5 [critic MAJOR-1]: module-level refcount registry (matches `sessions`).
+ * refcount because two sockets can adopt one thread. inc on first session_start-bind, dec per
+ * touched id on close. isThreadLive rides MemoryHttpDeps (daemon-internal — NOT the wire). */
+const liveThreads = new Map<string, number>();
 type SocketData = {
   sessionIds: Set<string>;
   activeThreadId?: string;
@@ -37,6 +41,13 @@ type SocketData = {
   // close(ws) dismisses each not-yet-dismissed one. A single value (activeThreadId)
   // is insufficient — a same-socket thread switch must dismiss BOTH on close (spec §3.2).
   touchedThreadIds?: Set<string>;
+  /** thread-forget 2e (chunk-02 review MAJOR-1): set as the FIRST statement in close(ws).
+   * The message handler is async and can still be suspended inside `await lifecycle.beginTurn`
+   * (parked on memoryProvider.retrieve()/whenIdle) when close() fires and runs its decrement
+   * loop to completion — landing an increment AFTER the decrement would strand liveThreads at
+   * a permanently-nonzero refcount (thread stuck 409 until daemon restart). The increment site
+   * checks this flag and skips (both the increment AND the touched.add) once the socket is closed. */
+  closed?: boolean;
 };
 
 function send(
@@ -120,7 +131,8 @@ export function startDaemon(
   const { whenIdle } = registerDistiller(hook, store, memProvider, scanner);
   const lifecycle = new ThreadLifecycle(store, gate, memProvider, whenIdle);
 
-  const memoryDeps = { hatch, store, tokenStore };
+  const isThreadLive = (id: string): boolean => (liveThreads.get(id) ?? 0) > 0;
+  const memoryDeps = { hatch, store, tokenStore, isThreadLive };
 
   // T2.3a: the websocket handler needs the actual bound port (which may differ from
   // the requested `port` when port=0 is used for ephemeral test ports). Capture via
@@ -207,7 +219,20 @@ export function startDaemon(
           ws.data.activeThreadId = turnThreadId;
           // CM-03: remember this thread so close(ws) can dismiss every active thread
           // on the connection (not just the last one).
-          if (turnThreadId) (ws.data.touchedThreadIds ??= new Set<string>()).add(turnThreadId);
+          // thread-forget 2e (chunk-02 review MAJOR-1): `!ws.data.closed` guards against the
+          // stranded-refcount race — close(ws) can run its decrement loop to completion WHILE
+          // this handler was suspended above (inside beginTurn's await), landing here AFTER
+          // close() already ran. Skip BOTH the touched.add and the increment in that case —
+          // a socket that already closed must never strand a refcount.
+          if (turnThreadId && !ws.data.closed) {
+            const touched = (ws.data.touchedThreadIds ??= new Set<string>());
+            // Increment ONLY on FIRST bind of this thread by this socket (Set dedupes; guard prevents a
+            // same-socket double-count). Refcount because two sockets can adopt one thread (§0.5).
+            if (!touched.has(turnThreadId)) {
+              touched.add(turnThreadId);
+              liveThreads.set(turnThreadId, (liveThreads.get(turnThreadId) ?? 0) + 1);
+            }
+          }
 
           // 2c-02 (ADR-0016 decision 3): index the first-N `[remembered]` messages
           // and build the ordinal→factId map ONLY when the active provider consumes
@@ -302,6 +327,11 @@ export function startDaemon(
         for (const out of result.outbound) send(ws, out, injectedMemory);
       },
       async close(ws) {
+        // thread-forget 2e (chunk-02 review MAJOR-1): FIRST statement, always. A message
+        // handler invocation can still be suspended (parked inside beginTurn's await) when
+        // this fires; setting the flag NOW — before anything else — lets that suspended
+        // handler see it the moment it resumes, so it never strands a liveThreads refcount.
+        ws.data.closed = true;
         // ── S1 partial-turn flush (UNCHANGED): persist any in-flight turn's delta
         //    before dropping RAM, so the distiller (below) sees the final turn.
         for (const sid of ws.data.sessionIds) {
@@ -316,6 +346,17 @@ export function startDaemon(
           }
           sessions.delete(sid);
           lifecycle.forgetSession(sid);
+        }
+
+        // §0.5 live-registry decrement — release EVERY thread this socket incremented. Fail-closed: a
+        // missed decrement = a permanently-unerasable thread (annoying, not unsafe; §4 item 6), so this
+        // runs unconditionally, independent of the dismiss batch below. Symmetric with the inc guard
+        // (one inc per touched id ⇒ one dec per touched id). Module map is UUID-keyed → daemon-instance
+        // safe (like `sessions`); a daemon restart clears it (fail-open on restart).
+        for (const id of ws.data.touchedThreadIds ?? []) {
+          const n = (liveThreads.get(id) ?? 0) - 1;
+          if (n <= 0) liveThreads.delete(id);
+          else liveThreads.set(id, n);
         }
 
         // ── CM-03: dismiss = close(ws). After the flush, consolidate EVERY active

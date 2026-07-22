@@ -7,6 +7,11 @@ import { memDebug } from "./debug-log.js";
 
 export { REDACTION_MARKER };
 
+/** thread-forget 2e (NIT-5): tombstone reason is metadata-not-content. mutations.reason is OUTSIDE
+ *  the erase matrix (survives un-scrubbed), so forgetThread persists a FIXED constant regardless of
+ *  the caller-supplied `reason` — no user free-text can ever reach that un-erasable column. */
+const THREAD_FORGET_REASON = "thread_forget";
+
 /**
  * Context every memory write carries. MF-01 only records `authored_by` (so the
  * mutations/messages provenance columns are populated); MF-03 (5d scan / 5e
@@ -51,6 +56,15 @@ export class WriteGate {
    * (ARCHIVE-AS-TRUTH — never silently drop the user's words) but a minimal
    * quarantine marker is recorded, so the distiller skips it
    * (isMessageQuarantined) and it can never reach an injected slice (#31).
+   *
+   * thread-forget 2e (chunk-02 review MAJOR-2): a turn can reach this call on an
+   * ALREADY-forgotten thread via a race — ThreadLifecycle.beginTurn's §3.3a adoption
+   * check runs BEFORE it awaits memoryProvider.retrieve()/whenIdle(), so a concurrent
+   * forgetThread can commit DURING that await window; the adoption decision is then
+   * stale by the time endTurn flushes here. No-op (return []) rather than silently
+   * re-appending plaintext onto an erased husk — the in-flight turn is dropped,
+   * which matches user intent (the erase wins the race). Endpoint-safe: the sole
+   * production caller (ThreadLifecycle.endTurn) discards this return value.
    */
   appendTurn(
     threadId: string,
@@ -58,6 +72,7 @@ export class WriteGate {
     sessionId: string,
     ctx: WriteContext,
   ): string[] {
+    if (this.store.readThreadMeta(threadId)?.status === "forgotten") return [];
     const ids = this.store.appendMessages(threadId, messages, sessionId);
     messages.forEach((m, i) => {
       // No `scope` is passed here — messages (turns) have no scope concept.
@@ -123,6 +138,7 @@ export class WriteGate {
    * machine-ctx refusal). Idempotent: already-tombstoned messages are
    * skipped; a second call is a no-op that still returns { ok: true }.
    */
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- `reason` kept for API symmetry with forget/forgetFact; intentionally NOT persisted (NIT-5)
   forgetThread(threadId: string, ctx: WriteContext, reason?: string): ForgetThreadResult {
     if (ctx.authored_by === "machine") return { ok: false, reason: "refused_machine" };
     if (!this.store.threadExists(threadId)) return { ok: false, reason: "not_found" };
@@ -140,7 +156,7 @@ export class WriteGate {
       );
       const scrub = db.query("UPDATE messages SET content = ? WHERE id = ?");
       for (const { id } of rows) {
-        insTomb.run(crypto.randomUUID(), id, ctx.actor, reason ?? null, ctx.authored_by, now);
+        insTomb.run(crypto.randomUUID(), id, ctx.actor, THREAD_FORGET_REASON, ctx.authored_by, now);
         scrub.run(REDACTION_MARKER, id);
         // tx-less by design — see MemoryStore.deleteMessageDerived (commits with THIS tx; no nested tx; bun:sqlite forbids it)
         this.store.deleteMessageDerived(id);
@@ -149,12 +165,16 @@ export class WriteGate {
       db.query("UPDATE threads SET status = 'forgotten', title = NULL WHERE thread_id = ?").run(threadId);
       // §0.4 audit-trail scrub (rows KEPT — action/outcome/actor/timestamps survive)
       db.query("UPDATE memory_action_events SET fact_text = ? WHERE thread_id = ?").run(REDACTION_MARKER, threadId);
-      // [critic MAJOR-2] legacy correction-plaintext scrub (COALESCE read would resurface it)
+      // [critic MAJOR-2] legacy correction-plaintext scrub (COALESCE read would resurface it).
+      // chunk-02 review MINOR-1: `reason` is a SIBLING column on the SAME correction rows and sat
+      // OUTSIDE the erase matrix — the now-removed message-edit HTTP path used to forward the
+      // caller's free-text `reason` verbatim, so a dogfood DB can hold a correction row whose
+      // `reason` quotes conversation content. Scrub it in the SAME statement as replacement_content.
       db.query(
-        `UPDATE mutations SET replacement_content = ?
+        `UPDATE mutations SET replacement_content = ?, reason = ?
           WHERE kind = 'correction'
             AND target_message_id IN (SELECT id FROM messages WHERE thread_id = ?)`,
-      ).run(REDACTION_MARKER, threadId);
+      ).run(REDACTION_MARKER, REDACTION_MARKER, threadId);
     });
     tx(); // ATOMIC-ERASE INVARIANT: all writes above commit together or not at all
     // DB-first ordering (write-gate.ts:107-112): mirror is the sole post-tx step (§3.1a crash window accepted)
@@ -289,6 +309,16 @@ export class WriteGate {
     // B1: validate existence BEFORE any INSERT — threadOf throws for unknown ids,
     // preventing an orphaned mutations row with a dangling target_message_id FK.
     const threadId = this.threadOf(messageId);
+    // thread-forget 2e (chunk-01 review MINOR-2; chunk-02 review MAJOR-2 corrected this comment):
+    // 'forgotten' is terminal. edit() is message-id-keyed — the §3.3a adoption exclusion and the
+    // §0.5 live-guard are thread-adoption-keyed and do NOT cover this path. Without this, a future
+    // edit() caller could re-introduce plaintext into mutations.replacement_content AND append a
+    // plaintext `edit` mirror line onto a just-scrubbed thread. This is an EXPLICIT guard — NOT
+    // "by construction" via §3.3a: §3.3a only excludes a forgotten id at ADOPTION time, and a race
+    // (beginTurn's await window) can still land a write here after the thread was forgotten mid-turn.
+    // appendTurn (above) carries the identical explicit guard for the same reason.
+    // (Reachability today = NONE for edit(): it lost its production caller at the 2d message-edit removal.)
+    if (this.store.readThreadMeta(threadId)?.status === "forgotten") return;
     // 5e guard: machine edit of human entry → no-op (human content survives
     // byte-intact). Q2-minimal: no competing row is written; the un-changed
     // original is the behavioral proof. A human edit is always applied.

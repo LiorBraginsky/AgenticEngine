@@ -1005,6 +1005,18 @@ export class MemoryStore {
       .all() as { thread_id: string; title: string | null; last_active_at: number; status: string }[];
   }
 
+  /**
+   * Single-thread meta read (thread-forget 2e §3.3): status + last_active_at for ONE thread,
+   * or null if absent. PK lookup — cheap. Consumed by Hatch.view (erased-husk banner render),
+   * ThreadLifecycle.beginTurn (§3.3a erased-id exclusion), and WriteGate.edit (the forgotten-
+   * thread write guard, chunk-01 review MINOR-2).
+   */
+  readThreadMeta(threadId: string): { thread_id: string; status: string; last_active_at: number } | null {
+    return this.db
+      .query("SELECT thread_id, status, last_active_at FROM threads WHERE thread_id = ?")
+      .get(threadId) as { thread_id: string; status: string; last_active_at: number } | null;
+  }
+
   /** Raw helpers used by WriteGate (mutations) — kept here so all SQL lives in the store. */
   rawDb(): Database {
     return this.db;

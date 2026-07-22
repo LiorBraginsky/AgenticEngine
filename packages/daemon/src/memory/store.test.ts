@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { mkdtempSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
-import { MemoryStore, CANDIDATE_TOP_K, ALL_FACTS_CAP, toFtsOrQuery } from "./store.js";
+import { MemoryStore, CANDIDATE_TOP_K, ALL_FACTS_CAP, toFtsOrQuery, type DistilledFactRow } from "./store.js";
 import { WriteGate } from "./write-gate.js";
 import { RuleBasedScanner } from "./scanner/memory-scanner.js";
 import { REDACTION_MARKER } from "./schema.js";
@@ -691,12 +691,24 @@ test("MINOR-1: a thread-local fact with comma-joined provenance injects into its
 test("isFactVisibleToThread: cross-thread/global/null visible; expired hidden; thread-local only from origin", () => {
   const { store } = freshStore();
   const now = Date.now();
-  const base = { id: "x", fact: "f", confidence: 1, authored_by: "machine" } as const;
-  expect(store.isFactVisibleToThread({ ...base, scope: "cross-thread", provenance: "thread:A", expiry: null } as any, "B", now)).toBe(true);
-  expect(store.isFactVisibleToThread({ ...base, scope: null, provenance: "thread:A", expiry: null } as any, "B", now)).toBe(true);
-  expect(store.isFactVisibleToThread({ ...base, scope: "cross-thread", provenance: "thread:A", expiry: now - 1 } as any, "B", now)).toBe(false);
-  expect(store.isFactVisibleToThread({ ...base, scope: "thread-local", provenance: "thread:A", expiry: null } as any, "B", now)).toBe(false);
-  expect(store.isFactVisibleToThread({ ...base, scope: "thread-local", provenance: "thread:A", expiry: null } as any, "A", now)).toBe(true);
+  const row = (over: Partial<DistilledFactRow>): DistilledFactRow => ({
+    id: "x",
+    fact: "f",
+    provenance: "thread:A",
+    scope: "cross-thread",
+    expiry: null,
+    confidence: 1,
+    authored_by: "machine",
+    ...over,
+  });
+  expect(store.isFactVisibleToThread(row({ scope: "cross-thread", provenance: "thread:A", expiry: null }), "B", now)).toBe(true);
+  // v2-04 store reads a NULL scope column back as `string` (DistilledFactRow's declared type) even
+  // though SQLite can return an actual null for that column — same runtime shape the shared
+  // predicate's own `row.scope ?? "cross-thread"` defends against (store.ts).
+  expect(store.isFactVisibleToThread(row({ scope: null as unknown as string, provenance: "thread:A", expiry: null }), "B", now)).toBe(true);
+  expect(store.isFactVisibleToThread(row({ scope: "cross-thread", provenance: "thread:A", expiry: now - 1 }), "B", now)).toBe(false);
+  expect(store.isFactVisibleToThread(row({ scope: "thread-local", provenance: "thread:A", expiry: null }), "B", now)).toBe(false);
+  expect(store.isFactVisibleToThread(row({ scope: "thread-local", provenance: "thread:A", expiry: null }), "A", now)).toBe(true);
   store.close();
 });
 

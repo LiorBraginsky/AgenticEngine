@@ -41,6 +41,13 @@ type SocketData = {
   // close(ws) dismisses each not-yet-dismissed one. A single value (activeThreadId)
   // is insufficient — a same-socket thread switch must dismiss BOTH on close (spec §3.2).
   touchedThreadIds?: Set<string>;
+  /** thread-forget 2e (chunk-02 review MAJOR-1): set as the FIRST statement in close(ws).
+   * The message handler is async and can still be suspended inside `await lifecycle.beginTurn`
+   * (parked on memoryProvider.retrieve()/whenIdle) when close() fires and runs its decrement
+   * loop to completion — landing an increment AFTER the decrement would strand liveThreads at
+   * a permanently-nonzero refcount (thread stuck 409 until daemon restart). The increment site
+   * checks this flag and skips (both the increment AND the touched.add) once the socket is closed. */
+  closed?: boolean;
 };
 
 function send(
@@ -212,7 +219,12 @@ export function startDaemon(
           ws.data.activeThreadId = turnThreadId;
           // CM-03: remember this thread so close(ws) can dismiss every active thread
           // on the connection (not just the last one).
-          if (turnThreadId) {
+          // thread-forget 2e (chunk-02 review MAJOR-1): `!ws.data.closed` guards against the
+          // stranded-refcount race — close(ws) can run its decrement loop to completion WHILE
+          // this handler was suspended above (inside beginTurn's await), landing here AFTER
+          // close() already ran. Skip BOTH the touched.add and the increment in that case —
+          // a socket that already closed must never strand a refcount.
+          if (turnThreadId && !ws.data.closed) {
             const touched = (ws.data.touchedThreadIds ??= new Set<string>());
             // Increment ONLY on FIRST bind of this thread by this socket (Set dedupes; guard prevents a
             // same-socket double-count). Refcount because two sockets can adopt one thread (§0.5).
@@ -315,6 +327,11 @@ export function startDaemon(
         for (const out of result.outbound) send(ws, out, injectedMemory);
       },
       async close(ws) {
+        // thread-forget 2e (chunk-02 review MAJOR-1): FIRST statement, always. A message
+        // handler invocation can still be suspended (parked inside beginTurn's await) when
+        // this fires; setting the flag NOW — before anything else — lets that suspended
+        // handler see it the moment it resumes, so it never strands a liveThreads refcount.
+        ws.data.closed = true;
         // ── S1 partial-turn flush (UNCHANGED): persist any in-flight turn's delta
         //    before dropping RAM, so the distiller (below) sees the final turn.
         for (const sid of ws.data.sessionIds) {

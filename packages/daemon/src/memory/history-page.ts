@@ -328,7 +328,12 @@ export const HISTORY_HTML = `<!DOCTYPE html>
       var control = document.getElementById("thread-forget-control");
       var banner = document.getElementById("erased-banner");
       clearChildren(control); clearChildren(banner);
-      if (thread && thread.status === "forgotten") {
+      // NIT-1: a nonexistent thread (hatch.view returns thread:null) gets NO control and NO
+      // banner — a THIRD, do-nothing case, distinct from both "forgotten" and "live". Without
+      // this, thread && (...) below short-circuits to false on null and falls through to the
+      // LIVE branch, wrongly rendering a destructive "Forget conversation" button.
+      if (!thread) return;
+      if (thread.status === "forgotten") {
         // Erased husk (terminal): banner, no forget button. §7 architect-latitude on copy (Fork E1 — no
         // fabricated date; the frozen 3-field meta carries no erase timestamp).
         var b = document.createElement("div");

@@ -1,6 +1,6 @@
 ---
 title: Thread-forget (2e) — content-erase of a whole conversation
-status: draft
+status: accepted — Lior 2026-07-22 (§5.2 sign-off via AskUserQuestion, §0.1–0.6 package AS RECOMMENDED — trigger both-surfaces · frozen confirm copy · husk · audit-skeleton scrub · live-guard 409 · no new ADR)
 date: 2026-07-22
 deciders: [lior]
 feeds: thread-forget

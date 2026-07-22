@@ -7,6 +7,8 @@ import { WriteGate, REDACTION_MARKER } from "./write-gate.js";
 import { RuleBasedScanner } from "./scanner/memory-scanner.js";
 import { normalizeFactText } from "./normalize-fact-text.js";
 import { encodeVector } from "./embedding/vector-codec.js";
+import { SmartDistillerProvider } from "./providers/smart-distiller-provider.js";
+import type { Anthropic } from "@anthropic-ai/sdk";
 
 function fresh() {
   const dir = mkdtempSync(join(tmpdir(), "mf01-wg-"));
@@ -660,5 +662,52 @@ test("forgetThread is all-or-nothing — a mid-tx fault leaves the thread fully 
   expect(contents.map((c) => c.content).sort()).toEqual(["keep one", "keep two"]); // un-erased
   expect((db.query("SELECT COUNT(*) AS n FROM mutations WHERE kind='tombstone'").get() as { n: number }).n).toBe(0);
   expect((db.query("SELECT status FROM threads WHERE thread_id=?").get(t) as { status: string }).status).toBe("active");
+  store.close();
+});
+
+// ── thread-forget (2e) chunk-01 Task 3: race/no-op coverage ─────────────────
+// Proof-of-contract over the forgetThread ↔ distiller/drain paths — no new production
+// code (unless a test reveals a real defect). Permitted stubs ONLY = the LLM client.
+
+/** Minimal stub Anthropic client (Strike-4 boundary — the LLM client is the ONLY
+ *  permitted mock). Mirrors providers/smart-distiller-provider.test.ts's echoClient
+ *  shape so `spyOn` can wrap the EXACT method (`messages.create`) that
+ *  SmartDistillerProvider.distill invokes — proving the call never happens, not just
+ *  asserting on a stub's return value. */
+function makeSpyableClient(): Anthropic {
+  return {
+    messages: {
+      create: async () => ({ stop_reason: "end_turn", content: [{ type: "text", text: "[]" }] }),
+    },
+  } as unknown as Anthropic;
+}
+
+test("distill over an erased thread is a no-op — zero ops, no LLM call", async () => {
+  const { store, gate } = fresh();
+  const t = store.createThread();
+  gate.appendTurn(t, [{ role: "user", content: "will be erased" }], "s1", CTX);
+  const stubClient = makeSpyableClient();
+  const createSpy = spyOn(stubClient.messages, "create");
+  const smart = new SmartDistillerProvider({ client: stubClient });
+  gate.forgetThread(t, CTX); // tombstones + scrubs every message
+  const delta = await smart.distill(store, t); // all-[forgotten] tail → filtered empty → short-circuit
+  expect(delta.ops).toEqual([]);
+  expect(createSpy).not.toHaveBeenCalled(); // no LLM call (smart-distiller-provider.ts:524-542)
+  store.close();
+});
+
+test("scrub between drain scan and upsert → zero vector rows survive (drain-race, thread-scale)", () => {
+  const { store, gate } = fresh();
+  const t = store.createThread();
+  const [m1] = gate.appendTurn(t, [{ role: "user", content: "vec me one" }], "s1", CTX);
+  const [m2] = gate.appendTurn(t, [{ role: "user", content: "vec me two" }], "s1", CTX);
+  const pending = store.pendingMessageEmbeddings(EMBED_MODEL, 100); // scan sees both, pre-scrub
+  expect(pending.map((p) => p.id).sort()).toEqual([m1!, m2!].sort());
+  gate.forgetThread(t, CTX); // scrub lands AFTER the scan
+  for (const p of pending) {
+    expect(store.upsertMessageEmbedding(p.id, EMBED_MODEL, EMBED_DIMS, fixtureVec(1))).toBe("skipped"); // in-tx re-check refuses
+  }
+  const n = (store.rawDb().query("SELECT COUNT(*) AS n FROM message_embeddings WHERE message_id IN (SELECT id FROM messages WHERE thread_id=?)").get(t) as { n: number }).n;
+  expect(n).toBe(0);
   store.close();
 });

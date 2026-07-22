@@ -518,9 +518,14 @@ test("smart forget-survives (Ruling 2): source-forget keeps the fact across a re
   // Ruling 2: the fact from the forgotten source message persists across the re-dismiss —
   // it was never dropped, so there is nothing to re-derive.
   const facts = store.readDistilledFacts(50);
-  expect(facts.some((f) => f.fact.includes("secret smart fact"))).toBe(true);
-  // "trigger-bump" or "safe fact" should also be present — proves re-derive ran
-  expect(facts.length).toBeGreaterThan(0);
+  // review fix (MINOR-3): `facts.length > 0` alone is satisfied by the surviving secret
+  // fact ALONE and proves nothing about the re-dismiss actually re-deriving anything —
+  // assert the NEW "trigger-bump" fact is EXPLICITLY present (that is what proves
+  // re-derive ran on the second dismiss).
+  expect(facts.some((f) => f.fact.includes("trigger-bump"))).toBe(true);
+  // review fix (MINOR-3): assert EXACTLY one row carries the secret text — a `some(...)`
+  // check alone would wrongly pass even if the re-dismiss had duplicated it.
+  expect(facts.filter((f) => f.fact.includes("secret smart fact")).length).toBe(1);
 
   store.close();
 });

@@ -8,6 +8,7 @@ import { RuleBasedScanner } from "./scanner/memory-scanner.js";
 import { normalizeFactText } from "./normalize-fact-text.js";
 import { encodeVector } from "./embedding/vector-codec.js";
 import { SmartDistillerProvider } from "./providers/smart-distiller-provider.js";
+import { DumbTailProvider } from "./providers/dumb-tail-provider.js";
 import type { Anthropic } from "@anthropic-ai/sdk";
 
 function fresh() {
@@ -543,18 +544,33 @@ function fixtureVec(seed: number): Uint8Array {
 }
 
 // ── THE RULING-2 HEADLINE (facts survive a whole-thread forget) ──
-test("forgetThread does NOT touch facts — every distilled_facts row byte-identical (Ruling 2)", () => {
+test("forgetThread does NOT touch facts — every distilled_facts row byte-identical (Ruling 2)", async () => {
   const { store, gate } = fresh();
   const t = store.createThread();
   const [mid] = gate.appendTurn(t, [{ role: "user", content: "my name is Lior" }], "s1", CTX);
   // one machine fact + one human-edited fact, both provenance = this thread
-  store.insertFact({ fact: "user's name is Lior", provenance: mid!, scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", canonical: "name lior", topics: ["identity"] }, "smart");
-  store.insertFact({ fact: "prefers TypeScript", provenance: `thread:${t}`, scope: "global", expiry: null, confidence: 1, authored_by: "human", canonical: "prefers typescript", topics: ["prefs"] }, "smart");
+  const fMachine = store.insertFact({ fact: "user's name is Lior", provenance: mid!, scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", canonical: "name lior", topics: ["identity"] }, "smart");
+  const fHuman = store.insertFact({ fact: "prefers TypeScript", provenance: `thread:${t}`, scope: "global", expiry: null, confidence: 1, authored_by: "human", canonical: "prefers typescript", topics: ["prefs"] }, "smart");
+  // review fix (Opus + frontier convergent finding): seed fact_embeddings for BOTH facts —
+  // the ONE fact table cleaned by an AFTER DELETE trigger (trg_distilled_facts_ad_embeddings,
+  // schema.ts ~:199-203), so it is exactly where an accidental future fact-delete inside the
+  // scrub tx would cascade invisibly. insertFact does NOT write fact_embeddings — seed it here.
+  store.upsertFactEmbedding(fMachine, EMBED_MODEL, EMBED_DIMS, fixtureVec(11));
+  store.upsertFactEmbedding(fHuman, EMBED_MODEL, EMBED_DIMS, fixtureVec(22));
+  // review fix: seed a REAL forgotten_facts row for a SEPARATE fact that does NOT belong to
+  // the erased thread (it legitimately stays forgotten across the erase), via the real
+  // production write path (store.recordForgottenFact — the same primitive
+  // MemoryActionPort.forget uses, memory-action-port.ts:151; WriteGate.forgetFact no longer
+  // writes forgotten_facts post-v2-04). Without this seed the "untouched" snapshot below was
+  // vacuous ([] → []).
+  store.recordForgottenFact({ raw_text: "unrelated forgotten fact", canonical: "unrelated forgotten fact", provenance: "thread:some-other-thread", actor: "agent", authored_by: "machine" });
+
   const db = store.rawDb();
   const snap = (sql: string) => JSON.stringify(db.query(sql).all());
   const factsBefore = snap("SELECT id, fact, authored_by, provenance FROM distilled_facts ORDER BY id");
   const ftsBefore = snap("SELECT fact_id, canonical, topic FROM fact_fts ORDER BY fact_id");
   const topicsBefore = snap("SELECT fact_id, topic FROM fact_topics ORDER BY fact_id, topic");
+  const embeddingsBefore = snap("SELECT fact_id, model_id, dims, hex(vector) FROM fact_embeddings ORDER BY fact_id");
   const forgottenBefore = snap("SELECT * FROM forgotten_facts ORDER BY id");
 
   const res = gate.forgetThread(t, CTX, "user erased conversation");
@@ -563,7 +579,27 @@ test("forgetThread does NOT touch facts — every distilled_facts row byte-ident
   expect(snap("SELECT id, fact, authored_by, provenance FROM distilled_facts ORDER BY id")).toBe(factsBefore);
   expect(snap("SELECT fact_id, canonical, topic FROM fact_fts ORDER BY fact_id")).toBe(ftsBefore);
   expect(snap("SELECT fact_id, topic FROM fact_topics ORDER BY fact_id, topic")).toBe(topicsBefore);
+  expect(snap("SELECT fact_id, model_id, dims, hex(vector) FROM fact_embeddings ORDER BY fact_id")).toBe(embeddingsBefore);
   expect(snap("SELECT * FROM forgotten_facts ORDER BY id")).toBe(forgottenBefore);
+
+  // review fix: the surviving fact still injects into a NEW thread's slice — the same
+  // retrieval entry point ThreadLifecycle.beginTurn's session_start path calls
+  // (thread-lifecycle.ts:80/119). Asserted on fHuman (realistic `thread:<id>` provenance —
+  // the ONLY shape any production write path ever stamps: distiller-registration.ts:179,
+  // memory-action-port.ts:202). NOTE: fMachine's synthetic message-uuid provenance (`mid!`,
+  // matching the architect's plan fixture) is deliberately NOT asserted here — it trips
+  // retrieve()'s separate, pre-existing "F1 backstop" filter (isFactTombstoned, MF-05 T1.2:
+  // dumb-tail-provider.ts's retrieve() excludes any fact whose provenance string exactly
+  // matches a tombstoned message id), since forgetThread tombstones every message of the
+  // thread including `mid`. That filter is orthogonal to Ruling 2 (it never fires on the
+  // real `thread:<id>` provenance shape, because forgetThread never tombstones a
+  // `thread:<id>` string) and is unreachable via any real distillation/action-tool path,
+  // which always provenances facts as `thread:<id>` — confirmed by reading every
+  // production insertFact/applyFactOp caller.
+  const newThread = store.createThread();
+  const slice = await new DumbTailProvider().retrieve(store, newThread);
+  expect(slice.messages.some((m) => m.content.includes("prefers TypeScript"))).toBe(true);
+
   store.close();
 });
 

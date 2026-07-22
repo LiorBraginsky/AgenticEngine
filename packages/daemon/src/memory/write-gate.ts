@@ -120,7 +120,7 @@ export class WriteGate {
    * ZERO fact-table touches (ADR-0012 rider Ruling 2 — facts are source-independent;
    * structural, like ADR-0015 B1). NO bumpThreadMarker (§3.1 [critic m5] — 'forgotten'
    * is terminal). Human-only by construction (defense-in-depth mirror of editFact's
-   * machine refusal, write-gate.ts:222). Idempotent: already-tombstoned messages are
+   * machine-ctx refusal). Idempotent: already-tombstoned messages are
    * skipped; a second call is a no-op that still returns { ok: true }.
    */
   forgetThread(threadId: string, ctx: WriteContext, reason?: string): ForgetThreadResult {
@@ -142,7 +142,7 @@ export class WriteGate {
       for (const { id } of rows) {
         insTomb.run(crypto.randomUUID(), id, ctx.actor, reason ?? null, ctx.authored_by, now);
         scrub.run(REDACTION_MARKER, id);
-        // tx-less by design (store.ts:1629) — commits with THIS tx (no nested tx; bun:sqlite forbids it)
+        // tx-less by design — see MemoryStore.deleteMessageDerived (commits with THIS tx; no nested tx; bun:sqlite forbids it)
         this.store.deleteMessageDerived(id);
       }
       // husk (q#019 rider 1): status flip + defensive title scrub (no future content-derived title survives)

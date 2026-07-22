@@ -99,12 +99,20 @@ export function createMemoryController(deps: MemoryControllerDeps): MemoryContro
       els.forgetControlEl.replaceChildren();
       return;
     }
-    // thread-forget 2e §3.5: an erased husk (status='forgotten') renders the honest banner in
-    // place of the message list and offers NO forget control (terminal state) — but the facts
-    // section still renders (surviving facts = the visible Ruling-2 proof). A live/dismissed
-    // thread renders its messages + the destructive "Forget conversation…" control.
-    const forgotten = r.data.thread?.status === "forgotten";
-    if (forgotten) {
+    // thread-forget 2e §3.5: three cases, keyed on the additive thread meta.
+    //  - null/absent meta (an unknown/nonexistent id — the payload contract admits thread:null,
+    //    or an older thread-less payload): render messages but mount NO forget control. Mirrors
+    //    history-page.ts NIT-1 (chunk 02) — never surface a destructive affordance on an
+    //    ambiguous/nonexistent thread (engine-reviewer minor).
+    //  - status='forgotten' husk: the honest banner REPLACES the message list, NO control
+    //    (terminal). The facts section still renders below (surviving facts = the visible
+    //    Ruling-2 proof).
+    //  - live/dismissed: messages + the destructive "Forget conversation…" control.
+    const meta = r.data.thread;
+    if (meta == null) {
+      renderMessages(els.messagesEl, r.data.messages ?? []);
+      els.forgetControlEl.replaceChildren();
+    } else if (meta.status === "forgotten") {
       renderForgottenBanner(els.messagesEl);
       els.forgetControlEl.replaceChildren();
     } else {
@@ -200,8 +208,20 @@ export function createMemoryController(deps: MemoryControllerDeps): MemoryContro
   // refreshCurrentView() re-fetches → the same thread now returns status='forgotten' → the husk
   // banner render appears (no optimistic mutation). 409 → the honest "conversation is open"
   // message (§0.5); down/locked → the existing honest states (never a fake "erased").
+  //
+  // STALE-GUARD (hard-reviewer MAJOR-1): the erase POST is async, but every result branch mutates
+  // the DETAIL view of THIS thread (handleWriteResult's thread_live render targets the shared
+  // forgetControlEl; ok/down re-render the current view). If the user navigated to another thread
+  // / the list — or a down transition re-rendered — while the POST was in flight, a stale result
+  // must NOT clobber the now-current view (a 409 for T1 landing on T2 would mis-attribute
+  // "conversation is open" to T2 and destroy T2's control). Drop any result that is no longer for
+  // the still-open originating thread. (A stale `ok` is safely dropped too: the thread IS erased
+  // on disk; navigating back to it re-fetches the husk. A real daemon-down is re-surfaced by the
+  // liveness poll on the current view.)
   async function forgetThreadAction(threadId: string): Promise<void> {
-    handleWriteResult(await forgetThread(deps.api, threadId));
+    const r = await forgetThread(deps.api, threadId);
+    if (currentView.kind !== "detail" || currentView.threadId !== threadId) return; // stale → drop
+    handleWriteResult(r);
   }
 
   // chunk-05 (FACT-EDIT): NO session set for the badge — data-driven. On `ok`, refreshCurrentView()

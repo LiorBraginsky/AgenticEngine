@@ -458,6 +458,61 @@ test("thread-forget: 409 → honest 'conversation is open' message; nothing eras
   expect(els.messagesEl.textContent).toContain("still here");         // messages intact (no fake success)
 });
 
+test("thread-forget: thread:null (unknown id) mounts NO destructive control (mirror history-page NIT-1)", async () => {
+  const fetchFn = (url: string): Promise<Response> => {
+    const body = url.includes("/memory/thread/")
+      ? { messages: [{ id: "m1", role: "user", content: "hi" }], distilledFacts: [], distillationEvents: [], thread: null }
+      : { threads: [{ thread_id: "T1", title: "One", last_active_at: 1, status: "active" }] };
+    return Promise.resolve(new Response(JSON.stringify(body), { status: 200 }));
+  };
+  const els = makeEls();
+  const c = createMemoryController({ api: { fetchFn, baseUrl: "http://127.0.0.1:7777", token: "TOK" }, els });
+  c.start(); await flush();
+  els.threadListEl.querySelector<HTMLElement>(".thread-list-item")!.click(); await flush();
+  expect(els.forgetControlEl.querySelector(".act-forget")).toBeNull(); // no destructive control on a null-meta thread
+  expect(els.messagesEl.textContent).toContain("hi");                  // messages still render
+});
+
+// hard-reviewer MAJOR-1: renderThreadLiveMessage wrote into the shared forgetControlEl with no
+// thread/gen guard. A 409 from an erase-in-flight on T1 that lands AFTER the user navigated to T2
+// clobbered T2's control (and, if T2 were a husk, contradicted the banner). The erase POST is
+// deferred here so we control exactly when the stale 409 lands.
+test("thread-forget: a stale 409 from an erase-in-flight does NOT clobber a DIFFERENT thread's view", async () => {
+  let resolvePost!: (r: Response) => void;
+  const fetchFn = (url: string, init?: RequestInit): Promise<Response> => {
+    if (init?.method === "POST") return new Promise<Response>((res) => { resolvePost = res; }); // deferred
+    if (url.includes("/memory/thread/")) {
+      const id = url.includes("T2") ? "T2" : "T1";
+      return Promise.resolve(new Response(JSON.stringify({
+        messages: [{ id: "m", role: "user", content: id }], distilledFacts: [], distillationEvents: [],
+        thread: { thread_id: id, status: "active", last_active_at: 1 },
+      }), { status: 200 }));
+    }
+    return Promise.resolve(new Response(JSON.stringify({ threads: [
+      { thread_id: "T1", title: "One", last_active_at: 1, status: "active" },
+      { thread_id: "T2", title: "Two", last_active_at: 2, status: "active" },
+    ] }), { status: 200 }));
+  };
+  const els = makeEls();
+  const c = createMemoryController({ api: { fetchFn, baseUrl: "http://127.0.0.1:7777", token: "TOK" }, els });
+  c.start(); await flush();
+  const items = (): NodeListOf<HTMLElement> => els.threadListEl.querySelectorAll<HTMLElement>(".thread-list-item");
+  items()[0]!.click(); await flush(); // open T1
+  els.forgetControlEl.querySelector<HTMLButtonElement>(".act-forget")!.click(); // arm
+  eraseBtn(els).click(); // confirm → POST in flight (deferred)
+
+  els.backBtn.click(); await flush();     // navigate away while the erase POST is in flight
+  items()[1]!.click(); await flush();     // open T2 → its own control mounts
+  expect(els.forgetControlEl.querySelector<HTMLButtonElement>(".act-forget")!.textContent).toBe("Forget conversation…");
+
+  resolvePost(new Response(JSON.stringify({ error: "thread_live" }), { status: 409 })); // T1's stale 409 lands
+  await flush();
+
+  // T2's view must be intact — no cross-thread clobber.
+  expect(els.forgetControlEl.textContent).not.toContain("This conversation is open");
+  expect(els.forgetControlEl.querySelector(".act-forget")).not.toBeNull();
+});
+
 test("thread-forget: Cancel disarms — NO POST fired", async () => {
   let posts = 0;
   const fetchFn = (url: string, init?: RequestInit): Promise<Response> => {

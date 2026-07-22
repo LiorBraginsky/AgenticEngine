@@ -206,6 +206,33 @@ test("remember: explicit machine target with changed attribute → REPLACE (id s
   store.close();
 });
 
+// ─── D4 (memory-fix-pass): remember → REPLACE re-stamps provenance to the replacing thread ──
+
+test("D4: remember explicit-target REPLACE re-stamps provenance to the REPLACING thread (not the origin thread)", () => {
+  const { store, port } = freshHarness();
+  const threadA = store.createThread();
+  const threadB = store.createThread();
+
+  const id = store.insertFact({
+    fact: "eyes are green",
+    canonical: "eyes are green",
+    topics: [],
+    provenance: `thread:${threadA}`,
+    scope: "cross-thread",
+    expiry: null,
+    confidence: 1,
+    authored_by: "machine",
+  }, "seed");
+
+  const ctx = freshCtx(threadB, new Map([[1, id]]));
+  const result = port.remember(ctx, { fact: "eyes are blue", replaces_ordinal: 1, expected_text: "eyes are green" });
+
+  expect(result.ok).toBe(true);
+  expect(store.readFactById(id)!.provenance).toBe(`thread:${threadB}`);
+
+  store.close();
+});
+
 // ─── remember: mismatched expected_text on explicit target → stale_target, NO side effect ──
 
 test("remember: mismatched expected_text on explicit target → stale_target, NO insert, NO replace", () => {

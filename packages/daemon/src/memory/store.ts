@@ -44,6 +44,11 @@ export interface UpdateFactInput {
   canonical: string;
   confidence: number;
   topics: string[];
+  /** memory-fix-pass D4: when set, a REPLACE re-stamps provenance to the replacing thread.
+   *  Omitted ⇒ provenance is left UNCHANGED (protects existing callers + keeps editFactById's
+   *  provenance-immutability contract separate — see ADR-0012 §4, Lior option A: the
+   *  replaced_facts audit trail records prior TEXT only, never a provenance chain). */
+  provenance?: string;
 }
 
 export interface ReplacedFactRow {
@@ -1100,9 +1105,17 @@ export class MemoryStore {
       const prior = this.db.query("SELECT fact FROM distilled_facts WHERE id = ?").get(id) as { fact: string } | null;
       if (prior === null) return false;
       this.recordReplacedFact(id, prior.fact, ctx);
-      this.db.query(
-        "UPDATE distilled_facts SET fact = ?, confidence = ?, distiller_version = ?, derived_at = ? WHERE id = ?",
-      ).run(u.fact, u.confidence, distillerVersion, Date.now(), id);
+      // memory-fix-pass D4: provenance re-stamp rides the SAME UPDATE, branched on whether
+      // the caller supplied one — omitted ⇒ unchanged (guards existing callers).
+      if (u.provenance !== undefined) {
+        this.db.query(
+          "UPDATE distilled_facts SET fact = ?, confidence = ?, distiller_version = ?, derived_at = ?, provenance = ? WHERE id = ?",
+        ).run(u.fact, u.confidence, distillerVersion, Date.now(), u.provenance, id);
+      } else {
+        this.db.query(
+          "UPDATE distilled_facts SET fact = ?, confidence = ?, distiller_version = ?, derived_at = ? WHERE id = ?",
+        ).run(u.fact, u.confidence, distillerVersion, Date.now(), id);
+      }
       this.db.query("DELETE FROM fact_fts WHERE fact_id = ?").run(id);
       this.db.query("DELETE FROM fact_topics WHERE fact_id = ?").run(id);
       // hybrid-retrieval chunk-03: the fact's text just changed — its stored vector (if

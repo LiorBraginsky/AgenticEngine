@@ -756,6 +756,32 @@ test("v2-02 updateFactById REPLACEs the row in place (same id), refreshes fact_f
   store.close();
 });
 
+test("D4 (memory-fix-pass): updateFactById WITH provenance sets it on the row", () => {
+  const { store } = freshStore();
+  const id = store.insertFact({
+    fact: "eyes are green", canonical: "eyes are green", provenance: "thread:A",
+    scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: [],
+  }, "smart-v2");
+  store.updateFactById(id, {
+    fact: "eyes are blue", canonical: "eyes are blue", confidence: 1, topics: [], provenance: "thread:B",
+  }, { actor: "machine", reason: "replace" }, "smart-v2");
+  expect(store.readFactById(id)!.provenance).toBe("thread:B");
+  store.close();
+});
+
+test("D4 (memory-fix-pass): updateFactById WITHOUT provenance leaves the prior value unchanged", () => {
+  const { store } = freshStore();
+  const id = store.insertFact({
+    fact: "eyes are green", canonical: "eyes are green", provenance: "thread:A",
+    scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", topics: [],
+  }, "smart-v2");
+  store.updateFactById(id, {
+    fact: "eyes are blue", canonical: "eyes are blue", confidence: 1, topics: [],
+  }, { actor: "machine", reason: "replace" }, "smart-v2");
+  expect(store.readFactById(id)!.provenance).toBe("thread:A");
+  store.close();
+});
+
 test("v2-02 recordReplacedFact standalone records text without an update", () => {
   const { store } = freshStore();
   const id = store.insertFact({

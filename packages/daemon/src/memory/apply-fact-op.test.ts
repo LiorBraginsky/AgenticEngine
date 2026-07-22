@@ -354,6 +354,29 @@ test("op:append over the append-list cap demotes to a competing insert", () => {
   store.close();
 });
 
+// ─── memory-fix-pass D4: REPLACE re-stamps provenance to the replacing thread ──
+
+test("D4: op:replace flips provenance to the replacing thread; replaced_facts keeps old text", () => {
+  const store = freshStore();
+  const threadA = store.createThread();
+  const threadB = store.createThread();
+  const id = store.insertFact({
+    fact: "eyes are green", canonical: "eyes are green", topics: [],
+    provenance: `thread:${threadA}`, scope: "cross-thread", expiry: null,
+    confidence: 1, authored_by: "machine",
+  }, "seed");
+
+  const r = applyFactOp(store, {
+    op: "replace", fact: "eyes are blue", canonical: "eyes are blue", topics: [],
+    provenance: `thread:${threadB}`, targetId: id, expectedTargetText: "eyes are green",
+  }, "agent");
+
+  expect(r).toEqual({ outcome: "replaced", factId: id });
+  expect(store.readFactById(id)!.provenance).toBe(`thread:${threadB}`); // was thread:A pre-fix (RED)
+  expect(store.readReplacedFacts(id).map((x) => x.replaced_text)).toContain("eyes are green"); // history intact
+  store.close();
+});
+
 // ─── chunk-05 (D1): cross-path dedup — tool canonical (user-language) vs
 //     distiller canonical (English keyword) must still collapse to ONE fact ──
 test("chunk-05 D1: tool-remembered fact + distiller re-derivation (ENGLISH canonical, case-variant display) ⇒ ONE fact, not a sibling", () => {

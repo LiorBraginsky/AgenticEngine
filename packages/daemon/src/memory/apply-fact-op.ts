@@ -88,10 +88,12 @@ export function applyFactOp(store: MemoryStore, input: ApplyFactOpInput, actor: 
   };
 
   if (effectiveOp === "replace" && targetId !== undefined) {
-    // Surviving replace → updateFactById (records replaced text)
+    // Surviving replace → updateFactById (records replaced text). D4 (memory-fix-pass):
+    // re-stamp provenance to the REPLACING thread — input.provenance is already the
+    // replacing thread for both write paths (distiller + tool).
     store.updateFactById(
       targetId,
-      { ...base },
+      { ...base, provenance: input.provenance },
       { actor, reason: input.reason ?? "apply-replace" },
       actor,
     );

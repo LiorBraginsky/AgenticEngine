@@ -45,6 +45,7 @@ import { HybridRanker } from "../src/memory/embedding/hybrid-ranker.js";
 import { EmbeddingDrain } from "../src/memory/embedding/embedding-drain.js";
 import { buildEmbeddingProvider } from "../src/memory/embedding/embedding-provider-selector.js";
 import { ANCHOR } from "../src/memory/rephrase-matrix.fixture.js";
+import { resolveSuite } from "./harness-args.js";
 
 // ── Banner ─────────────────────────────────────────────────────────────────
 
@@ -67,8 +68,13 @@ const MODE: "stub" | "real" = modeArg === "--mode=real" ? "real" : "stub";
 console.log(`[demo-harness] mode: ${MODE}`);
 console.log("");
 
-const suiteArg = args.find((a) => a.startsWith("--suite="));
-const SUITE: "core" | "2d" = suiteArg === "--suite=2d" ? "2d" : "core";
+let SUITE: "core" | "2d";
+try {
+  SUITE = resolveSuite(args);
+} catch (err) {
+  console.error(`[demo-harness] FATAL: ${err instanceof Error ? err.message : String(err)}. Refusing to silently run the core suite.`);
+  process.exit(1);
+}
 console.log(`[demo-harness] suite: ${SUITE}`);
 
 // ── Setup ─────────────────────────────────────────────────────────────────

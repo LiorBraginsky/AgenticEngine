@@ -688,6 +688,18 @@ test("MINOR-1: a thread-local fact with comma-joined provenance injects into its
   store.close();
 });
 
+test("isFactVisibleToThread: cross-thread/global/null visible; expired hidden; thread-local only from origin", () => {
+  const { store } = freshStore();
+  const now = Date.now();
+  const base = { id: "x", fact: "f", confidence: 1, authored_by: "machine" } as const;
+  expect(store.isFactVisibleToThread({ ...base, scope: "cross-thread", provenance: "thread:A", expiry: null } as any, "B", now)).toBe(true);
+  expect(store.isFactVisibleToThread({ ...base, scope: null, provenance: "thread:A", expiry: null } as any, "B", now)).toBe(true);
+  expect(store.isFactVisibleToThread({ ...base, scope: "cross-thread", provenance: "thread:A", expiry: now - 1 } as any, "B", now)).toBe(false);
+  expect(store.isFactVisibleToThread({ ...base, scope: "thread-local", provenance: "thread:A", expiry: null } as any, "B", now)).toBe(false);
+  expect(store.isFactVisibleToThread({ ...base, scope: "thread-local", provenance: "thread:A", expiry: null } as any, "A", now)).toBe(true);
+  store.close();
+});
+
 // ── v2-02: Task 1 — additive schema (fact_fts, fact_topics, sync trigger, thread_distill_state, replaced_facts) ──
 
 test("v2-02 schema: new tables/index/trigger created additively on a fresh store", () => {

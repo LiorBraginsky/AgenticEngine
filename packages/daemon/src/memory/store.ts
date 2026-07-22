@@ -617,28 +617,29 @@ export class MemoryStore {
       )
       .all(now) as DistilledFactRow[];
 
-    // Phase 2: in-code thread-local filter (MINOR-1).
+    // Phase 2: in-code thread-local filter (MINOR-1), via the shared predicate
+    // (memory-fix-pass: kills the drift between this and MemoryActionPort.search's fact-leg).
     // v2-04: forgotten suppression REMOVED (Ruling 1-b) — durable-delete makes it dead.
     const filtered: DistilledFactRow[] = [];
     for (const row of candidates) {
-      const scope = row.scope ?? "cross-thread";
-      if (scope === "cross-thread" || scope === "global" || scope === null) {
-        filtered.push(row);
-      } else if (scope === "thread-local") {
-        // Resolve origin threads in code (handles comma-joined provenances)
-        const origins = this.originThreadsForProvenance(row.provenance ?? "");
-        if (origins.includes(forThreadId)) {
-          filtered.push(row);
-        }
-      }
-      // Unknown scopes treated as cross-thread (defensive default)
-      else {
-        filtered.push(row);
-      }
+      if (this.isFactVisibleToThread(row, forThreadId, now)) filtered.push(row);
       if (filtered.length >= limit) break;
     }
 
     return filtered;
+  }
+
+  /** Shared fact-visibility predicate (5f + expiry) — ONE rule for readDistilledFactsForThread AND
+   *  MemoryActionPort.search (memory-fix-pass; kills the drift the chunk-05 reviewer flagged).
+   *  Visible iff not expired AND (scope cross-thread/global/unknown OR thread-local with an origin
+   *  thread == threadId). Behavior-identical to both prior inline copies. */
+  isFactVisibleToThread(row: DistilledFactRow, threadId: string, now: number): boolean {
+    if (row.expiry !== null && row.expiry <= now) return false;
+    const scope = row.scope ?? "cross-thread";
+    if (scope === "thread-local") {
+      return this.originThreadsForProvenance(row.provenance ?? "").includes(threadId);
+    }
+    return true;
   }
 
   /**

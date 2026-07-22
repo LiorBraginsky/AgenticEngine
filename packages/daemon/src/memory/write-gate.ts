@@ -20,6 +20,16 @@ export interface WriteContext {
 }
 
 /**
+ * Typed result for `WriteGate.forgetThread` (thread-forget 2e, spec §3.1). Never-throw
+ * for caller-input cases (gotcha #9); internal faults (disk/DB errors) still propagate
+ * as throws.
+ */
+export type ForgetThreadResult =
+  | { ok: true } // applied — incl. idempotent repeat
+  | { ok: false; reason: "not_found" } // unknown thread → route maps 404
+  | { ok: false; reason: "refused_machine" }; // machine ctx → human-only by construction
+
+/**
  * WRITE-GATE (spec §3.3) — the SINGLE function every memory write flows through.
  * MF-03 fills two policies at the TOP of each method:
  *   5d scan: each message scanned at appendTurn; flagged messages are STILL
@@ -103,6 +113,54 @@ export class WriteGate {
     // N1: any quarantine_markers row for this messageId is intentionally left — the tombstone
     // already hard-redacts the content, making the quarantine marker harmless (a dead filter
     // on a tombstoned message). Dropping it would require a new store method for ~zero benefit.
+  }
+
+  /**
+   * forgetThread — content-erase a WHOLE conversation in ONE atomic tx (spec §3.1).
+   * ZERO fact-table touches (ADR-0012 rider Ruling 2 — facts are source-independent;
+   * structural, like ADR-0015 B1). NO bumpThreadMarker (§3.1 [critic m5] — 'forgotten'
+   * is terminal). Human-only by construction (defense-in-depth mirror of editFact's
+   * machine refusal, write-gate.ts:222). Idempotent: already-tombstoned messages are
+   * skipped; a second call is a no-op that still returns { ok: true }.
+   */
+  forgetThread(threadId: string, ctx: WriteContext, reason?: string): ForgetThreadResult {
+    if (ctx.authored_by === "machine") return { ok: false, reason: "refused_machine" };
+    if (!this.store.threadExists(threadId)) return { ok: false, reason: "not_found" };
+    const db = this.store.rawDb();
+    const now = Date.now();
+    const tx = db.transaction(() => {
+      // not-yet-tombstoned messages only (idempotence)
+      const rows = db.query(
+        `SELECT m.id AS id FROM messages m
+          WHERE m.thread_id = ?
+            AND NOT EXISTS (SELECT 1 FROM mutations x WHERE x.target_message_id = m.id AND x.kind = 'tombstone')`,
+      ).all(threadId) as { id: string }[];
+      const insTomb = db.query(
+        "INSERT INTO mutations (id, target_message_id, kind, actor, reason, replacement_content, authored_by, created_at) VALUES (?, ?, 'tombstone', ?, ?, NULL, ?, ?)",
+      );
+      const scrub = db.query("UPDATE messages SET content = ? WHERE id = ?");
+      for (const { id } of rows) {
+        insTomb.run(crypto.randomUUID(), id, ctx.actor, reason ?? null, ctx.authored_by, now);
+        scrub.run(REDACTION_MARKER, id);
+        // tx-less by design (store.ts:1629) — commits with THIS tx (no nested tx; bun:sqlite forbids it)
+        this.store.deleteMessageDerived(id);
+      }
+      // husk (q#019 rider 1): status flip + defensive title scrub (no future content-derived title survives)
+      db.query("UPDATE threads SET status = 'forgotten', title = NULL WHERE thread_id = ?").run(threadId);
+      // §0.4 audit-trail scrub (rows KEPT — action/outcome/actor/timestamps survive)
+      db.query("UPDATE memory_action_events SET fact_text = ? WHERE thread_id = ?").run(REDACTION_MARKER, threadId);
+      // [critic MAJOR-2] legacy correction-plaintext scrub (COALESCE read would resurface it)
+      db.query(
+        `UPDATE mutations SET replacement_content = ?
+          WHERE kind = 'correction'
+            AND target_message_id IN (SELECT id FROM messages WHERE thread_id = ?)`,
+      ).run(REDACTION_MARKER, threadId);
+    });
+    tx(); // ATOMIC-ERASE INVARIANT: all writes above commit together or not at all
+    // DB-first ordering (write-gate.ts:107-112): mirror is the sole post-tx step (§3.1a crash window accepted)
+    this.store.redactMirrorThread(threadId);
+    this.store.mirrorEvent(threadId, { event: "thread_forget", actor: ctx.actor, created_at: now });
+    return { ok: true };
   }
 
   /**

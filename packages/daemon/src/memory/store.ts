@@ -1043,6 +1043,33 @@ export class MemoryStore {
     writeFileSync(mirrorPath, rewritten.join("\n"));
   }
 
+  /**
+   * Bulk mirror scrub for a whole-thread forget (spec §3.1a). ONE read-parse-rewrite pass
+   * over the per-thread JSONL: every `event:"message"` line's `content` AND every
+   * `event:"edit"` line's `replacement` become REDACTION_MARKER. All other lines are
+   * preserved (append-only audit intent); unparseable lines are left intact (matches
+   * redactMirrorMessage). Missing file → no-op. The file is NEVER deleted (rows-stay/
+   * content-goes, same as the DB). DB-first ordering: call this AFTER the scrub tx commits.
+   */
+  redactMirrorThread(threadId: string): void {
+    const mirrorPath = join(this.threadsDir, `${threadId}.jsonl`);
+    if (!existsSync(mirrorPath)) return;
+    const lines = readFileSync(mirrorPath, "utf8").split("\n");
+    const rewritten = lines.map((line) => {
+      if (!line) return line; // preserve trailing newline's empty string
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(line) as Record<string, unknown>;
+      } catch {
+        return line; // unparseable — leave intact
+      }
+      if (parsed["event"] === "message") return JSON.stringify({ ...parsed, content: REDACTION_MARKER });
+      if (parsed["event"] === "edit") return JSON.stringify({ ...parsed, replacement: REDACTION_MARKER });
+      return line;
+    });
+    writeFileSync(mirrorPath, rewritten.join("\n"));
+  }
+
   close(): void {
     this.db.close();
   }

@@ -6,6 +6,7 @@ import { MemoryStore } from "./store.js";
 import { WriteGate, REDACTION_MARKER } from "./write-gate.js";
 import { RuleBasedScanner } from "./scanner/memory-scanner.js";
 import { normalizeFactText } from "./normalize-fact-text.js";
+import { encodeVector } from "./embedding/vector-codec.js";
 
 function fresh() {
   const dir = mkdtempSync(join(tmpdir(), "mf01-wg-"));
@@ -528,5 +529,136 @@ test("R2 D6c: a human editFact re-assertion clears a forgotten row on the displa
   const applied = gate.editFact(id, "favorite color blue", { actor: "user", authored_by: "human" });
   expect(applied).toBe(true);
   expect(store.isForgottenNormalizedText(normalizeFactText("favorite color is blue"))).toBe(false); // cleared via relaxed display key
+  store.close();
+});
+
+// ── thread-forget (2e) chunk-01 Task 2: WriteGate.forgetThread + store.redactMirrorThread ──
+
+const EMBED_MODEL = "test-model";
+const EMBED_DIMS = 4;
+function fixtureVec(seed: number): Uint8Array {
+  return encodeVector(new Float32Array([seed, seed + 1, seed + 2, seed + 3]));
+}
+
+// ── THE RULING-2 HEADLINE (facts survive a whole-thread forget) ──
+test("forgetThread does NOT touch facts — every distilled_facts row byte-identical (Ruling 2)", () => {
+  const { store, gate } = fresh();
+  const t = store.createThread();
+  const [mid] = gate.appendTurn(t, [{ role: "user", content: "my name is Lior" }], "s1", CTX);
+  // one machine fact + one human-edited fact, both provenance = this thread
+  store.insertFact({ fact: "user's name is Lior", provenance: mid!, scope: "cross-thread", expiry: null, confidence: 1, authored_by: "machine", canonical: "name lior", topics: ["identity"] }, "smart");
+  store.insertFact({ fact: "prefers TypeScript", provenance: `thread:${t}`, scope: "global", expiry: null, confidence: 1, authored_by: "human", canonical: "prefers typescript", topics: ["prefs"] }, "smart");
+  const db = store.rawDb();
+  const snap = (sql: string) => JSON.stringify(db.query(sql).all());
+  const factsBefore = snap("SELECT id, fact, authored_by, provenance FROM distilled_facts ORDER BY id");
+  const ftsBefore = snap("SELECT fact_id, canonical, topic FROM fact_fts ORDER BY fact_id");
+  const topicsBefore = snap("SELECT fact_id, topic FROM fact_topics ORDER BY fact_id, topic");
+  const forgottenBefore = snap("SELECT * FROM forgotten_facts ORDER BY id");
+
+  const res = gate.forgetThread(t, CTX, "user erased conversation");
+  expect(res).toEqual({ ok: true });
+
+  expect(snap("SELECT id, fact, authored_by, provenance FROM distilled_facts ORDER BY id")).toBe(factsBefore);
+  expect(snap("SELECT fact_id, canonical, topic FROM fact_fts ORDER BY fact_id")).toBe(ftsBefore);
+  expect(snap("SELECT fact_id, topic FROM fact_topics ORDER BY fact_id, topic")).toBe(topicsBefore);
+  expect(snap("SELECT * FROM forgotten_facts ORDER BY id")).toBe(forgottenBefore);
+  store.close();
+});
+
+// ── ERASURE-COMPLETENESS MATRIX (§3.1 table) ──
+test("forgetThread scrubs content, vectors, fts, corrections, audit, husk — all in one pass", () => {
+  const { store, gate, dir } = fresh();
+  const t = store.createThread();
+  const [m1] = gate.appendTurn(t, [{ role: "user", content: "secret one" }], "s1", CTX);
+  const [m2] = gate.appendTurn(t, [{ role: "assistant", content: "secret two" }], "s1", CTX);
+  gate.edit(m1!, "corrected secret", CTX, "fix"); // legacy correction plaintext in mutations
+  // seed real message-embedding vectors so the "zero rows after" assertion is meaningful
+  expect(store.upsertMessageEmbedding(m1!, EMBED_MODEL, EMBED_DIMS, fixtureVec(1))).toBe("written");
+  expect(store.upsertMessageEmbedding(m2!, EMBED_MODEL, EMBED_DIMS, fixtureVec(2))).toBe("written");
+  // audit-trail row for this thread (memory_action_events)
+  store.rawDb().query(
+    "INSERT INTO memory_action_events (id, thread_id, action, outcome, fact_text, actor, created_at) VALUES (?, ?, 'forget', 'applied', 'quoted content', 'agent', ?)",
+  ).run(crypto.randomUUID(), t, Date.now());
+
+  const res = gate.forgetThread(t, CTX);
+  expect(res).toEqual({ ok: true });
+  const db = store.rawDb();
+  // every message content == marker
+  const contents = db.query("SELECT content FROM messages WHERE thread_id = ?").all(t) as { content: string }[];
+  expect(contents.every((c) => c.content === REDACTION_MARKER)).toBe(true);
+  // one tombstone per message
+  const tombs = db.query("SELECT COUNT(*) AS n FROM mutations WHERE kind='tombstone' AND target_message_id IN (SELECT id FROM messages WHERE thread_id=?)").get(t) as { n: number };
+  expect(tombs.n).toBe(2);
+  // zero message_embeddings / message_fts for the thread
+  expect((db.query("SELECT COUNT(*) AS n FROM message_embeddings WHERE message_id IN (SELECT id FROM messages WHERE thread_id=?)").get(t) as { n: number }).n).toBe(0);
+  expect((db.query("SELECT COUNT(*) AS n FROM message_fts WHERE message_id IN (SELECT id FROM messages WHERE thread_id=?)").get(t) as { n: number }).n).toBe(0);
+  // correction plaintext scrubbed, row kept
+  const corr = db.query("SELECT replacement_content FROM mutations WHERE kind='correction' AND target_message_id=?").get(m1!) as { replacement_content: string };
+  expect(corr.replacement_content).toBe(REDACTION_MARKER);
+  // audit fact_text scrubbed, row kept
+  const aud = db.query("SELECT fact_text, action, outcome FROM memory_action_events WHERE thread_id=?").get(t) as { fact_text: string; action: string; outcome: string };
+  expect(aud.fact_text).toBe(REDACTION_MARKER);
+  expect(aud.action).toBe("forget");
+  expect(aud.outcome).toBe("applied");
+  // husk
+  const th = db.query("SELECT status, title FROM threads WHERE thread_id=?").get(t) as { status: string; title: string | null };
+  expect(th.status).toBe("forgotten");
+  expect(th.title).toBeNull();
+  // mirror: no plaintext in message OR edit lines, plus a thread_forget event line
+  const mirror = readFileSync(join(dir, "threads", `${t}.jsonl`), "utf8");
+  expect(mirror).not.toContain("secret one");
+  expect(mirror).not.toContain("secret two");
+  expect(mirror).not.toContain("corrected secret");
+  expect(mirror).toContain(REDACTION_MARKER);
+  expect(mirror).toContain("thread_forget");
+  store.close();
+});
+
+// ── typed results ──
+test("forgetThread returns not_found for an unknown thread (never-throw)", () => {
+  const { store, gate } = fresh();
+  expect(gate.forgetThread("no-such-id", CTX)).toEqual({ ok: false, reason: "not_found" });
+  store.close();
+});
+test("forgetThread refuses a machine ctx outright (content-erase is human-only)", () => {
+  const { store, gate } = fresh();
+  const t = store.createThread();
+  gate.appendTurn(t, [{ role: "user", content: "x" }], "s1", CTX);
+  expect(gate.forgetThread(t, MCTX)).toEqual({ ok: false, reason: "refused_machine" });
+  // nothing erased
+  expect((store.rawDb().query("SELECT content FROM messages WHERE thread_id=?").get(t) as { content: string }).content).toBe("x");
+  store.close();
+});
+
+// ── idempotence ──
+test("forgetThread is idempotent — second call adds no tombstones, still ok", () => {
+  const { store, gate } = fresh();
+  const t = store.createThread();
+  gate.appendTurn(t, [{ role: "user", content: "a" }], "s1", CTX);
+  gate.appendTurn(t, [{ role: "user", content: "b" }], "s1", CTX);
+  expect(gate.forgetThread(t, CTX)).toEqual({ ok: true });
+  const count = () => (store.rawDb().query("SELECT COUNT(*) AS n FROM mutations WHERE kind='tombstone'").get() as { n: number }).n;
+  const after1 = count();
+  expect(gate.forgetThread(t, CTX)).toEqual({ ok: true });
+  expect(count()).toBe(after1); // no new tombstones
+  store.close();
+});
+
+// ── atomicity (fault injection) ──
+test("forgetThread is all-or-nothing — a mid-tx fault leaves the thread fully un-erased", () => {
+  const { store, gate } = fresh();
+  const t = store.createThread();
+  gate.appendTurn(t, [{ role: "user", content: "keep one" }], "s1", CTX);
+  gate.appendTurn(t, [{ role: "user", content: "keep two" }], "s1", CTX);
+  const spy = spyOn(store, "deleteMessageDerived")
+    .mockImplementationOnce(() => {})
+    .mockImplementationOnce(() => { throw new Error("injected mid-tx fault"); });
+  expect(() => gate.forgetThread(t, CTX)).toThrow("injected mid-tx fault");
+  spy.mockRestore();
+  const db = store.rawDb();
+  const contents = db.query("SELECT content FROM messages WHERE thread_id=?").all(t) as { content: string }[];
+  expect(contents.map((c) => c.content).sort()).toEqual(["keep one", "keep two"]); // un-erased
+  expect((db.query("SELECT COUNT(*) AS n FROM mutations WHERE kind='tombstone'").get() as { n: number }).n).toBe(0);
+  expect((db.query("SELECT status FROM threads WHERE thread_id=?").get(t) as { status: string }).status).toBe("active");
   store.close();
 });

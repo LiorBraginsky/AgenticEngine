@@ -1,6 +1,8 @@
+> 🗄️ ARCHIVED 2026-07-22 — shipped. Historical record; do not edit.
+
 # Thread-forget (2e) — Chunk 01: Ruling-2 reconciliation + `forgetThread` primitive — Implementation Plan
 
-## Status: In progress (Phase 2 — implementation)
+## Status: shipped (PR #110 merged)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Per repo `CLAUDE.md`: work happens on the ALREADY-CREATED branch `chunk/01-forget-thread-primitive` (do NOT create a new branch), commit per task with the `Co-Authored-By: Claude Opus 4.8 (1M context)` trailer, PR to `main`, auto-merge only on the all-green gate set.
 

@@ -1,6 +1,8 @@
+> 🗄️ ARCHIVED 2026-07-22 — done. Historical record; do not edit.
+
 # Chunk 1: Ruling-2 reconciliation + the `forgetThread` primitive
 
-**Status:** in-progress
+**Status:** done
 **Created:** 2026-07-22
 **Phase:** memory 2e (thread-forget)
 **Estimated size:** ~1 day

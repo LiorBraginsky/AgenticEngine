@@ -84,11 +84,11 @@ tags: [roadmap, milestones]
 4. **Richer widget output** — beyond text (compare-tables, etc.; closed-set primitives, ADR-0005 open-question Q2).
 5. **Concurrent threads + background** ([[known-gotchas]] #45) — multiple live threads, long/background tasks. Later.
 
-**Memory follow-ons — FIRMLY QUEUED (Lior, 2026-06-12; immediate-next after memory-quality, not "someday"):**
+**Memory follow-ons — FIRMLY QUEUED (Lior, 2026-06-12; immediate-next after memory-quality, not "someday") — ✅ ALL THREE SHIPPED + CLOSED (2c 2026-07-13 · 2d 2026-07-21 · 2e 2026-07-28); the bullets below are the historical charter:**
 - **2c — Agent memory-action tools (the conversational forget lever).** The agent can ACT on its memory mid-conversation — "forget X" *actually forgets* (wires to the existing `Hatch.forget`/`forgetFact`), not just says it did. New capability class: the agent gets **action tools** (side-effecting), distinct from UI-render tools → an **ADR-0002/0005 extension** + a security/poisoning surface (ADR-0012 5d; re-touches the just-locked memory-write path) → needs its **own design+ADR pass**. Also the committed path to making fact-forget stick in practice without deleting history (spec [[specs/2026-06-12-memory-quality]] §4).
 - **2d — On-demand archive retrieval (the agent searches its memory).** When a fact isn't in the distilled slice, the agent searches the archive on demand. First cut = **SQLite FTS5** keyword search (no new model/embedding dependency); **semantic/vector retrieval = a swappable provider upgrade** — exactly the ADR-0012 decision-6 posture. Same agent-action-tool surface as 2c.
 - **2c + 2d SHARE one design+ADR pass** — "agent action-tools over memory" (the ADR-0002/0005 closed-set extension: an agent tool that performs a memory action with a side-effect, distinct from a UI-render tool). That pass is the next ceremony once the memory-quality build is underway.
-- **2e — Content-forget = THREAD-forget (the future content-erase primitive).** Surfaced by the **memory-distiller-v2** pivot (2026-06-13): v2 makes the user-facing forget **fact-forget ONLY** (durable delete of a stable-id fact) and **drops the per-message message-forget user path** + option B (the `WriteGate` hard-scrub **primitive is retained** for this). The way a user erases *content* (not just a derived fact) becomes **forgetting a whole conversation** — scrub its messages (reuse the kept primitive) + delete its facts (`dropDistilledFactsForThread`) — **simpler than per-message and matches "user interacts with THREADS"** ([[adr/0012-conversation-and-memory-model]]). **Pairs naturally with 2d** (a forgotten topic could otherwise resurface via message-search). NOT built in v2 — recorded in [[specs/2026-06-13-memory-distiller-v2]] §3.6/§1; its own feature.
+- **2e — Content-forget = THREAD-forget (the content-erase primitive).** ✅ **SHIPPED + CLOSED 2026-07-28** — spec `specs/archive/2026-07-22-thread-forget.md` (implemented); see the "Memory — DONE" section below for what landed. *(historical shape, as recorded 2026-06-13:)* surfaced by the **memory-distiller-v2** pivot: v2 makes the user-facing forget **fact-forget ONLY** (durable delete of a stable-id fact) and **drops the per-message message-forget user path** + option B (the `WriteGate` hard-scrub **primitive is retained** for this). The way a user erases *content* (not just a derived fact) becomes **forgetting a whole conversation** — scrub its messages (reuse the kept primitive) — **simpler than per-message and matches "user interacts with THREADS"** ([[adr/0012-conversation-and-memory-model]]). **⚠️ The "+ delete its facts (`dropDistilledFactsForThread`)" half of this sketch is SUPERSEDED** by the ADR-0012 rider Ruling 2 (Lior 2026-07-10 — *fact source-independence*: source erasure never sweeps facts). As built, 2e touches **zero** fact tables and that function was **deleted** from the store. **Paired with 2d as predicted** (`memory_search` made the archive searchable, so a forgotten topic could resurface). Recorded in [[specs/2026-06-13-memory-distiller-v2]] §3.6/§1.
 
 **Security hardening pass (near-term, before any non-dev release):** un-defer the per-install WS token + all secrets in the OS Keychain + bind 127.0.0.1-only + untrusted-by-default plugin/MCP supply chain. Executes the already-decided token (ADR-0003 p.5; only timing was deferred); maps to known-gotchas #31/#35/#38. Prior-art-verified as the highest-leverage, lowest-risk security move.
 
@@ -201,21 +201,39 @@ tags: [roadmap, milestones]
 
 ---
 
-## Memory — next (after memory-distiller-v2, shipped 2026-06-16)
+## Memory — DONE (the arc is complete; kept as the record)
 
 > **Full structured backlog (single source of truth): [[memory-backlog]]** (`docs/memory-backlog.md`) —
 > grouped themes, deferral reasons, ruled-out items, open cases, and the vision anchor. The summary
 > below is the high-level view.
+
+> **⛳ THE MEMORY ARC IS COMPLETE — 2026-07-28.** Everything this section queued in June 2026 has
+> shipped and closed, each behind a Lior-signed live §6.1 demo:
+> **2a/2b** `memory-distiller-v2` (2026-06-16) → **Theme A** `memory-transparency-ui` (2026-07-10) →
+> **2c** `memory-action-tools` (2026-07-13) → **in-answer provenance affordance** (2026-07-13) →
+> **2d** `hybrid-retrieval` (2026-07-21) → **the 2d post-close fix pass** (2026-07-22) →
+> **2e** `thread-forget` (2026-07-28, the arc-closing feature).
+> **[[memory-backlog]] now has NO queue head** — no committed memory feature remains. What is left
+> there is dogfood-watch, un-triggered scale work (archive-summarization · variant-B injection ·
+> expiry/confidence), and polish observations.
+>
+> **⇒ The next pick comes from "The route" above, not from here.** By the route's own ordering that
+> is **part 2 — the text continuation affordance** (Live Card vs Continuation Pill; the build-time
+> choice ADR-0012 left open), then part 3 **voice parity**, then part 5 **concurrent threads /
+> background tasks** (the deferred `project_concurrent_session_context_model` + gotcha #45). Which
+> of those goes first is Lior's call — the roadmap does not pre-commit past the ordering.
 
 > **Theme A — in-overlay memory transparency & control — SHIPPED 2026-07-10.** The
 > `memory-transparency-ui` feature (chunks 01–05 + Lior's joint §6.1 live demo) delivered the
 > day-one transparency mandate in the overlay: tray entry point (ADR-0006 p.4 un-deferred), threads/
 > facts VIEW with per-fact provenance, distilled-fact-text EDIT (durable human badge) + message
 > correction, "release the reference" FORGET, and honest locked/daemon-down states (+ `history.html`
-> fallback tails). Spec `specs/archive/2026-07-02-memory-transparency-ui.md` (implemented). **Queue
-> head now: **2e thread-forget** (the 2d post-close fix pass SHIPPED 2026-07-22, PR #107 — [[memory-backlog]] §D-post) — **2d hybrid retrieval itself
-> SHIPPED + CLOSED 2026-07-21.** (provenance-affordance chunk-01 SHIPPED 2026-07-13 via PR #93 — feature
-> closed, spec implemented+archived; chunk-05 D1 dedup fix merged 2026-07-13 — 2c closed.)
+> fallback tails). Spec `specs/archive/2026-07-02-memory-transparency-ui.md` (implemented).
+> **No memory queue head remains as of 2026-07-28** — 2d hybrid retrieval SHIPPED + CLOSED
+> 2026-07-21, its post-close fix pass SHIPPED 2026-07-22 (PR #107 — [[memory-backlog]] §D-post), and
+> **2e thread-forget SHIPPED + CLOSED 2026-07-28**, draining the arc. (provenance-affordance chunk-01
+> SHIPPED 2026-07-13 via PR #93 — feature closed, spec implemented+archived; chunk-05 D1 dedup fix
+> merged 2026-07-13 — 2c closed.)
 
 > **2c — agent memory-action tools (conversational forget/remember) — SHIPPED + CLOSED 2026-07-13.**
 > The agent now ACTS on memory mid-conversation via `memory_forget` /
@@ -267,12 +285,23 @@ rough priority:
   user-messages). Architecturally cleaner per-turn injection; pairs naturally with 2c/2d. Considered
   and deferred in v2-08 (the `[remembered]`-as-messages format is load-bearing across system-prompt +
   provenance-stamp + tests — too big a rewrite for the recall fix; variant A shipped instead).
-- **thread-forget (2e)** — ← **QUEUE HEAD (fix pass shipped 2026-07-22); NOW UNBLOCKED
-  2026-07-21.** A content-erase primitive (reuses the dormant `WriteGate` scrub); the successor to the
-  dropped message-forget (ADR-0015 decision 5 superseded). 2d's `memory_search` makes the archive
-  searchable, so a "forgotten" conversation can resurface content — the coupling [[memory-backlog]] §C
-  predicted is now live. Must honor the Ruling-2 trap (does NOT sweep facts — fact source-independence;
-  flagged for the 2e designer during 2d chunk-03/05).
+- **thread-forget (2e)** — ✅ **SHIPPED + CLOSED 2026-07-28 — the arc-closing feature.** Spec
+  `specs/archive/2026-07-22-thread-forget.md` (implemented); **no new ADR** (executes ADR-0012 rider
+  Ruling 2 + the ADR-0015 retained scrub primitive + ADR-0013's write posture). Delivered in 3
+  sequential chunks (PRs #110/#111/#112 + decompose #109): `WriteGate.forgetThread` = one atomic tx
+  (tombstones + `[forgotten]` content + FTS/embedding clearing + a `status='forgotten'`/`title=NULL`
+  husk + audit `fact_text` scrub + mirror redaction); the additive `target_type:"thread"` branch on
+  `POST /memory/forget` (401/400/404/409 `thread_live`/204-idempotent) with the `isThreadLive`
+  refcount guard and *erased ids are never re-adopted*; arm→confirm with the frozen copy + a real
+  message count in BOTH surfaces (overlay Memory window + `history.html`); the honest husk banner
+  replacing the message list while facts still render live. **The Ruling-2 trap was closed
+  structurally** — zero fact-table references (grep-proven) and the dormant fact-sweep
+  (`dropDistilledFactsForThread` & co.) **deleted**, its pinning tests flipped RED-first to *facts
+  survive*. **Lior's live §6.1 demo SIGNED 2026-07-28** (husk+banner · THE TRAP live: a fact survives
+  and is still injected into a NEW thread · audit `[forgotten]` scrub · live-guard 409 · CANCEL; the
+  agent honestly refused an agent-side thread-forget and pointed at the Memory window). Two
+  observations + two accepted residuals (mirror crash-window · TOCTOU at single-user) in
+  [[memory-backlog]] §C.
 - **Finer (message-level) provenance** — deferred from v2-06; better "dig deeper" + forget
   granularity than the current thread-level provenance.
 - **Archive-summarization tier** — the O(archive) scaling trigger; also the point at which the

@@ -1,6 +1,8 @@
+> 🗄️ ARCHIVED 2026-07-28 — done. Historical record; do not edit.
+
 # Chunk 3: overlay Memory window UI + feature closeout (LIVE demo)
 
-**Status:** todo
+**Status:** done (PR #112 merged 2026-07-22; behavioral §6.1 demo SIGNED by Lior 2026-07-28; the deferred closeout docs-reconcile + §4.4 archival executed 2026-07-28 in the `chunk/thread-forget-closeout` PR)
 **Created:** 2026-07-22
 **Phase:** memory 2e (thread-forget)
 **Estimated size:** ~1 day

@@ -1,4 +1,8 @@
+> 🗄️ ARCHIVED 2026-07-28 — shipped. Historical record; do not edit.
+
 # Thread-forget (2e) — Chunk 02: the daemon surface (HTTP intent-dispatch, live-guard, adoption exclusion, history.html) — Implementation Plan
+
+## Status: shipped (PR #111 merged 2026-07-22)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax. Per repo `CLAUDE.md`: branch `chunk/02-daemon-surface`, commit per task with the `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>` trailer, PR to `main`, auto-merge only on the all-green gate set.
 
@@ -662,7 +666,9 @@ Banner: "thread-forget-probe — Strike-5 EXECUTED evidence (thread-forget 2e, c
 
 ---
 
-## Status: Done
+## Status: shipped (PR #111 merged 2026-07-22)
+
+*(historical note below — the plan WAS persisted by the orchestrator to `plans/thread-forget/plan.md` and executed; archived here at the 2e closeout, 2026-07-28.)*
 
 **Plan is complete but NOT yet persisted** — this environment gave me no file-writing tool (only Read/Grep/Glob/Skill/WebFetch). The full plan above is ready to be saved verbatim to `/Users/lior/WebstormProjects/playground/AgenticEngine/orchestration/docs/plans/thread-forget/plan.md` (the slot is free; chunk-01's plan is archived at `orchestration/docs/plans/archive/thread-forget/plan-01-forget-thread-primitive.md`). Please write it there.
 

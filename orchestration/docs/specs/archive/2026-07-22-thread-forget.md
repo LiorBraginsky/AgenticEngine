@@ -1,6 +1,8 @@
+> 🗄️ ARCHIVED 2026-07-28 — implemented. Historical record; do not edit.
+
 ---
 title: Thread-forget (2e) — content-erase of a whole conversation
-status: accepted — Lior 2026-07-22 (§5.2 sign-off via AskUserQuestion, §0.1–0.6 package AS RECOMMENDED — trigger both-surfaces · frozen confirm copy · husk · audit-skeleton scrub · live-guard 409 · no new ADR)
+status: implemented — chunks 01–03 shipped (PRs #110/#111/#112 merged to main); Lior's live §6.1 feature-closing demo SIGNED 2026-07-28 (husk+banner · THE TRAP / Ruling 2 — fact survives AND is still injected into a new thread · audit-skeleton `[forgotten]` scrub · live-guard 409 · CANCEL; bonus: the agent honestly REFUSED an agent-side thread-forget and pointed at the Memory window — the deliberate §3.6 absence, live). Honest caveat: demo item 4's PURE archive-search miss was not strictly exercised (the surviving fact pre-empted `memory_search`, so the run shows retrieve-only) — archive-scrub proven indirectly via audit-`[forgotten]` + gone messages. Two observations + two accepted residuals routed to memory-backlog §C. (was: accepted — Lior 2026-07-22 (§5.2 sign-off via AskUserQuestion, §0.1–0.6 package AS RECOMMENDED — trigger both-surfaces · frozen confirm copy · husk · audit-skeleton scrub · live-guard 409 · no new ADR))
 date: 2026-07-22
 deciders: [lior]
 feeds: thread-forget

@@ -1,6 +1,8 @@
+> 🗄️ ARCHIVED 2026-07-28 — done. Historical record; do not edit.
+
 # Chunk 2: the daemon surface — HTTP intent-dispatch, live-guard, adoption exclusion, history.html
 
-**Status:** in-progress
+**Status:** done (PR #111 merged 2026-07-22)
 **Created:** 2026-07-22
 **Phase:** memory 2e (thread-forget)
 **Estimated size:** ~1 day

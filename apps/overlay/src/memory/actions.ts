@@ -35,6 +35,55 @@ export function buildForgetControl(onConfirm: () => void): HTMLButtonElement {
   return btn;
 }
 
+/** thread-forget 2e (§3.4) — the whole-conversation content-erase control (detail view only).
+ *  A richer two-step than buildForgetControl: arm → {confirm | CANCEL} (demo item 6 needs a real
+ *  disarm). Arming reveals the FROZEN §0.2 confirm copy [q#019 rider 3] — verbatim, with the REAL
+ *  message count wired at render time (in scope in the caller's loaded view, not controller state
+ *  [critic m6]). onConfirm fires exactly once, on the Erase click. Returns the container element. */
+const THREAD_FORGET_LABEL = "Forget conversation…";
+export function buildForgetThreadControl(messageCount: number, onConfirm: () => void): HTMLElement {
+  const container = document.createElement("div");
+  container.className = "thread-forget";
+
+  const armBtn = document.createElement("button");
+  armBtn.type = "button";
+  armBtn.className = "act-btn act-forget";
+  armBtn.textContent = THREAD_FORGET_LABEL;
+  armBtn.addEventListener("click", arm);
+
+  function disarm(): void { container.replaceChildren(armBtn); }
+
+  function arm(): void {
+    const hint = document.createElement("div");
+    hint.className = "thread-forget-hint";
+    // FROZEN §0.2 copy [q#019 rider 3] — verbatim; the ONLY user-facing contract string here.
+    hint.textContent = `Erase this conversation's content (${messageCount} messages)? Distilled facts remain. Cannot be undone.`;
+
+    const erase = document.createElement("button");
+    erase.type = "button";
+    erase.className = "act-btn act-forget armed";
+    erase.textContent = "Erase conversation";
+
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "act-btn act-cancel";
+    cancel.textContent = "Cancel";
+    cancel.addEventListener("click", disarm);
+
+    erase.addEventListener("click", () => {
+      erase.disabled = true;
+      cancel.disabled = true;
+      erase.textContent = "Erasing…";
+      onConfirm();
+    });
+
+    container.replaceChildren(hint, erase, cancel);
+  }
+
+  disarm(); // initial state = the arm button alone
+  return container;
+}
+
 /** Inline edit control for a message. The "Edit" button swaps in a textarea + Save/Cancel. Save
  *  calls onSave(newText) (the caller re-fetches → the fresh render replaces the editor). Cancel
  *  closes the editor. Returns the "Edit" button element. */

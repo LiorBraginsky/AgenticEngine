@@ -72,6 +72,21 @@ export function renderMessages(el: HTMLElement, messages: ThreadMessage[]): void
   });
 }
 
+/**
+ * thread-forget 2e (§3.5): the honest erased-husk banner. REPLACES the message list on a
+ * `status === "forgotten"` thread (the N × [forgotten] rows are noise, not honesty). NEUTRAL
+ * label only — never a content-derived string (no-content-leak, [q#019 rider 1]); parity with
+ * history.html's banner text. No date: the frozen 3-field thread meta carries no erase timestamp
+ * (Fork E1, history-page.ts).
+ */
+export function renderForgottenBanner(el: HTMLElement): void {
+  clear(el);
+  const b = document.createElement("div");
+  b.className = "erased-banner";
+  b.textContent = "You erased this conversation's content. Distilled facts remain.";
+  el.appendChild(b);
+}
+
 export function renderFacts(
   el: HTMLElement,
   facts: DistilledFactView[],

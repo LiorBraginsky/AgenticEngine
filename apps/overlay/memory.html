@@ -32,7 +32,12 @@
       .act-btn[disabled] { color: #aaa; border-color: #e0e0e0; cursor: default; background: #fff; }
       .act-forget { border-color: #e0a0a0; color: #b04040; }
       .act-forget.armed { background: #b02020; border-color: #b02020; color: #fff; }
+      .act-cancel { border-color: #c8c8c8; color: #333; }
       .act-edit { border-color: #a0b8e0; color: #2060b0; }
+      /* thread-forget 2e: the erased-husk banner (parity with history.html) + the detail-view control. */
+      .erased-banner { padding: 10px 12px; background: #fff8f0; border: 1px solid #f0c8a0; border-radius: 6px; color: #a05000; font-size: 13px; }
+      #thread-forget-container { margin-bottom: 12px; }
+      .thread-forget-hint { font-size: 12px; color: #b04040; margin-bottom: 6px; }
       .inline-editor { margin-top: 6px; }
       .inline-editor textarea { width: 100%; font: inherit; padding: 6px; border: 1px solid #c8c8c8; border-radius: 4px; resize: vertical; }
       .edited-tag { color: #2060b0; font-weight: 600; }
@@ -57,6 +62,7 @@
 
       <div id="thread-view">
         <button class="back-btn" id="back-btn">&#8592; Back to threads</button>
+        <div id="thread-forget-container"></div>
         <div class="panel"><h2>Messages</h2><div id="messages-container"></div></div>
         <div class="panel"><h2>Distilled facts</h2><div id="facts-container"></div></div>
         <div class="panel"><h2>Distillation events</h2><div id="events-container"></div></div>

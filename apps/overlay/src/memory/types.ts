@@ -31,9 +31,19 @@ export interface MemoryActionEventView {
   actor: string;    // "agent"
   created_at: number;
 }
+// thread-forget 2e §3.3: additive thread meta on the hatch.view payload. `status === "forgotten"`
+// drives the erased-husk banner render (§3.5). Optional-tolerant (runtime-coupling §4 item 4):
+// the daemon always sends it (possibly null for an unknown id), but older payloads / history.html
+// simply omit it — the render must not choke on its absence.
+export interface ThreadMeta {
+  thread_id: string;
+  status: string; // "active" | "dismissed" | "forgotten"
+  last_active_at: number;
+}
 export interface HatchView {
   messages: ThreadMessage[];
   distilledFacts: DistilledFactView[];
   distillationEvents: DistillationEventView[];
   memoryActionEvents: MemoryActionEventView[]; // 2c D9b — render-only audit trail
+  thread?: ThreadMeta | null;                  // thread-forget 2e §3.3 — husk-status meta
 }

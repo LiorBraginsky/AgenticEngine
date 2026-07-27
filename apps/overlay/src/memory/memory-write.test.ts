@@ -4,7 +4,7 @@
  * NON-DOM by construction (Response/RequestInit/AbortController only) → root tsconfig coverage.
  */
 import { test, expect } from "bun:test";
-import { forgetFact, editFact } from "./memory-write.js";
+import { forgetFact, editFact, forgetThread } from "./memory-write.js";
 import type { MemoryApiDeps } from "./memory-api.js";
 
 function fakeFetch(status: number, calls: { url: string; init?: RequestInit }[]) {
@@ -58,4 +58,27 @@ test("editFact status mapping: 401→unauthorized, 404→stale, 400→bad_reques
   expect((await editFact(deps(fakeFetch(400, [])), "F1", "x")).kind).toBe("bad_request");
   expect((await editFact(deps(fakeFetch(500, [])), "F1", "x")).kind).toBe("unreachable");
   expect((await editFact(deps(fakeFetch(0, [])), "F1", "x")).kind).toBe("unreachable");
+});
+
+// thread-forget 2e (§3.3): erase a whole conversation's content.
+test("forgetThread 204 → ok; POSTs target_type:thread + thread_id (no reason free-text; Bearer only)", async () => {
+  const calls: { url: string; init?: RequestInit }[] = [];
+  const r = await forgetThread(deps(fakeFetch(204, calls)), "THREAD-UUID");
+  expect(r.kind).toBe("ok");
+  const { url, init } = calls[0]!;
+  expect(url).toBe("http://127.0.0.1:7777/memory/forget");
+  expect(url).not.toContain("TOK");
+  expect(init!.method).toBe("POST");
+  expect((init!.headers as Record<string, string>).Authorization).toBe("Bearer TOK");
+  expect(init!.body as string).not.toContain("TOK");
+  const body = JSON.parse(init!.body as string) as Record<string, unknown>;
+  expect(body).toEqual({ target_type: "thread", thread_id: "THREAD-UUID" }); // NIT-5: no `reason` key
+});
+
+test("forgetThread status mapping: 409→thread_live, 404→stale, 401→unauthorized, 400→bad_request, net→unreachable", async () => {
+  expect((await forgetThread(deps(fakeFetch(409, [])), "T1")).kind).toBe("thread_live"); // §0.5 open convo
+  expect((await forgetThread(deps(fakeFetch(404, [])), "T1")).kind).toBe("stale");
+  expect((await forgetThread(deps(fakeFetch(401, [])), "T1")).kind).toBe("unauthorized");
+  expect((await forgetThread(deps(fakeFetch(400, [])), "T1")).kind).toBe("bad_request");
+  expect((await forgetThread(deps(fakeFetch(0, [])), "T1")).kind).toBe("unreachable");
 });

@@ -6,8 +6,9 @@ owner: lior
 purpose: One place that captures everything PROPOSED-but-not-yet-built in the memory area, so the next session (or a future Lior) finds it all without relying on chat history. Chat is disposable; this doc is canonical.
 related:
   - adr/0012-conversation-and-memory-model.md (the north-star + the "memory transparency day-one" mandate)
-  - adr/0015-intent-based-memory-forget.md (forget contract; decision 5 superseded)
+  - adr/0015-intent-based-memory-forget.md (forget contract; decision 5 superseded; its retained scrub primitive consumed by 2e 2026-07-28)
   - specs/2026-06-13-memory-distiller-v2.md (what shipped)
+  - specs/archive/2026-07-22-thread-forget.md (2e — the arc-closing feature, implemented 2026-07-28)
   - roadmap.md ("Memory — next" — the high-level pointer to this doc)
 ---
 
@@ -44,6 +45,23 @@ one, so `factExistsByDedupKey` never matched the same statement across paths), *
 fix = add the user-language display-text dedup axis. Two observations (O2/O3) are recorded in
 §B. Spec `specs/archive/2026-07-10-memory-action-tools.md` now **implemented** (all chunks 01–05
 merged). See §B below.
+
+**Update 2026-07-21 — 2d (`hybrid-retrieval`) SHIPPED + CLOSED**, and **2026-07-22** its post-close
+fix pass (PR #107). See §D / §D-post.
+
+**Update 2026-07-28 — 2e (`thread-forget`) SHIPPED + CLOSED — and with it the WHOLE memory arc.**
+The user can now erase a whole conversation's CONTENT (overlay Memory window + `history.html`), with
+the derived facts deliberately living on (ADR-0012 rider Ruling 2 — fact source-independence, proven
+live at the demo). Spec `specs/archive/2026-07-22-thread-forget.md` (implemented). See §C below.
+
+> **⛳ The June-queued memory arc is COMPLETE (2026-07-28).** 2a/2b (`memory-distiller-v2`) →
+> Theme A (`memory-transparency-ui`) → 2c (`memory-action-tools`) → provenance-affordance → 2d
+> (`hybrid-retrieval`) → the post-close fix pass → 2e (`thread-forget`). **No committed memory
+> feature remains queued.** What is left in this file is genuinely optional: dogfood-watch items
+> (§D-post), polish observations (§B O2/O3, §C O4/O5), un-triggered scale work (§E/§F,
+> archive-summarization), and §G — which is not memory polish at all but the **north-star route**
+> (continuation affordance · voice parity · concurrent threads). Picking the next feature is now a
+> roadmap-route question, not a memory-backlog question.
 
 The structure is sound for single-user dogfood. Everything below is **deferred / not-yet-built**.
 
@@ -158,7 +176,67 @@ The structure is sound for single-user dogfood. Everything below is **deferred /
       dedup + forgotten-fact consult) now match on the canonical axis; the reworded cross-language slip
       that was 2d's to close is closed on both.
 
-### C. Content erase — thread-forget  (roadmap 2e)
+### C. Content erase — thread-forget  (roadmap 2e)  ✅ SHIPPED + CLOSED 2026-07-28
+> **✅ 2e — thread-forget SHIPPED + CLOSED 2026-07-28.** Spec
+> `specs/archive/2026-07-22-thread-forget.md` (implemented); **no new ADR** (spec §0.6 — it executes
+> ADR-0012 rider Ruling 2 + the ADR-0015 retained scrub primitive + the ADR-0013 write posture).
+> Built via conveyor in 3 sequential chunks (PRs **#110 / #111 / #112**, decompose PR #109):
+> **`WriteGate.forgetThread` = ONE atomic tx** (per-message tombstone + `content='[forgotten]'` +
+> `deleteMessageDerived` clearing FTS/embeddings + `status='forgotten'`/`title=NULL` husk +
+> `memory_action_events.fact_text` scrub + legacy-correction plaintext scrub; post-tx DB-first mirror
+> redaction) · **Ruling 2 honored STRUCTURALLY** — zero fact-table references, grep-proven, and the
+> ×2-flagged dormant fact-sweep (`dropDistilledFactsByProvenance` / `dropDistilledFactsForThread`)
+> was **deleted** and its 6 pinning tests flipped RED-first to *facts survive* · additive
+> `target_type:"thread"` on `POST /memory/forget` (401/400/404/**409 `thread_live`**/204 +
+> idempotent) · the `isThreadLive` refcount registry + §3.3a *erased id is never re-adopted* ·
+> arm→confirm with the FROZEN §0.2 copy and a real message count, in **both** surfaces (overlay
+> Memory window detail view + `history.html` fallback) · the honest **husk banner** replacing the
+> message list while the facts section still renders live (the visible Ruling-2 proof).
+> **Lior's live §6.1 feature-closing demo SIGNED 2026-07-28** — husk+banner · THE TRAP live (a fact
+> SURVIVES the erase and is still injected into a NEW thread, log-confirmed) · audit-skeleton
+> `[forgotten]` scrub · live-guard 409 · CANCEL. Bonus finding: asked to thread-forget, the agent
+> honestly REFUSED and pointed at the Memory window — the deliberate §3.6 *absence* (no agent-side
+> thread-forget tool; ADR-0016 untouched) working live. Frontier-delta held for a 6th/7th/8th
+> consecutive chunk (`hard-reviewer` caught a MAJOR each chunk that the Opus reviewer missed —
+> headline-test hole · stranded-refcount + plaintext-onto-husk · stale-409 cross-thread clobber).
+> **This closed the entire June-queued memory arc** (2a/2b → Theme A → 2c → provenance-affordance →
+> 2d → fix pass → 2e). *Artifact note:* chunks 01–03 + the chunk-01/02 plans are archived under
+> `chunks-todo/archive/thread-forget/` and `plans/archive/thread-forget/`; **chunk-03 shipped without
+> a separate plan file** (worked straight off the chunk brief) — nothing is missing.
+
+**Observations from the 2026-07-28 demo (NOT defects — polish candidates, nothing queued):**
+- **O4 — the audit `fact_text → [forgotten]` scrub is redundant when the same fact survives
+  visibly one section up.** Per Ruling 2 the fact itself stays and renders in the Memory window's
+  facts list with its full text, while its own `memory_action_events` audit row shows `[forgotten]`.
+  Internally consistent (two rulings meeting: audit rows are thread *content*, facts are not), but
+  it reads as noise-with-no-privacy-gain to a user who can see the text right above. *Minor UX
+  polish candidate:* either render the surviving fact's text in its audit row, or drop the scrubbed
+  rows from the render. Revisit trigger = dogfood confusion at the audit section.
+- **O5 — demo item 4's PURE archive-search miss was never strictly exercised.** The intended proof
+  was «що я казав про X?» → the archive leg finds nothing from the erased conversation while the
+  facts leg still carries the surviving fact (the designed §3.6 asymmetry). In the live run the
+  surviving fact **pre-empted `memory_search` entirely** (logs show a retrieve-only turn, no search
+  stage), so archive-scrub was proven **indirectly** — audit `[forgotten]` + messages gone + the
+  chunk-02 executed probe (which asserts `message_fts`/`message_embeddings` EMPTY for the erased
+  thread and the facts leg still surfacing). Honest caveat, recorded rather than papered over.
+  *If ever worth closing directly:* erase a thread whose topic has **no** surviving fact, then ask
+  about it.
+
+**Accepted residuals (disclosed, ruled acceptable at single-user dogfood scale):**
+- **Mirror crash-window (chunk-01).** The JSONL mirror is redacted **after** the DB transaction
+  commits (DB-first ordering, deliberate). A crash in that window leaves plaintext in the mirror
+  file while the DB is already erased. Accepted: DB-first is the right ordering (the DB is the
+  read surface), and the window is milliseconds on a local single-user machine. Revisit if the
+  mirror ever becomes a read/export surface.
+- **TOCTOU on the live-thread guard (chunk-02, spec §0.5).** `isThreadLive` is a point-in-time
+  refcount check with no lock, so a thread could in principle bind between the check and the
+  scrub. Accepted at single-user scale — and the two concurrency guards that shipped (unconditional
+  decrement-on-close + the guard on the HOT `appendTurn` path) compose so that **erase always wins
+  structurally**: a late bind cannot append plaintext onto a forgotten husk. Revisit at
+  multi-client / concurrent-threads (route part 5).
+
+*(historical charter below — the deferral record 2e executed)*
+
 - **thread-forget** — forget a WHOLE conversation (content-erase), the chosen replacement for the
   dropped per-message message-forget. Scrubs the thread's messages (reuses the dormant, already-built
   `WriteGate.forget` hard-scrub primitive). **⚠️ RULING CHANGE (Lior 2026-07-10, ADR-0012 rider
@@ -349,22 +427,35 @@ memory = "super-chat" (threads distill into a persistent store; new threads draw
 **day-one transparency mandate**: keep memory invisible by default BUT build view/edit/forget +
 provenance + (recoverable, explicit) distillation + never-overwrite-human + thread-isolation. The single
 costliest mistake to avoid: an opaque always-injecting store the user can't inspect (churn + poisoning
-surface). **Theme A above is the direct execution of that mandate and is the least-built part of it.**
+surface). **Theme A was the direct execution of that mandate — SHIPPED 2026-07-10, and as of
+2026-07-28 the mandate is fully built out: view (Theme A) · edit (Theme A fact-edit) · forget-a-fact
+(release-the-reference) · forget-a-conversation (2e) · provenance (MF-05 + the affordance pass) ·
+agent-side action tools with guardrails (2c) · honest liveness/absence states.** What stays dormant
+by choice: expiry / confidence (open case 2).
 
 ---
 
 ## Suggested next step
-**Theme A SHIPPED 2026-07-10** (`memory-transparency-ui`). **2c (`memory-action-tools`) SHIPPED +
-CLOSED 2026-07-13.** **provenance-affordance RESOLVED + SHIPPED + CLOSED 2026-07-13** (§A). **2d —
-HYBRID retrieval (BM25 + embeddings via RRF; §D) SHIPPED + CLOSED 2026-07-21** — Lior's live §6.1
-feature-closing demo signed (all §5 items 1–5 GREEN); spec implemented + archived; chunks 01–07 +
-e2e/demo closeout merged. The queue now, in rough order:
-1. **The 2d post-close fix pass (§D-post) ← QUEUE HEAD.** Mostly language-agnostic steering (D1-lang
-   fact/reply-language-follows-user · D2 unprompted-cleanup · O2/O3) + a few small mechanical fixes
-   (D4 replace-provenance — needs a Lior ruling first · `isFactVisibleToThread` extraction ·
-   arg-parse fail-open · `doWarmup` early-exit) + two watch items (query-pooling dilution above-cap ·
-   7-seq-calls vs the overlay 30s handshake).
-2. **2e — thread-forget (§C).** Now genuinely unblocked: 2d's `memory_search` makes the archive
-   searchable, so a "forgotten" conversation can resurface content → the content-erase primitive is
-   now the coupled need §C predicted. Reuses the dormant `WriteGate.forget` scrub; must honor the
-   Ruling-2 trap (does NOT sweep facts — fact source-independence).
+**⛳ THE MEMORY QUEUE IS EMPTY OF COMMITTED FEATURES (2026-07-28).** Everything the June-2026 arc
+committed to has shipped and closed: Theme A `memory-transparency-ui` (2026-07-10) · 2c
+`memory-action-tools` (2026-07-13) · provenance-affordance (2026-07-13) · 2d `hybrid-retrieval`
+(2026-07-21) · the 2d post-close fix pass (2026-07-22, PR #107) · **2e `thread-forget`
+(2026-07-28)** — each with a Lior-signed live §6.1 demo. There is **no queue head in this file
+anymore.**
+
+**So the next pick is a ROADMAP-ROUTE question, not a memory question** → `roadmap.md` "The route"
++ §G below. The route's own ordering puts **part 2 — the text continuation affordance** next (Live
+Card vs Continuation Pill — the build-time choice ADR-0012 deliberately left open), then part 3
+voice parity, then part 5 concurrent threads / background tasks (the deferred
+`project_concurrent_session_context_model`).
+
+What remains HERE is optional and un-triggered — pick from it only if dogfood makes it hurt:
+- **Dogfood-watch, no build queued** (§D-post): D1-lang / D2 steering efficacy in daily use; the
+  two watch items (above-cap query-pool dilution · 7-sequential-calls vs the overlay 30s handshake).
+- **Polish observations:** §B O2 (injection-blob reply quality) / O3 (replace-steering miss) ·
+  §C **O4** (redundant `[forgotten]` audit row for a fact that survives visibly) / **O5** (the
+  un-exercised pure archive-search-miss proof).
+- **Scale-triggered, not now:** archive-summarization tier (§D / open case 4) · §F variant-B
+  system-prompt injection · §E fact richness + open case 1 (complex corrections) · open case 2
+  (expiry/confidence dormant — decide or rip the dead columns).
+- **§G is not memory polish** — it *is* the north-star route above.

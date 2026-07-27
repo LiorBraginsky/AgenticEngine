@@ -30,6 +30,29 @@ the conductor (`.conveyor/bus/a/00{4,5,6,7}-*.md`).
 > `mutations`, never calls `tombstoneFact`) and intent-named dispatch. This ADR stays as the record of
 > how forget was contracted in the global-reprojection era; the v2 spec + ADR-0012 amendment govern now.
 
+> **✅ STATUS NOTE 2026-07-28 — the RETAINED primitive is now CONSUMED (no decision changed here).**
+> The `WriteGate.forget` hard-scrub primitive kept above "for the future THREAD-forget" was consumed
+> by **2e thread-forget**, shipped + closed 2026-07-28 (spec
+> [[../specs/archive/2026-07-22-thread-forget]] — implemented; PRs #110/#111/#112; Lior's live §6.1
+> demo signed). Three cross-refs for a future reader:
+> - **Consumed, not reused as-is:** 2e added a sibling `WriteGate.forgetThread(threadId, ctx, reason?)`
+>   — one atomic transaction at thread scale (tombstones + `[forgotten]` content + derived FTS/embedding
+>   clearing + a `status='forgotten'`/`title=NULL` husk + audit `fact_text` scrub + post-tx mirror
+>   redaction). The per-message primitive stays daemon-internal with no user-facing path (the DROP above
+>   still holds).
+> - **The fact-sweep half was DELETED, not inherited.** This ADR's era let source-scrub also drop
+>   derived facts (`dropDistilledFactsByProvenance` / `dropDistilledFactsForThread`). ADR-0012's
+>   2026-07-10 rider **Ruling 2** (*fact source-independence* — source erasure never sweeps facts)
+>   forbids that, so 2e chunk-01 removed those calls, **deleted both store functions**, and flipped the
+>   6 tests that pinned the old behavior to *facts survive* (RED-first). Ruling 2 is therefore
+>   **structural** here: the thread-forget path holds zero fact-table references (grep-proven), and the
+>   live demo showed a fact surviving its source conversation's erasure and still being injected into a
+>   new thread.
+> - **Intent dispatch extended as designed:** 2e added `target_type:"thread"` to
+>   `POST /memory/forget` (additive; 409 `thread_live` guard), so the intent-named dispatch this ADR
+>   established now carries both `fact` and `thread`. **B1 remains in force** and now cuts both ways —
+>   fact-forget never touches `messages`, and thread-forget never touches fact tables.
+
 > **Hard-to-reverse tier (PIPELINE Finding #5).** This introduces a new durable store
 > mechanism, changes the user-facing forget *dispatch* contract, and creates a cross-cutting
 > contract the queued **2c (agent memory-action tools)** will build on. Therefore it takes the

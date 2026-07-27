@@ -74,7 +74,10 @@ tags: [spec, memory, distiller, incremental, stability, fts5, topic-tags, forget
 - **In-overlay memory UI** — separate follow-on (unchanged from the 2026-06-12 scope SPLIT).
 - **2c (agent memory-action tools / conversational forget)** — still queued. The self-concept fix
   (§3.6) is the *honest deferral* of it, not the capability.
-- **Content-forget = THREAD-forget (the FUTURE content-erase primitive)** — v2 drops the per-message
+- **Content-forget = THREAD-forget (the FUTURE content-erase primitive)** — ✅ **SHIPPED as 2e
+  2026-07-28** ([[archive/2026-07-22-thread-forget]]); **the "+ delete its facts" half was SUPERSEDED
+  by ADR-0012 rider Ruling 2 before it shipped** — see the update callout at §3.6. *(as recorded
+  2026-06-13:)* v2 drops the per-message
   message-forget user path (§3.6 D-V6a-bis); its replacement is **forgetting a whole conversation**
   (scrub its messages via the kept `WriteGate` hard-scrub primitive + delete its facts) — simpler than
   per-message and matches ADR-0012's "user interacts with THREADS." **Recorded, NOT built here**; its
@@ -284,6 +287,21 @@ intent-dispatch (forget-FACT vs forget-MESSAGE) are carried UNCHANGED.**
   invariant still holds for it.
 - **The `WriteGate.forget` hard-scrub PRIMITIVE is KEPT** (the mechanism, MF-05). It has **no
   per-message user route** now, but the **future content-forget primitive (THREAD-forget) reuses it.**
+
+> **⚠️ UPDATE 2026-07-28 — the sketch below is BUILT, and half of it was SUPERSEDED before it shipped.**
+> **2e thread-forget** SHIPPED + CLOSED 2026-07-28 (spec [[archive/2026-07-22-thread-forget]], PRs
+> #110/#111/#112). Two corrections for anyone reading this block as current:
+> 1. **"AND delete its facts (`dropDistilledFactsForThread`)" is SUPERSEDED** by ADR-0012's 2026-07-10
+>    rider **Ruling 2** (*fact source-independence* — erasing source content never sweeps derived
+>    facts). As built, thread-forget touches **zero** fact tables; `dropDistilledFactsForThread` and
+>    `dropDistilledFactsByProvenance` were **deleted from the store** and the tests pinning the old
+>    sweep were flipped to *facts survive*.
+> 2. **D-V6c below therefore DISSOLVES** rather than migrating: with no by-provenance fact drop
+>    anywhere, the comma-joined-provenance mismatch it worried about has no code path left to bite.
+>
+> The message-scrub half shipped as designed (a sibling `WriteGate.forgetThread` one-tx scrub +
+> `status='forgotten'` husk), and the 2d pairing this block predicted did materialize — `memory_search`
+> made the archive searchable, which is what unblocked 2e.
 
 **Future content-forget = THREAD-forget** (recorded here, NOT built — see §1 + the roadmap): the way a
 user erases *content* (not just a derived fact) is to **forget a whole conversation** — scrub its

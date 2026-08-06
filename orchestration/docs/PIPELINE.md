@@ -2,7 +2,7 @@
 
 > **Single source of truth for the team's workflow.** Every agent and skill in this
 > repo (`engine-orchestrator`, `engine-architect`, `engine-worker`, `engine-reviewer`,
-> `adr-curator`, `decompose-feature`, `team-auditor`) reads this file to know its place
+> `adr-curator`, `decompose-feature`, `spec-critic`, `team-auditor`) reads this file to know its place
 > in the pipeline, which artifacts it produces and consumes, and which lifecycle duties
 > it owns. If an agent definition contradicts this file on workflow or lifecycle, **this
 > file wins** — and the contradiction should be flagged so the agent def gets fixed.
@@ -15,14 +15,16 @@
 ## 1. The pipeline at a glance
 
 ```
-roadmap ──▶ (brainstorm) ──▶ spec* ──▶ (decompose) ──▶ chunks ──▶ (orchestrate) ──▶ plan ──▶ code + ADRs ──▶ review ──▶ demo
-  │                            │                          │                          │            │             │         │
-strategic                  design doc               todo inbox                 per-feature    source +     findings   behavioral
-source of                  (conditional)            of atomic                  plan file      ADRs                    sign-off
-truth                                                PR-sized units                                                   (Lior)
+roadmap ──▶ (brainstorm) ──▶ spec* ──▶ (decompose) ──▶ chunks ──▶ [pre-mortem]† ──▶ (orchestrate) ──▶ plan ──▶ code + ADRs ──▶ review ──▶ demo
+  │                            │                          │           │                    │            │             │         │
+strategic                  design doc               todo inbox   spec↔code            per-feature    source +     findings   behavioral
+source of                  (conditional)            of atomic    reality check        plan file      ADRs                    sign-off
+truth                                                PR-sized     (experiment)                                               (Lior)
+                                                     units
 
-* spec is CONDITIONAL — see §3.
+* spec is CONDITIONAL — see §3.        † pre-mortem is an EXPERIMENT — see §3.1.
 ( ) = an ACT performed by a skill/agent, not a persisted artifact.
+[ ] = a GATE act — produces findings only, never an artifact.
 ```
 
 **Stages in words:**
@@ -32,11 +34,12 @@ truth                                                PR-sized units             
 3. **spec** *(conditional artifact)* — a design document for a feature whose design/research is **thick** (see §3). Skipped when the feature is thin.
 4. **decompose** *(act)* — `/decompose-feature` cuts a feature/phase into atomic, PR-sized **chunks**.
 5. **chunks** — the todo inbox. One file per atomic unit; each independently briefable to the orchestrator.
-6. **orchestrate** *(act)* — `/engine-orchestrator` takes one chunk from idea to reviewed, merged implementation.
-7. **plan** — the orchestrator's per-feature working document (architect-authored content, orchestrator-persisted).
-8. **code + ADRs** — the actual implementation (`packages/`, `apps/`) plus any Architecture Decision Records the change warranted.
-9. **review** *(act)* — `engine-reviewer` diffs the branch against baseline.
-10. **demo** — Lior's live behavioral sign-off where the Definition-of-Done has behavioral criteria (§6.1).
+6. **pre-mortem** *(gate act, EXPERIMENT)* — `spec-critic` attacks the spec + the cut **before any code exists**: unverified assumptions, two-meaning terms, false atomicity. Findings only; Jimmy triages. See §3.1.
+7. **orchestrate** *(act)* — `/engine-orchestrator` takes one chunk from idea to reviewed, merged implementation.
+8. **plan** — the orchestrator's per-feature working document (architect-authored content, orchestrator-persisted).
+9. **code + ADRs** — the actual implementation (`packages/`, `apps/`) plus any Architecture Decision Records the change warranted.
+10. **review** *(act)* — `engine-reviewer` diffs the branch against baseline.
+11. **demo** — Lior's live behavioral sign-off where the Definition-of-Done has behavioral criteria (§6.1).
 
 ---
 
@@ -49,6 +52,7 @@ truth                                                PR-sized units             
 | **spec** | `YYYY-MM-DD-<slug>.md` | Jimmy (+ architect / deep-research) | `decompose-feature` | `orchestration/docs/specs/` | frontmatter `status:` + `feeds:` |
 | decompose | — (act) | `/decompose-feature` (Jimmy-driven, in-chat) | produces chunks | — | — |
 | **chunks** | `NN-<slug>.md` | `decompose-feature` | `engine-orchestrator` | `orchestration/chunks-todo/<feature>/` | frontmatter `Status:` (§4) |
+| pre-mortem | — (gate act) | `spec-critic` (1×/feature) | Jimmy triages → spec + chunk edits | findings returned inline | — |
 | orchestrate | — (act) | `/engine-orchestrator` (fresh chat per chunk) | produces plan + code | — | — |
 | **plan** | `plan.md` | `engine-orchestrator` writes; `engine-architect` authors content | `engine-architect`, `engine-worker`, `engine-reviewer` read | `orchestration/docs/plans/<feature>/` | `## Status` heading inside the file |
 | code | source | `engine-worker` | end users / tests | `packages/`, `apps/` | git history (permanent) |
@@ -61,6 +65,7 @@ truth                                                PR-sized units             
 - **roadmap → decompose:** Jimmy points `/decompose-feature` at a roadmap phase/feature. If a spec exists, decompose reads it too.
 - **(thick design) → spec:** when research/design is heavy, Jimmy authors a spec first; its `feeds:` frontmatter names the decompose target.
 - **spec → chunks:** `decompose-feature` reads the spec + roadmap + open-questions + known-gotchas, and writes chunk files. Each chunk's `## Orchestrator brief` cites the spec section it implements.
+- **chunks → pre-mortem → orchestrate:** once the chunks are written, `spec-critic` runs **once** over spec + cut (§3.1). Jimmy triages: routine fixes he lands himself in the spec/chunk files (§5.1), judgment calls escalate (§5.2). Only then does the first orchestrator chat start. The gate never blocks on Lior by default.
 - **chunks → orchestrate:** Jimmy invokes `/engine-orchestrator do chunk NN from <path>` in a **fresh chat** (the multi-agent build is too context-heavy for the long-lived adviser chat). The orchestrator reads the chunk file directly — **no brief paste** (Level-1, see §7.3).
 - **orchestrate → plan → code:** orchestrator spawns `engine-architect` (plan), then `engine-worker` per step, then `engine-reviewer`. ADR-worthy decisions route to `adr-curator`.
 - **code → review → demo:** reviewer-clean + (where applicable) Lior's behavioral demo green ⇒ the chunk is **verified-done** and may be archived (§4).
@@ -81,6 +86,52 @@ A spec is **CONDITIONAL** — produce one only when a feature's design or resear
 - It is a single-chunk change, a follow-up, or a deferred gotcha.
 
 When in doubt, Jimmy decides at decompose time. A skipped spec is not debt — decompose can read the roadmap directly.
+
+---
+
+## 3.1 The pre-mortem gate (`spec-critic`) — EXPERIMENT
+
+> **Piloted from 2026-08-06.** Charter + metrics + kill switch:
+> `experiments/2026-08-06-spec-critic.md`. Process tooling, not product (§7.4).
+
+**Where:** at the `chunks → orchestrate` joint, **once per feature**, after the cut is written and
+**before the first orchestrator chat starts**. This is the last point where a design error costs a
+markdown edit instead of reverting N PRs.
+
+**Why here and not elsewhere:** every other adversarial pass we own fires *after* the code exists
+(`engine-reviewer` / `hard-reviewer` on the diff, Lior's demo on the running app), and the two
+pre-code checks we have are either **interactive** (`grill-me` / `grill-with-docs` — they need Lior,
+so they do not fire in an unattended conveyor run) or a **self-check in the same context** that
+produced the artifact (`decompose-feature`'s own §7.1 coupling check — the check with 5 recorded
+strikes). This gate adds the missing thing: an **independent, fresh-context** pass before code.
+
+**Scope — exactly three questions, nothing else:**
+1. **Unverified assumptions** — load-bearing claims that would re-shape the design if false → the
+   cheapest spike that settles it before chunk work. An assumption the spec *already* gates behind
+   a spike is **not** a finding.
+2. **Ambiguous terms** — a load-bearing noun/verb with two plausible readings, where two competent
+   implementers build materially different things.
+3. **Cut attack (§7.1)** — shared runtime state / type surface / widening union / error path that
+   falsifies the "atomic" claim.
+
+**Charter (the guardrails that make it net-positive):**
+- **Caps: 3 blockers + 3 minor.** Zero blockers is a valid verdict. A manufactured finding is worse
+  than none — the scarcest resource here is Lior's attention.
+- **Four mandatory fields per finding:** `claim` / `cite` / `cost if missed` / `disconfirming
+  evidence`. No falsifiable anchor ⇒ the finding is dropped.
+- **Deferral discipline:** a finding that contradicts a recorded deferral or ruled-out option must be
+  labeled `RE-OPENING: <ref>` and can only be `minor`, unless it cites genuinely new information.
+  Deferrals are decisions, not gaps.
+- **Read-only** (`Read/Glob/Grep`, no network). It reads the **code**, not just the docs — the
+  strongest findings are spec-claim vs code-reality mismatches.
+- **Routes to Jimmy, never straight to Lior.** Jimmy fixes mechanics (§5.1), escalates judgment
+  (§5.2). The gate must not add a Lior touch.
+- **Free extra output:** the list of DoD criteria that are behavioral and therefore demo-required —
+  it feeds the §6.1 demo script.
+
+**The rule that protects §6.1: a green pre-mortem is NOT evidence.** It never substitutes for
+runtime proof and is **never citable in a Definition-of-Done**. Any such citation is the
+experiment's kill trigger, not a bug to patch.
 
 ---
 
@@ -156,6 +207,10 @@ context-rich, consequential, hard-to-reverse decisions stay with Lior.
 The orchestrator/worker set status and archive **without asking Lior** — **but only after
 work is verified-done** (§6):
 
+- **Run the §3.1 pre-mortem gate** after a decompose, and land its routine outcomes autonomously:
+  spec/chunk wording fixes, a `Depends on:` correction, promoting an assumption to a pre-chunk spike.
+  Only §5.2-class calls (new scope, a frozen conflict, a north-star question) escalate. A green
+  verdict is recorded and **never** cited as evidence (§6.1).
 - Set a chunk `Status: in-progress` when an orchestrator chat picks it up.
 - Set a chunk `Status: done` **and move it to `archive/<feature>/`** once verified-done.
 - Create, update, and (on ship) archive the plan file with its `SHIPPED` banner.
@@ -256,6 +311,10 @@ or an automated behavioral test that PASSES.
   behavioral test passes. Sequence the demo **before** the closeout docs.
 - Treat past "manually verified / SHIPPED ✅" records as **suspect** for behavioral claims;
   re-demo is the only proof.
+- **A green §3.1 pre-mortem is NOT evidence either.** It runs before any code exists, so it can only
+  ever say "no design objection found" — never "it works." It is not citable in a DoD; a citation is
+  the experiment's kill trigger (`experiments/2026-08-06-spec-critic.md`). Its behavioral-DoD list is
+  an *input to* the demo script, not a substitute for running it.
 
 ### 6.2 Mechanical criteria → require COMMAND EVIDENCE
 
@@ -399,7 +458,8 @@ specs: none). Lior reviewed three options and chose **Option A — unify the con
 
 | Agent / skill | Reads | Produces | Lifecycle duty it owns |
 |---------------|-------|----------|------------------------|
-| `decompose-feature` | roadmap, spec, open-questions, known-gotchas, ADRs | chunk files (`Status: todo`) + inline summary | records scope-cut rationale per chunk (§7.2) |
+| `decompose-feature` | roadmap, spec, open-questions, known-gotchas, ADRs | chunk files (`Status: todo`) + inline summary | records scope-cut rationale per chunk (§7.2); dispatches the §3.1 gate before hand-off |
+| `spec-critic` | the spec, the whole cut, ADRs, backlog deferrals, **the code** | ≤3 blockers + ≤3 minor + the behavioral-DoD list | none — read-only gate; never edits, never a DoD evidence source (§6.1) |
 | `engine-orchestrator` | the chunk file, docs, plan file | plan file, commits, PR | sets chunk `in-progress`→`done`, archives chunk + plan after verified-done (§5.1) |
 | `engine-architect` | docs, ADRs, plan file | plan content, `## ADR worthy` flags | marks behavioral DoD "requires demo," never "verified" (§6.1) |
 | `engine-worker` | plan file, architecture, ADRs | code, tests | command-evidence before "done" (§6.2); never edits its own DoD (§7.2) |
@@ -440,6 +500,7 @@ specs: none). Lior reviewed three options and chose **Option A — unify the con
 
 | Event | Starts | Produces | If it hits a gate (unattended) |
 |-------|--------|----------|--------------------------------|
+| chunks written (decompose done) | `spec-critic` (1×/feature, §3.1) | ≤3 blockers + behavioral-DoD list | Jimmy triages: mechanics landed autonomously; §5.2-class findings → Lior. Never blocks the conveyor on a minor |
 | feature has `todo` chunks | orchestrator-chat (1×/chunk) | plan → code → PR | post `BLOCKED <gate>` → Jimmy → Lior; Jimmy relaunches a fresh continuation on the decision |
 | PR opened | reviewer (walk rung) | review comment | n/a (read-only) |
 | all gates green on a PR | — | **auto-merge** (effect, not decision; §5.2) | red gate → no merge, escalate |

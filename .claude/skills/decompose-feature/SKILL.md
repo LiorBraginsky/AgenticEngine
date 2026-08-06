@@ -81,6 +81,30 @@ Output BOTH artifact files AND inline summary.
 
 > Next: open a new chat and run `/engine-orchestrator do chunk 01 from orchestration/chunks-todo/<phase>/01-<first-title>.md`. The orchestrator reads the chunk file directly — **no brief paste** (PIPELINE.md §7.3, Level-1).
 
+### Step 5.5 — Pre-mortem gate (PIPELINE.md §3.1) — EXPERIMENT
+
+Once the chunk files exist, dispatch the **`spec-critic`** subagent **once** over the spec + the whole
+cut, before anyone starts chunk 01. Point it at the spec path and the feature's chunk folder; it needs
+nothing else (it reads the code itself, and it is read-only).
+
+It answers exactly three questions — unverified assumptions, two-meaning terms, and an attack on your
+own atomicity claim — capped at 3 blockers + 3 minor, each with a `disconfirming evidence` field.
+
+**Then triage its output yourself (§5.1 routine mechanics):**
+
+- **Wording / `Depends on:` / a missing spike** → fix it in the spec or chunk file now. This is the
+  point of the gate: the artifact being edited is still markdown.
+- **New scope, a frozen conflict, a north-star question** → escalate to Lior (§5.2 citation test).
+  Do NOT absorb new scope yourself.
+- **`RE-OPENING:`-prefixed findings** → these contradict a recorded deferral. Default answer is "the
+  deferral stands"; only act if the finding cites genuinely new information.
+- **Its behavioral-DoD list** → reconcile against your `[behavioral]` tags. If it flags a criterion
+  your chunk marked mechanically provable, re-tag it (§6.1).
+
+**Never** record "pre-mortem green" as evidence of anything (§6.1) — it runs before code exists.
+
+If the gate produces nothing, say so in one line and move on. Zero blockers is a valid verdict.
+
 ### Step 6 — Stop
 
 Do NOT execute the chunks. You only decompose. Execution is `engine-orchestrator`'s job in a separate chat. After Step 5, return your inline summary and stop.
@@ -148,6 +172,9 @@ You (decompose) only create chunks at `todo`. All later transitions (`in-progres
 - NEVER write product code.
 - NEVER execute chunks yourself — only decompose.
 - ALWAYS use `superpowers:brainstorming` AND standalone `grill-with-docs` (no skipping).
+- ALWAYS run the Step 5.5 `spec-critic` gate before the hand-off line — it is an independent
+  fresh-context pass, so it does NOT substitute for your own §7.1 coupling check in Step 4, and your
+  Step 4 self-check does not excuse skipping it (PIPELINE.md §3.1).
 - ALWAYS produce BOTH artifact files AND inline summary.
 - ALWAYS include a `## Orchestrator brief` section as in-file enrichment (the orchestrator reads it from the file — it is NOT a paste payload; enrich the chunk file rather than expecting copy-paste).
 - If decomposition would produce >7 chunks for one phase — push back to Lior: "this phase is too big; consider splitting roadmap Phase X into Phase Xa/Xb."

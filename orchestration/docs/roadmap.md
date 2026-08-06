@@ -91,6 +91,26 @@ tags: [roadmap, milestones]
 > - **Customization constraint (Lior, decided):** group the code so all behavioral values (the ~5 s timer, minimize/dismiss policy, later voice tactics) are **config-driven from day one → tray-settings-ready**. Settings is a first-class member of this arc, not an afterthought.
 > - **Planning order:** continuation (captured, cross-cutting Q open) → voice → settings → close the cross-cutting Q → finalize all three specs → BUILD (voice + minimal settings first, continuation last).
 
+> **🎯 NORTH-STAR HORIZON — recorded 2026-08-06, NOT scheduled.** Lior's end-state: **conversation is the main
+> stream; widgets are the agent's hands.** Continuous speech-to-speech dialogue, with widgets as what the agent
+> *shows* you or what you interact with together — not turn-to-turn invocation. Written down in full in
+> **[[vision]] § THE NORTH-STAR HORIZON**, including what it preserves (widgets-out, agent-not-chatbot,
+> dual-modality-one-contract), what it eventually revises (ADR-0007's widget-not-voice trade-off · the
+> hotkey-per-turn invocation model · ADR-0001 eviction), and the two hard constraints (the Claude API has **no audio
+> modality**; subscription-first + egress posture both take the hit). **It authorizes nothing today** — route parts
+> 2/3 + settings continue exactly as planned. Revisit only after a throwaway out-of-product spike, and then as a §5.2
+> north-star decision.
+
+> **⚡ NEXT ARC AFTER THIS ONE (Lior, 2026-08-06) — provider breadth: "as many working providers as possible."**
+> OpenAI · local LLMs · subscription-auth vs API-token auth · beyond. Executes the
+> [[adr/0010-pluggable-llm-provider-abstraction]] posture that has so far only been exercised by one provider, and
+> [[adr/0011-llm-auth-and-subscription-strategy]]'s auth axis. Framed by Lior as **experimentation**, so the first
+> pass is a matrix of what actually works, not a committed feature set.
+> **Why the sequencing is right rather than a detour:** every capability plane we have converged on the same shape —
+> `LLMProvider` (ADR-0010) · `EmbeddingProvider` (ADR-0017) · `STTProvider` (voice spec D12). A realtime voice lane
+> would be *another instance of that same plane*, so hardening the provider seam across several real backends is the
+> **prerequisite** for the north-star horizon above, not a diversion from it.
+
 **Memory follow-ons — FIRMLY QUEUED (Lior, 2026-06-12; immediate-next after memory-quality, not "someday") — ✅ ALL THREE SHIPPED + CLOSED (2c 2026-07-13 · 2d 2026-07-21 · 2e 2026-07-28); the bullets below are the historical charter:**
 - **2c — Agent memory-action tools (the conversational forget lever).** The agent can ACT on its memory mid-conversation — "forget X" *actually forgets* (wires to the existing `Hatch.forget`/`forgetFact`), not just says it did. New capability class: the agent gets **action tools** (side-effecting), distinct from UI-render tools → an **ADR-0002/0005 extension** + a security/poisoning surface (ADR-0012 5d; re-touches the just-locked memory-write path) → needs its **own design+ADR pass**. Also the committed path to making fact-forget stick in practice without deleting history (spec [[specs/2026-06-12-memory-quality]] §4).
 - **2d — On-demand archive retrieval (the agent searches its memory).** When a fact isn't in the distilled slice, the agent searches the archive on demand. First cut = **SQLite FTS5** keyword search (no new model/embedding dependency); **semantic/vector retrieval = a swappable provider upgrade** — exactly the ADR-0012 decision-6 posture. Same agent-action-tool surface as 2c.

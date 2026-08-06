@@ -135,6 +135,66 @@ Also worth recording per run: did the critic find something `grill-with-docs` ha
 — but it becomes a self-check in the same context again, which is the thing that failed 5× on
 coupling. That trade is the fallback, not the plan.
 
+## Pilot run 1 — `voice-mode`: PRE-REGISTERED ground truth
+
+> **Authored 2026-08-06, before any critic output existed.** The backtest's admitted weakness was that the
+> grader knew the answers and mapped findings post-hoc (see the Honest caveat above). This section removes that
+> for run 1 by committing, in writing, to what counts as a hit **before** the critic speaks.
+>
+> **Honesty of the claim, precisely:** the decompose session runs in a **separate process** (`claude --model fable`,
+> launched by Lior) whose output has not reached this session. Step 5.5 may therefore fire before this file merges.
+> What is guaranteed is not the clock — it is that **everything below was authored without sight of any
+> `spec-critic` output**, which is checkable from the two sessions' transcripts.
+
+### A. The baseline predictions — what the Opus adviser chat already suspects
+
+The point of writing these down is **marginal value, not absolute value.** If the critic returns exactly this
+list, then a long-lived adviser chat that had read the spec could produce the same findings, and a separate
+fresh-context agent bought little. Findings **outside** this list that turn out real are the critic's genuine
+delta. Both outcomes are informative; only pre-registration makes them distinguishable.
+
+| # | Predicted finding | Class |
+|---|---|---|
+| P1 | **`getUserMedia` in a non-activated Tauri webview is an unverified platform assumption.** D8's focus rail requires showing the overlay for recording **without** `set_focus()`. Nobody has established that mic capture works — or that the macOS TCC permission prompt even appears — in a window that was deliberately never activated. This is the `transformers.js`-on-Bun class: a load-bearing platform claim with no spike gating it. O7 mentions the TCC *flow* as "mechanical", which is not the same as "can this work at all". | Q1 |
+| P2 | **"transcript" carries two meanings.** D9 says the transcript "*is* the archive message" and audio is never persisted. D11 says the busy-case transcript lands as **editable** pending text. An edited transcript then differs from what was spoken — and nothing says which one becomes the archive message, or whether the distiller sees the spoken or the edited text. Same shape as the Theme A `edit` defect. | Q2 |
+| P3 | **`voice.whenBusy = reject` offers the behavior D11 forbids.** D11: "**Never** silently refuse — the worst outcome is speaking into a void." D14 ships `reject` as a supported config value. Either the rail is not absolute or the config value should not exist. | Q2 |
+| P4 | **The cut will likely share runtime state across "atomic" chunks.** Audio capture, the D5 three-state indicator, the D9 HTTP upload, and the D11 busy seam all touch the same `runSession` / `inFlight` guard and the same connection lifecycle — the exact coupling class that produced Theme A's two-liveness-detectors finding, and the reason §7.1 exists. | Q3 |
+
+**Two named non-predictions**, so no credit is claimed later for them: I do **not** predict what the settings-scope
+boundary should be (that is Lior's O6 ruling, not a defect), and I do **not** predict any specific latency or STT
+accuracy problem.
+
+### B. Not a delta by construction
+
+Findings in these areas score as **acknowledged, not novel** — the spec already declares them, so surfacing them
+is correct behavior but not evidence the gate earns its keep:
+
+- **O1–O7** (follow-up mic window · model manager · local-STT branch · hotkey discoverability · input-during-generation · onboarding wizard · TCC flow) — the spec's own carried opens.
+- **The Amendments owed** (ADR-0006 p.1 ×2, the ADR-0007 wording narrowing).
+- **The chunk-03-style "already gated" cases** — anything the spec explicitly routes to a spike.
+- Restating **gotcha #45** or the frozen-wire constraint (D9) without a new consequence.
+
+### C. Scoring rubric (fixed now)
+
+- **A blocker is CONFIRMED** only when the predicted failure actually materializes during the build or Lior's §6.1
+  demo, or when the triage changes the spec / the cut / adds a spike. Adjudicated **after the arc ships**, not on
+  plausibility at read time.
+- **Precision** = confirmed blockers ÷ blockers reported. Green threshold ≥50% (as set above).
+- **Marginal precision** = confirmed blockers **not** in list A ÷ blockers reported. This is the number that decides
+  whether a separate agent beats "the adviser chat reads the spec".
+- **Recall** is measured against defects the arc actually hits: every defect found during the build or at the demo
+  gets asked "was this in the critic's output, in list A, or in neither?"
+- **Cost** recorded per run: subagent tokens, wall-clock, and Jimmy's triage minutes.
+- **Lior-touch count for the arc** recorded, to check the gate did not add one.
+
+### D. What would falsify the pilot on run 1 alone
+
+- Marginal precision **0** with ≥3 blockers reported ⇒ the separate agent is redundant; fold Q1/Q2 into
+  `decompose-feature` as a checklist (the fallback named above).
+- Triage exceeded ~10 minutes, or any finding reached Lior that Jimmy should have absorbed.
+- Any `RE-OPENING:` finding acted on without new information.
+- "spec-critic green" cited anywhere as evidence ⇒ instant kill, per the charter.
+
 ## Links
 
 - `.claude/agents/spec-critic.md` · PIPELINE §3.1 (the gate), §6.1 (why green ≠ evidence), §7.1 (the cut attack)

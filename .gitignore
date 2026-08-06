@@ -28,3 +28,16 @@ apps/overlay/src-tauri/gen/schemas
 
 # Conveyor — ephemeral generated handoff briefs (PIPELINE §11; ledger IS tracked)
 orchestration/.conveyor/
+
+# Serena MCP — tool-local project state (symbol cache + regenerable project.yml).
+# Single-user repo, so there is nothing to share; regenerates on activation.
+.serena/
+
+# Second-harness mirrors (Codex/AGENTS.md ports of .claude/*) — DELIBERATELY not in
+# this repo (2026-08-06). A hand-copied mirror is a second source of truth with no
+# generator: it drifted twice within an hour of a .claude/* edit, and the AGENTS.md
+# port carried a fabricated `Co-Authored-By` that would have entered git history.
+# If a Codex lane is ever wanted: generate it from .claude/* in a build step, never copy.
+AGENTS.md
+.codex/
+.agents/
